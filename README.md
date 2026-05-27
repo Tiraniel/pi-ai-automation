@@ -23,7 +23,7 @@ Delegated agents stream bounded live progress back into the parent Pi terminal: 
 ## Defaults
 
 - **brain**: `openai-codex/gpt-5.5` thinking `xhigh`
-- **coder**: `openai-codex/gpt-5.3-codex` thinking `medium`, tools `read,bash,edit,write,grep,find,ls`
+- **coder**: `openai-codex/gpt-5.3-codex` thinking `medium`, tools `read,bash,edit,write,grep,find,ls`, and **Karpathy Guidelines included by default**
 - **reviewer**: `openai-codex/gpt-5.5` thinking `high`, tools `read,bash,grep,find,ls` (read-only)
 
 Child delegates run with:
@@ -39,6 +39,18 @@ Config is deep-merged in this order:
 3. Nearest project `.pi/workflow.json`
 
 See [`examples/workflow.json`](./examples/workflow.json).
+
+To disable Karpathy Guidelines for delegated coder prompts in overrides:
+
+```json
+{
+  "agents": {
+    "coder": {
+      "includeKarpathyGuidelines": false
+    }
+  }
+}
+```
 
 `autoApplyBrain: false` disables automatic Brain model/thinking/status application. To disable the workflow extension for a single Pi run, use:
 

@@ -5,7 +5,8 @@
   "license": "MIT",
   "keywords": ["pi-package", "pi", "workflow", "automation"],
   "pi": {
-    "extensions": ["./extensions/brain-workflow.ts"]
+    "extensions": ["./extensions/brain-workflow.ts"],
+    "skills": ["./skills"]
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

@@ -12,6 +12,7 @@
       "model": "gpt-5.3-codex",
       "thinkingLevel": "medium",
       "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+      "includeKarpathyGuidelines": true,
       "instructions": "Optional: override Coder instructions."
     },
     "reviewer": {
