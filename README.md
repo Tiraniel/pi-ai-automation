@@ -18,6 +18,8 @@ The extension auto-applies the Brain preset (unless disabled), injects Brain orc
 - `delegate_to_coder`
 - `delegate_to_reviewer`
 
+Delegated agents stream bounded live progress back into the parent Pi terminal: current status, recent tool calls, tool completions/errors, assistant text previews, final output, and usage.
+
 ## Defaults
 
 - **brain**: `openai-codex/gpt-5.5` thinking `xhigh`

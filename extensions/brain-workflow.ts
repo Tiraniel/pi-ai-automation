@@ -3,7 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -40,6 +41,12 @@ interface UsageStats {
 	turns: number;
 }
 
+interface DelegateProgressItem {
+	at: number;
+	type: "status" | "tool_start" | "tool_update" | "tool_end" | "assistant" | "error";
+	text: string;
+}
+
 interface DelegateRunResult {
 	agent: string;
 	task: string;
@@ -53,6 +60,10 @@ interface DelegateRunResult {
 	stopReason?: string;
 	errorMessage?: string;
 	aborted?: boolean;
+	status?: string;
+	activeTools?: Array<{ id: string; name: string }>;
+	progress?: DelegateProgressItem[];
+	finalOutput?: string;
 }
 
 const DEFAULT_CONFIG: WorkflowConfig = {
@@ -115,6 +126,12 @@ Return one of:
 };
 
 const MAX_STDERR_BYTES = 64 * 1024;
+const MAX_PROGRESS_ITEMS = 80;
+const MAX_PROGRESS_TEXT = 240;
+const MAX_RENDERED_PROGRESS = 14;
+const MAX_TASK_PREVIEW = 140;
+const MAX_FINAL_OUTPUT_PREVIEW = 500;
+const MAX_TOOL_UPDATE_PREVIEW = 180;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -208,8 +225,58 @@ function getFinalAssistantText(messages: Message[]): string {
 	return "";
 }
 
+function extractMessageText(message: Message | undefined): string {
+	const msg = message as any;
+	if (!msg || !Array.isArray(msg.content)) return "";
+	return msg.content
+		.filter((part: any) => part?.type === "text" && typeof part.text === "string")
+		.map((part: any) => part.text)
+		.join("\n")
+		.trim();
+}
+
+function truncateText(text: string, max = MAX_PROGRESS_TEXT): string {
+	const clean = text.replace(/\s+/g, " ").trim();
+	if (clean.length <= max) return clean;
+	return `${clean.slice(0, max - 1)}…`;
+}
+
 function isFailed(result: DelegateRunResult): boolean {
 	return result.aborted || result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+function normalizeFinalStatus(result: Pick<DelegateRunResult, "aborted" | "stopReason" | "exitCode">): "failed" | "aborted" | "completed" {
+	if (result.aborted || result.stopReason === "aborted") return "aborted";
+	if (result.exitCode !== 0 || result.stopReason === "error") return "failed";
+	return "completed";
+}
+
+function extractToolUpdatePreview(partialResult: unknown): string {
+	if (typeof partialResult === "string") return truncateText(partialResult, MAX_TOOL_UPDATE_PREVIEW);
+	if (!isPlainObject(partialResult)) return "";
+
+	const candidates: unknown[] = [];
+	const content = partialResult.content;
+	if (typeof content === "string") candidates.push(content);
+	if (Array.isArray(content)) {
+		for (const item of content) {
+			if (typeof item === "string") candidates.push(item);
+			else if (isPlainObject(item) && typeof item.text === "string") candidates.push(item.text);
+		}
+	}
+	if (typeof partialResult.output === "string") candidates.push(partialResult.output);
+	if (typeof partialResult.stdout === "string") candidates.push(partialResult.stdout);
+	if (typeof partialResult.stderr === "string") candidates.push(partialResult.stderr);
+	if (typeof partialResult.summary === "string") candidates.push(partialResult.summary);
+	if (isPlainObject(partialResult.details) && typeof partialResult.details.summary === "string") {
+		candidates.push(partialResult.details.summary);
+	}
+
+	for (const candidate of candidates) {
+		const text = truncateText(String(candidate), MAX_TOOL_UPDATE_PREVIEW);
+		if (text) return text;
+	}
+	return "";
 }
 
 function appendCapped(current: string, next: string, maxBytes: number): string {
@@ -307,11 +374,33 @@ async function runDelegateAgent(
 
 	args.push(`Task from Brain to ${agent}:\n\n${task}`);
 
+	const progress: DelegateProgressItem[] = [];
+	const activeTools = new Map<string, { name: string }>();
+	let status = "starting";
+	let lastAssistantPreview = "";
+	let lastAssistantEmitAt = 0;
+
+	const pushProgress = (item: DelegateProgressItem) => {
+		progress.push(item);
+		if (progress.length > MAX_PROGRESS_ITEMS) progress.splice(0, progress.length - MAX_PROGRESS_ITEMS);
+	};
+
 	const emitUpdate = () => {
 		const output = getFinalAssistantText(messages);
+		const finalOutputPreview = truncateText(output, MAX_FINAL_OUTPUT_PREVIEW);
 		onUpdate?.({
-			content: [{ type: "text", text: output || `${agent} running...` }],
-			details: { agent, task, cwd, model: resolveModelLabel(preset), usage, messages },
+			content: [{ type: "text", text: finalOutputPreview || `${agent} ${status}...` }],
+			details: {
+				agent,
+				taskPreview: truncateText(task, MAX_TASK_PREVIEW),
+				cwd,
+				model: resolveModelLabel(preset),
+				usage,
+				status,
+				activeTools: Array.from(activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
+				progress,
+				finalOutputPreview,
+			},
 		});
 	};
 
@@ -341,30 +430,101 @@ async function runDelegateAgent(
 					return;
 				}
 
-				if (event.type === "message_end" && event.message) {
-					const msg = event.message as Message;
-					messages.push(msg);
-
-					const asAny = msg as any;
-					if (asAny.role === "assistant") {
-						usage.turns++;
-						if (asAny.usage) {
-							usage.input += asAny.usage.input || 0;
-							usage.output += asAny.usage.output || 0;
-							usage.cacheRead += asAny.usage.cacheRead || 0;
-							usage.cacheWrite += asAny.usage.cacheWrite || 0;
-							usage.cost += asAny.usage.cost?.total || 0;
-							usage.contextTokens = asAny.usage.totalTokens || usage.contextTokens;
-						}
-						if (asAny.stopReason) stopReason = asAny.stopReason;
-						if (asAny.errorMessage) errorMessage = asAny.errorMessage;
+				const now = Date.now();
+				switch (event.type) {
+					case "turn_start": {
+						status = `turn ${Number(event.turnIndex ?? usage.turns + 1)} running`;
+						pushProgress({ at: now, type: "status", text: status });
+						emitUpdate();
+						break;
 					}
-					emitUpdate();
-				}
+					case "turn_end": {
+						status = "turn complete";
+						pushProgress({ at: now, type: "status", text: status });
+						emitUpdate();
+						break;
+					}
+					case "tool_execution_start": {
+						const name = String(event.toolName ?? "tool");
+						const id = String(event.toolCallId ?? `${name}-${now}`);
+						activeTools.set(id, { name });
+						status = `${name} running`;
+						pushProgress({ at: now, type: "tool_start", text: `→ ${name}` });
+						emitUpdate();
+						break;
+					}
+					case "tool_execution_update": {
+						const name = String(event.toolName ?? "tool");
+						const details = extractToolUpdatePreview(event.partialResult);
+						pushProgress({ at: now, type: "tool_update", text: `… ${name}${details ? ` ${details}` : ""}` });
+						emitUpdate();
+						break;
+					}
+					case "tool_execution_end": {
+						const name = String(event.toolName ?? "tool");
+						const id = String(event.toolCallId ?? "");
+						if (id) activeTools.delete(id);
+						const ok = !event.isError;
+						pushProgress({ at: now, type: ok ? "tool_end" : "error", text: `${ok ? "✓" : "✗"} ${name}` });
+						status = ok ? "tool complete" : "tool failed";
+						emitUpdate();
+						break;
+					}
+					case "message_update": {
+						const text = truncateText(extractMessageText(event.message as Message));
+						if (!text) break;
+						const shouldEmit =
+							text !== lastAssistantPreview &&
+							(text.length - lastAssistantPreview.length >= 40 || now - lastAssistantEmitAt > 400);
+						if (shouldEmit) {
+							lastAssistantPreview = text;
+							lastAssistantEmitAt = now;
+							pushProgress({ at: now, type: "assistant", text: truncateText(`💬 ${text}`) });
+							emitUpdate();
+						}
+						break;
+					}
+					case "message_end": {
+						if (!event.message) break;
+						const msg = event.message as Message;
+						messages.push(msg);
 
-				if (event.type === "tool_result_end" && event.message) {
-					messages.push(event.message as Message);
-					emitUpdate();
+						const asAny = msg as any;
+						if (asAny.role === "assistant") {
+							usage.turns++;
+							if (asAny.usage) {
+								usage.input += asAny.usage.input || 0;
+								usage.output += asAny.usage.output || 0;
+								usage.cacheRead += asAny.usage.cacheRead || 0;
+								usage.cacheWrite += asAny.usage.cacheWrite || 0;
+								usage.cost += asAny.usage.cost?.total || 0;
+								usage.contextTokens = asAny.usage.totalTokens || usage.contextTokens;
+							}
+							if (asAny.stopReason) stopReason = asAny.stopReason;
+							if (asAny.errorMessage) errorMessage = asAny.errorMessage;
+							const assistantText = extractMessageText(msg);
+							if (assistantText) pushProgress({ at: now, type: "assistant", text: `💬 ${truncateText(assistantText)}` });
+						}
+						emitUpdate();
+						break;
+					}
+					case "tool_result_end": {
+						if (event.message) messages.push(event.message as Message);
+						emitUpdate();
+						break;
+					}
+					case "agent_end": {
+						status = aborted ? "aborted" : "completed";
+						pushProgress({ at: now, type: "status", text: status });
+						emitUpdate();
+						break;
+					}
+					default: {
+						if (typeof event.type === "string" && (event.type.startsWith("auto_retry") || event.type.startsWith("compaction"))) {
+							pushProgress({ at: now, type: "status", text: truncateText(event.type) });
+							emitUpdate();
+						}
+					}
 				}
 			};
 
@@ -401,6 +561,7 @@ async function runDelegateAgent(
 			}
 		});
 
+		const finalStatus = normalizeFinalStatus({ aborted, stopReason, exitCode });
 		return {
 			agent,
 			task,
@@ -414,6 +575,10 @@ async function runDelegateAgent(
 			stopReason,
 			errorMessage,
 			aborted,
+			status: finalStatus,
+			activeTools: Array.from(activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
+			progress,
+			finalOutput: getFinalAssistantText(messages),
 		};
 	} finally {
 		await removeTempPrompt(tmpDir, tmpPromptPath);
@@ -447,6 +612,52 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			task: Type.String({ description: `Self-contained task for ${agent}` }),
 			cwd: Type.Optional(Type.String({ description: "Working directory for the delegated Pi process; defaults to current cwd" })),
 		}),
+		renderCall(args: any, theme) {
+			const task = truncateText(String(args?.task ?? ""), MAX_TASK_PREVIEW) || "(no task)";
+			return new Text(
+				`${theme.fg("toolTitle", theme.bold(toolName))} ${theme.fg("accent", agent)}\n${theme.fg("dim", task)}`,
+				0,
+				0,
+			);
+		},
+		renderResult(result: any, { expanded, isPartial }: { expanded: boolean; isPartial?: boolean }, theme, context: { isError?: boolean } = {}) {
+			const details = (result?.details ?? {}) as Partial<DelegateRunResult>;
+			const progress = details.progress ?? [];
+			const derivedFailed = typeof details.exitCode === "number" ? isFailed(details as DelegateRunResult) : false;
+			const failed = Boolean(context.isError ?? result?.isError ?? derivedFailed);
+			const status = details.status ?? (isPartial ? "running" : failed ? "failed" : "completed");
+			const icon = isPartial ? "…" : failed ? "✗" : "✓";
+			const recent = progress.slice(-(expanded ? MAX_RENDERED_PROGRESS : 5));
+			const lines = recent.map((p) => p.text);
+			const usageText = details.usage ? formatUsage(details.usage) : "";
+			const taskText = details.task ?? (details as { taskPreview?: string }).taskPreview;
+			const output = details.finalOutput || (result?.content?.[0]?.type === "text" ? result.content[0].text : "");
+
+			if (!expanded) {
+				let text = `${theme.fg("toolTitle", theme.bold(toolName))} ${theme.fg("accent", agent)} ${theme.fg("muted", `[${status}]`)} ${theme.fg("muted", icon)}`;
+				if (lines.length) text += `\n${lines.map((line) => theme.fg("toolOutput", truncateText(line))).join("\n")}`;
+				if ((details.progress?.length ?? 0) > lines.length) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+				return new Text(text, 0, 0);
+			}
+
+			const container = new Container();
+			container.addChild(new Text(`${theme.fg("toolTitle", theme.bold(toolName))} ${theme.fg("accent", agent)} ${theme.fg("muted", `[${status}]`)} ${icon}`, 0, 0));
+			if (taskText) container.addChild(new Text(theme.fg("dim", `task: ${taskText}`), 0, 0));
+			if (details.model || details.cwd) {
+				container.addChild(new Text(theme.fg("dim", `model: ${details.model ?? "default"}  cwd: ${details.cwd ?? ""}`), 0, 0));
+			}
+			container.addChild(new Spacer(1));
+			for (const line of lines) container.addChild(new Text(theme.fg("toolOutput", line), 0, 0));
+			if (usageText) {
+				container.addChild(new Spacer(1));
+				container.addChild(new Text(theme.fg("dim", usageText), 0, 0));
+			}
+			if (output) {
+				container.addChild(new Spacer(1));
+				container.addChild(new Markdown(output, 0, 0, getMarkdownTheme()));
+			}
+			return container;
+		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const task = String((params as any).task ?? "").trim();
 			if (!task) {
@@ -455,9 +666,9 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 
 			const result = await runDelegateAgent(ctx, agent, task, (params as any).cwd, signal, onUpdate);
 			const finalOutput = getFinalAssistantText(result.messages) || result.errorMessage || result.stderr || "(no output)";
-			const failed = isFailed(result);
+			const status = normalizeFinalStatus(result);
+			const failed = status !== "completed";
 			const usageText = formatUsage(result.usage);
-			const status = failed ? "failed" : "completed";
 
 			return {
 				content: [
