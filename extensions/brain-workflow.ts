@@ -19,9 +19,16 @@ interface AgentPreset {
 	includeKarpathyGuidelines?: boolean;
 }
 
+interface ReviewerSwarmConfig {
+	enabled?: boolean;
+	maxConcurrency?: number;
+	targets?: string[];
+}
+
 interface WorkflowConfig {
 	autoApplyBrain?: boolean;
 	agents?: Record<string, AgentPreset>;
+	reviewerSwarm?: ReviewerSwarmConfig;
 }
 
 interface LoadedWorkflowConfig {
@@ -67,8 +74,25 @@ interface DelegateRunResult {
 	finalOutput?: string;
 }
 
+interface ReviewerTargetResult {
+	target: string;
+	verdict: "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN";
+	status: "running" | "completed" | "failed" | "aborted";
+	result?: DelegateRunResult;
+}
+
 const DEFAULT_CONFIG: WorkflowConfig = {
 	autoApplyBrain: true,
+	reviewerSwarm: {
+		enabled: true,
+		maxConcurrency: 2,
+		targets: [
+			"Requirements and acceptance criteria coverage",
+			"Correctness and regression risks",
+			"Tests and validation quality",
+			"Security, performance, and maintainability",
+		],
+	},
 	agents: {
 		brain: {
 			provider: "openai-codex",
@@ -84,7 +108,7 @@ Role:
 Default development cycle:
 1. Clarify the goal and inspect enough context yourself.
 2. Send coder a self-contained implementation task with relevant files, constraints, and expected checks.
-3. Send reviewer a self-contained review task after coder finishes.
+3. Send reviewer a self-contained review task after coder finishes. Prefer delegate_to_reviewer goals that map to acceptance criteria (one goal per target review).
 4. If reviewer requests changes, send focused fixes back to coder, then review again.
 5. Finish with a concise summary of changes, tests/checks, and remaining risks.
 
@@ -122,7 +146,9 @@ Responsibilities:
 
 Return one of:
 - APPROVED: with brief rationale and any non-blocking notes.
-- CHANGES_REQUESTED: with prioritized issues, file paths/lines when possible, and concrete fixes.`,
+- CHANGES_REQUESTED: with prioritized issues, file paths/lines when possible, and concrete fixes.
+
+If Brain assigns a specific review goal/target, focus only on that goal and put APPROVED or CHANGES_REQUESTED as the first token in your response.`,
 		},
 	},
 };
@@ -314,6 +340,41 @@ function normalizeFinalStatus(result: Pick<DelegateRunResult, "aborted" | "stopR
 	if (result.aborted || result.stopReason === "aborted") return "aborted";
 	if (result.exitCode !== 0 || result.stopReason === "error") return "failed";
 	return "completed";
+}
+
+function parseReviewerVerdict(text: string): "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN" {
+	const normalized = text.replace(/\r\n?/g, "\n");
+	const lines = normalized.split("\n");
+	for (const line of lines) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		const token = trimmed.split(/\s+/)[0]?.toUpperCase() ?? "";
+		if (token === "APPROVED") return "APPROVED";
+		if (/^CHANGES[_\s-]?REQUESTED$/.test(token) || token === "CHANGES_REQUESTED") return "CHANGES_REQUESTED";
+		if (/^CHANGES[_\s-]?REQUESTED$/.test(trimmed.toUpperCase())) return "CHANGES_REQUESTED";
+		break;
+	}
+
+	const upper = normalized.toUpperCase();
+	const approvedIndex = upper.search(/\bAPPROVED\b/);
+	const changesIndex = upper.search(/\bCHANGES[_\s-]?REQUESTED\b/);
+	if (approvedIndex >= 0 && (changesIndex < 0 || approvedIndex < changesIndex)) return "APPROVED";
+	if (changesIndex >= 0) return "CHANGES_REQUESTED";
+	return "UNKNOWN";
+}
+
+function resolveReviewerSwarmConfig(config: WorkflowConfig): Required<ReviewerSwarmConfig> {
+	const merged = deepMerge(DEFAULT_CONFIG.reviewerSwarm ?? {}, config.reviewerSwarm ?? {});
+	const targets = Array.isArray(merged.targets) ? merged.targets.filter((target): target is string => typeof target === "string" && target.trim().length > 0) : [];
+	return {
+		enabled: merged.enabled !== false,
+		maxConcurrency: Math.max(1, Number(merged.maxConcurrency ?? 2) || 2),
+		targets: targets.length ? targets : [...(DEFAULT_CONFIG.reviewerSwarm?.targets ?? [])],
+	};
+}
+
+function buildReviewerGoalTask(task: string, goal: string): string {
+	return `${task}\n\nAssigned review goal:\n- ${goal}\n\nFocus strictly on this goal. Start your response with APPROVED or CHANGES_REQUESTED.`;
 }
 
 function extractToolUpdatePreview(partialResult: unknown): string {
@@ -658,6 +719,107 @@ async function runDelegateAgent(
 	}
 }
 
+async function runReviewerSwarm(
+	ctx: ExtensionContext,
+	task: string,
+	requestedCwd: string | undefined,
+	goals: string[] | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: any) => void) | undefined,
+): Promise<{ results: ReviewerTargetResult[]; failed: boolean; aborted: boolean }> {
+	const loaded = loadWorkflowConfig(ctx.cwd);
+	const swarm = resolveReviewerSwarmConfig(loaded.config);
+	const targets = goals && goals.length ? goals : swarm.targets;
+	const queue = targets.map((target) => target.trim()).filter(Boolean);
+	const results: ReviewerTargetResult[] = queue.map((target) => ({ target, verdict: "UNKNOWN", status: "running" }));
+	let cursor = 0;
+	let aborted = false;
+
+	const emit = () => {
+		const completed = results.filter((item) => item.status !== "running").length;
+		const lines = results.map((item, i) => `${item.status === "running" ? "…" : item.status === "completed" ? "✓" : "✗"} [${i + 1}] ${item.target} (${item.verdict})`);
+		onUpdate?.({
+			content: [{ type: "text", text: `reviewer swarm ${completed}/${results.length}` }],
+			details: {
+				agent: "reviewer",
+				status: completed === results.length ? "completed" : aborted ? "aborted" : "running",
+				progress: lines.slice(-MAX_RENDERED_PROGRESS).map((line) => ({ at: Date.now(), type: "status", text: line })),
+				taskPreview: truncateText(task, MAX_TASK_PREVIEW),
+				cwd: requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd,
+				targets: results,
+			},
+		});
+	};
+
+	const markPendingAborted = () => {
+		for (let i = 0; i < results.length; i++) {
+			if (results[i].status === "running" && !results[i].result) {
+				results[i] = { ...results[i], status: "aborted", verdict: "UNKNOWN" };
+			}
+		}
+	};
+
+	emit();
+	const worker = async () => {
+		while (cursor < queue.length) {
+			if (signal?.aborted) {
+				aborted = true;
+				markPendingAborted();
+				emit();
+				return;
+			}
+			const index = cursor;
+			cursor++;
+			const target = queue[index];
+			emit();
+			const result = await runDelegateAgent(ctx, "reviewer", buildReviewerGoalTask(task, target), requestedCwd, signal, undefined);
+			if (result.aborted || signal?.aborted) aborted = true;
+			const verdict = parseReviewerVerdict(result.finalOutput ?? "");
+			results[index] = {
+				target,
+				verdict,
+				status: normalizeFinalStatus(result),
+				result,
+			};
+			emit();
+			if (aborted) {
+				markPendingAborted();
+				emit();
+				return;
+			}
+		}
+	};
+
+	await Promise.all(Array.from({ length: Math.min(swarm.maxConcurrency, queue.length) }, () => worker()));
+	if (signal?.aborted) aborted = true;
+	if (aborted) markPendingAborted();
+	const failed = results.some((item) => item.status !== "completed" || item.verdict !== "APPROVED");
+	return { results, failed, aborted };
+}
+
+function getDelegateFailureReason(toolName: string, result: any): string | null {
+	if (!result || typeof result !== "object") return null;
+	const details = (result as any).details;
+
+	if (toolName === "delegate_to_reviewer") {
+		if (details?.status === "failed" || details?.status === "aborted") return String(details.status);
+		if (Array.isArray(details?.swarm)) {
+			const failedItem = details.swarm.find(
+				(item: any) => item?.status !== "completed" || item?.verdict === "CHANGES_REQUESTED" || item?.verdict === "UNKNOWN",
+			);
+			if (failedItem) return `swarm:${failedItem.status ?? "failed"}:${failedItem.verdict ?? "UNKNOWN"}`;
+		}
+	}
+
+	if (details && typeof details === "object") {
+		if (typeof details.status === "string" && details.status !== "completed") return `status:${details.status}`;
+		if (typeof details.exitCode === "number" && details.exitCode !== 0) return `exitCode:${details.exitCode}`;
+		if (details.aborted === true) return "aborted";
+	}
+
+	return null;
+}
+
 function formatUsage(usage: UsageStats): string {
 	const parts: string[] = [];
 	if (usage.turns) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
@@ -680,10 +842,14 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 		promptGuidelines: [
 			`Use ${toolName} when Brain needs ${role} in the brain -> coder -> reviewer workflow.`,
 			`Tasks passed to ${toolName} must be self-contained: include goal, relevant files/context, constraints, and expected output.`,
+			...(agent === "reviewer" ? ["Pass explicit goals whenever possible so each reviewer target validates one acceptance criterion."] : []),
 		],
 		parameters: Type.Object({
 			task: Type.String({ description: `Self-contained task for ${agent}` }),
 			cwd: Type.Optional(Type.String({ description: "Working directory for the delegated Pi process; defaults to current cwd" })),
+			...(agent === "reviewer"
+				? { goals: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Optional review goals/acceptance criteria. When reviewer swarm is enabled, one reviewer runs per goal." })) }
+				: {}),
 		}),
 		renderCall(args: any, theme) {
 			const task = truncateText(String(args?.task ?? ""), MAX_TASK_PREVIEW) || "(no task)";
@@ -733,11 +899,69 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const task = String((params as any).task ?? "").trim();
+			const requestedCwd = (params as any).cwd;
 			if (!task) {
-				return { content: [{ type: "text", text: "Missing task." }], isError: true };
+				return {
+					content: [{ type: "text", text: "Missing task." }],
+					details: { agent, status: "failed", task, cwd: requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd },
+					isError: true,
+				};
 			}
 
-			const result = await runDelegateAgent(ctx, agent, task, (params as any).cwd, signal, onUpdate);
+			if (agent === "reviewer") {
+				const goals = Array.isArray((params as any).goals)
+					? (params as any).goals.map((goal: unknown) => String(goal).trim()).filter((goal: string) => goal.length > 0)
+					: undefined;
+				const swarmConfig = resolveReviewerSwarmConfig(loadWorkflowConfig(ctx.cwd).config);
+				if (!swarmConfig.enabled) {
+					const singleTask = goals?.length ? `${task}\n\nReview goals:\n${goals.map((goal: string) => `- ${goal}`).join("\n")}` : task;
+					const result = await runDelegateAgent(ctx, "reviewer", singleTask, requestedCwd, signal, onUpdate);
+					const finalOutput = getFinalAssistantText(result.messages) || result.errorMessage || result.stderr || "(no output)";
+					const status = normalizeFinalStatus(result);
+					const usageText = formatUsage(result.usage);
+					return {
+						content: [{ type: "text", text: `[reviewer] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}` }],
+						details: result,
+						isError: status !== "completed",
+					};
+				}
+
+				const swarm = await runReviewerSwarm(ctx, task, requestedCwd, goals, signal, onUpdate);
+				const lines = swarm.results.map((item, index) => {
+					const detail = item.result?.finalOutput || item.result?.errorMessage || item.result?.stderr || "(no output)";
+					return `[${index + 1}] ${item.target}\n${item.verdict} (${item.status})\n${detail}`;
+				});
+				const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+				for (const item of swarm.results) {
+					if (!item.result) continue;
+					usage.input += item.result.usage.input;
+					usage.output += item.result.usage.output;
+					usage.cacheRead += item.result.usage.cacheRead;
+					usage.cacheWrite += item.result.usage.cacheWrite;
+					usage.cost += item.result.usage.cost;
+					usage.contextTokens = Math.max(usage.contextTokens, item.result.usage.contextTokens);
+					usage.turns += item.result.usage.turns;
+				}
+				const finalOutput = lines.join("\n\n");
+				const status = swarm.aborted ? "aborted" : swarm.failed ? "failed" : "completed";
+				return {
+					content: [{ type: "text", text: `[reviewer] ${status}\n\n${finalOutput}` }],
+					details: {
+						agent: "reviewer",
+						task,
+						cwd: requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd,
+						status,
+						swarm: swarm.results,
+						progress: swarm.results.map((item, index) => ({ at: Date.now(), type: "status", text: `[${index + 1}] ${item.target} ${item.verdict} (${item.status})` })),
+						usage,
+						exitCode: swarm.failed ? 1 : 0,
+						finalOutput,
+					},
+					isError: swarm.failed,
+				};
+			}
+
+			const result = await runDelegateAgent(ctx, agent, task, requestedCwd, signal, onUpdate);
 			const finalOutput = getFinalAssistantText(result.messages) || result.errorMessage || result.stderr || "(no output)";
 			const status = normalizeFinalStatus(result);
 			const failed = status !== "completed";
@@ -803,6 +1027,7 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 		description: "Show effective brain/coder/reviewer workflow presets",
 		handler: async (_args, ctx) => {
 			const loaded = loadWorkflowConfig(ctx.cwd);
+			const reviewerSwarm = resolveReviewerSwarmConfig(loaded.config);
 			const lines = [
 				"Pi workflow: brain -> coder -> reviewer",
 				`global: ${loaded.globalPath}`,
@@ -811,9 +1036,20 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 				formatPreset("brain", getAgentPreset(loaded.config, "brain")),
 				formatPreset("coder", getAgentPreset(loaded.config, "coder")),
 				formatPreset("reviewer", getAgentPreset(loaded.config, "reviewer")),
+				`reviewerSwarm: enabled=${reviewerSwarm.enabled} maxConcurrency=${reviewerSwarm.maxConcurrency}`,
+				`reviewerSwarm targets: ${reviewerSwarm.targets.join(" | ")}`,
 			];
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
+	});
+
+	pi.on("tool_result", async (event) => {
+		const raw = event as any;
+		const toolName = String(raw.toolName ?? "");
+		if (toolName !== "delegate_to_coder" && toolName !== "delegate_to_reviewer") return;
+		const failure = getDelegateFailureReason(toolName, { details: raw.details });
+		if (!failure || raw.isError === true) return;
+		return { isError: true };
 	});
 
 	pi.on("session_start", async (_event, ctx) => {

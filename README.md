@@ -18,7 +18,7 @@ The extensions auto-apply the Brain preset (unless disabled), inject Brain orche
 
 Workflow tools:
 - `delegate_to_coder`
-- `delegate_to_reviewer`
+- `delegate_to_reviewer` (supports optional `goals` for targeted reviewer swarm)
 
 Delegated agents stream bounded live progress back into the parent Pi terminal: current status, recent tool calls, tool completions/errors, assistant text previews, final output, and usage.
 
@@ -27,6 +27,7 @@ Delegated agents stream bounded live progress back into the parent Pi terminal: 
 - **brain**: `openai-codex/gpt-5.5` thinking `xhigh`
 - **coder**: `openai-codex/gpt-5.3-codex` thinking `medium`, tools `read,bash,edit,write,grep,find,ls`, and **Karpathy Guidelines included by default**
 - **reviewer**: `openai-codex/gpt-5.5` thinking `high`, tools `read,bash,grep,find,ls` (read-only)
+- **reviewerSwarm**: enabled by default, runs targeted reviewer subprocesses (parallelized with `maxConcurrency`) across configured targets or explicit `goals`
 
 Child delegates run with:
 - `--mode json --print --no-session`
@@ -41,6 +42,13 @@ Config is deep-merged in this order:
 3. Nearest project `.pi/workflow.json`
 
 See [`examples/workflow.json`](./examples/workflow.json).
+
+Reviewer swarm behavior:
+- If `reviewerSwarm.enabled` is `true` (default), `delegate_to_reviewer` runs one read-only reviewer per goal.
+- Pass `goals` to `delegate_to_reviewer` to review acceptance criteria explicitly.
+- Without `goals`, configured `reviewerSwarm.targets` are used.
+- If any target reviewer fails or returns `CHANGES_REQUESTED`, the delegation result is marked failed.
+- Set `reviewerSwarm.enabled: false` to keep single-reviewer behavior.
 
 To disable Karpathy Guidelines for delegated coder prompts in overrides:
 
@@ -74,7 +82,7 @@ Useful commands:
 /sprint log <message>
 ```
 
-`/workflow` shows effective resolved presets and config sources.
+`/workflow` shows effective resolved presets, reviewer swarm settings, and config sources.
 
 ## Sprint system
 

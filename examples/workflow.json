@@ -1,5 +1,15 @@
 {
   "autoApplyBrain": true,
+  "reviewerSwarm": {
+    "enabled": true,
+    "maxConcurrency": 2,
+    "targets": [
+      "Requirements and acceptance criteria coverage",
+      "Correctness and regression risks",
+      "Tests and validation quality",
+      "Security, performance, and maintainability"
+    ]
+  },
   "agents": {
     "brain": {
       "provider": "openai-codex",
