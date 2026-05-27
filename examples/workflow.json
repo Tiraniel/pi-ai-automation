@@ -1,0 +1,25 @@
+{
+  "autoApplyBrain": true,
+  "agents": {
+    "brain": {
+      "provider": "openai-codex",
+      "model": "gpt-5.5",
+      "thinkingLevel": "xhigh",
+      "instructions": "Optional: override Brain orchestration instructions."
+    },
+    "coder": {
+      "provider": "openai-codex",
+      "model": "gpt-5.3-codex",
+      "thinkingLevel": "medium",
+      "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+      "instructions": "Optional: override Coder instructions."
+    },
+    "reviewer": {
+      "provider": "openai-codex",
+      "model": "gpt-5.5",
+      "thinkingLevel": "high",
+      "tools": ["read", "bash", "grep", "find", "ls"],
+      "instructions": "Optional: override Reviewer instructions."
+    }
+  }
+}

@@ -1,0 +1,552 @@
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import type { Message } from "@earendil-works/pi-ai";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+type AgentName = "brain" | "coder" | "reviewer";
+
+interface AgentPreset {
+	provider?: string;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	tools?: string[];
+	instructions?: string;
+}
+
+interface WorkflowConfig {
+	autoApplyBrain?: boolean;
+	agents?: Record<string, AgentPreset>;
+}
+
+interface LoadedWorkflowConfig {
+	config: WorkflowConfig;
+	globalPath: string;
+	projectPath: string | null;
+	projectSettingsPath: string | null;
+	projectSettings: Record<string, unknown> | undefined;
+}
+
+interface UsageStats {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	contextTokens: number;
+	turns: number;
+}
+
+interface DelegateRunResult {
+	agent: string;
+	task: string;
+	cwd: string;
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	exitCode: number;
+	messages: Message[];
+	stderr: string;
+	usage: UsageStats;
+	stopReason?: string;
+	errorMessage?: string;
+	aborted?: boolean;
+}
+
+const DEFAULT_CONFIG: WorkflowConfig = {
+	autoApplyBrain: true,
+	agents: {
+		brain: {
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			thinkingLevel: "xhigh",
+			instructions: `You are Brain in a three-agent Pi workflow: brain -> coder -> reviewer.
+
+Role:
+- Own task understanding, architecture, planning, decomposition, and final user-facing synthesis.
+- Delegate hands-on implementation to coder with delegate_to_coder.
+- Delegate independent verification to reviewer with delegate_to_reviewer.
+
+Default development cycle:
+1. Clarify the goal and inspect enough context yourself.
+2. Send coder a self-contained implementation task with relevant files, constraints, and expected checks.
+3. Send reviewer a self-contained review task after coder finishes.
+4. If reviewer requests changes, send focused fixes back to coder, then review again.
+5. Finish with a concise summary of changes, tests/checks, and remaining risks.
+
+Use delegation for non-trivial code changes. For tiny read-only or administrative tasks, you may handle them directly.`,
+		},
+		coder: {
+			provider: "openai-codex",
+			model: "gpt-5.3-codex",
+			thinkingLevel: "medium",
+			tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+			instructions: `You are Coder, the hands-on implementation agent in a Pi brain -> coder -> reviewer workflow.
+
+Responsibilities:
+- Make focused, correct code changes in the current working directory.
+- Follow project instructions and existing conventions.
+- Read before editing; prefer surgical edits for existing files.
+- Keep scope tight: do exactly what Brain asked, no unrelated cleanup.
+- Run relevant tests, type checks, linters, or targeted commands when practical.
+
+Return a concise handoff including: files changed, what changed, checks run and results, blockers/risks.`,
+		},
+		reviewer: {
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			thinkingLevel: "high",
+			tools: ["read", "bash", "grep", "find", "ls"],
+			instructions: `You are Reviewer, the independent review agent in a Pi brain -> coder -> reviewer workflow.
+
+Responsibilities:
+- Review the implementation for correctness, regressions, edge cases, security, performance, and maintainability.
+- Treat the workspace as read-only: do not edit or write files.
+- Inspect diffs, relevant files, and test output. Run read-only commands/tests when useful.
+- Be specific and actionable.
+
+Return one of:
+- APPROVED: with brief rationale and any non-blocking notes.
+- CHANGES_REQUESTED: with prioritized issues, file paths/lines when possible, and concrete fixes.`,
+		},
+	},
+};
+
+const MAX_STDERR_BYTES = 64 * 1024;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function deepMerge<T>(base: T, override: unknown): T {
+	if (override === undefined) return base;
+	if (Array.isArray(base) || Array.isArray(override)) return override as T;
+	if (!isPlainObject(base) || !isPlainObject(override)) return override as T;
+
+	const result: Record<string, unknown> = { ...base };
+	for (const [key, value] of Object.entries(override)) {
+		result[key] = key in result ? deepMerge(result[key], value) : value;
+	}
+	return result as T;
+}
+
+function readJsonFile<T = Record<string, unknown>>(filePath: string): T | undefined {
+	try {
+		if (!fs.existsSync(filePath)) return undefined;
+		return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+	} catch (error) {
+		console.error(`[brain-workflow] Failed to read ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+		return undefined;
+	}
+}
+
+function findNearestFile(cwd: string, relativePath: string): string | null {
+	let current = path.resolve(cwd);
+	while (true) {
+		const candidate = path.join(current, relativePath);
+		if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+		const parent = path.dirname(current);
+		if (parent === current) return null;
+		current = parent;
+	}
+}
+
+function loadWorkflowConfig(cwd: string): LoadedWorkflowConfig {
+	const globalPath = path.join(getAgentDir(), "workflow.json");
+	const projectPath = findNearestFile(cwd, path.join(".pi", "workflow.json"));
+	const projectSettingsPath = findNearestFile(cwd, path.join(".pi", "settings.json"));
+
+	const globalConfig = readJsonFile<WorkflowConfig>(globalPath) ?? {};
+	const projectConfig = projectPath ? (readJsonFile<WorkflowConfig>(projectPath) ?? {}) : {};
+	const projectSettings = projectSettingsPath ? readJsonFile<Record<string, unknown>>(projectSettingsPath) : undefined;
+
+	return {
+		config: deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig),
+		globalPath,
+		projectPath,
+		projectSettingsPath,
+		projectSettings,
+	};
+}
+
+function hasCliFlag(flagNames: string[]): boolean {
+	const argv = process.argv.slice(2);
+	return argv.some((arg) => flagNames.some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
+}
+
+function projectSettingHas(projectSettings: Record<string, unknown> | undefined, keys: string[]): boolean {
+	return Boolean(projectSettings && keys.some((key) => Object.prototype.hasOwnProperty.call(projectSettings, key)));
+}
+
+function resolveModelArg(preset: AgentPreset): string | undefined {
+	if (!preset.model) return undefined;
+	if (preset.model.includes("/")) return preset.model;
+	return preset.provider ? `${preset.provider}/${preset.model}` : preset.model;
+}
+
+function resolveModelLabel(preset: AgentPreset): string {
+	const model = resolveModelArg(preset) ?? "default";
+	return preset.thinkingLevel ? `${model}:${preset.thinkingLevel}` : model;
+}
+
+function getAgentPreset(config: WorkflowConfig, agent: AgentName): AgentPreset {
+	return config.agents?.[agent] ?? DEFAULT_CONFIG.agents![agent];
+}
+
+function getFinalAssistantText(messages: Message[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i] as any;
+		if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+		const text = msg.content
+			.filter((part: any) => part?.type === "text" && typeof part.text === "string")
+			.map((part: any) => part.text)
+			.join("\n");
+		if (text.trim()) return text.trim();
+	}
+	return "";
+}
+
+function isFailed(result: DelegateRunResult): boolean {
+	return result.aborted || result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+function appendCapped(current: string, next: string, maxBytes: number): string {
+	const combined = current + next;
+	if (Buffer.byteLength(combined, "utf8") <= maxBytes) return combined;
+	let trimmed = combined.slice(-maxBytes);
+	while (Buffer.byteLength(trimmed, "utf8") > maxBytes) trimmed = trimmed.slice(1);
+	return trimmed;
+}
+
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+		return { command: process.execPath, args: [currentScript, ...args] };
+	}
+
+	const execName = path.basename(process.execPath).toLowerCase();
+	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+	if (!isGenericRuntime) return { command: process.execPath, args };
+
+	return { command: "pi", args };
+}
+
+async function writeSystemPromptFile(agent: string, text: string): Promise<{ dir: string; filePath: string }> {
+	const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-workflow-"));
+	const safeAgent = agent.replace(/[^\w.-]+/g, "_");
+	const filePath = path.join(dir, `${safeAgent}-system.md`);
+	await fs.promises.writeFile(filePath, text, { encoding: "utf-8", mode: 0o600 });
+	return { dir, filePath };
+}
+
+async function removeTempPrompt(dir: string | null, filePath: string | null): Promise<void> {
+	if (filePath) {
+		try {
+			await fs.promises.unlink(filePath);
+		} catch {
+			// ignore
+		}
+	}
+	if (dir) {
+		try {
+			await fs.promises.rmdir(dir);
+		} catch {
+			// ignore
+		}
+	}
+}
+
+function buildAgentSystemPrompt(agent: AgentName, preset: AgentPreset): string {
+	const configured = preset.instructions?.trim() ?? "";
+	const footer = `You are running as ${agent} in the Pi brain -> coder -> reviewer workflow.
+Work only in the current working directory. Follow all project context files loaded by Pi.
+Return concise handoff output for Brain.`;
+	return configured ? `${configured}\n\n${footer}` : footer;
+}
+
+async function runDelegateAgent(
+	ctx: ExtensionContext,
+	agent: AgentName,
+	task: string,
+	requestedCwd: string | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: any) => void) | undefined,
+): Promise<DelegateRunResult> {
+	const loaded = loadWorkflowConfig(ctx.cwd);
+	const preset = getAgentPreset(loaded.config, agent);
+	const cwd = requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd;
+	const modelArg = resolveModelArg(preset);
+	const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+	const messages: Message[] = [];
+
+	let tmpDir: string | null = null;
+	let tmpPromptPath: string | null = null;
+	let stderr = "";
+	let stopReason: string | undefined;
+	let errorMessage: string | undefined;
+	let aborted = false;
+
+	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	if (modelArg) args.push("--model", modelArg);
+	if (preset.thinkingLevel) args.push("--thinking", preset.thinkingLevel);
+	if (preset.tools) {
+		if (preset.tools.length > 0) args.push("--tools", preset.tools.join(","));
+		else args.push("--no-tools");
+	}
+
+	const systemPrompt = buildAgentSystemPrompt(agent, preset);
+	if (systemPrompt.trim()) {
+		const tmp = await writeSystemPromptFile(agent, systemPrompt);
+		tmpDir = tmp.dir;
+		tmpPromptPath = tmp.filePath;
+		args.push("--append-system-prompt", tmpPromptPath);
+	}
+
+	args.push(`Task from Brain to ${agent}:\n\n${task}`);
+
+	const emitUpdate = () => {
+		const output = getFinalAssistantText(messages);
+		onUpdate?.({
+			content: [{ type: "text", text: output || `${agent} running...` }],
+			details: { agent, task, cwd, model: resolveModelLabel(preset), usage, messages },
+		});
+	};
+
+	try {
+		const exitCode = await new Promise<number>((resolve) => {
+			const invocation = getPiInvocation(args);
+			const proc = spawn(invocation.command, invocation.args, {
+				cwd,
+				shell: false,
+				stdio: ["ignore", "pipe", "pipe"],
+				env: {
+					...process.env,
+					PI_WORKFLOW_CHILD: "1",
+					PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK ?? "1",
+				},
+			});
+
+			let stdoutBuffer = "";
+			let killTimer: NodeJS.Timeout | undefined;
+
+			const processLine = (line: string) => {
+				if (!line.trim()) return;
+				let event: any;
+				try {
+					event = JSON.parse(line);
+				} catch {
+					return;
+				}
+
+				if (event.type === "message_end" && event.message) {
+					const msg = event.message as Message;
+					messages.push(msg);
+
+					const asAny = msg as any;
+					if (asAny.role === "assistant") {
+						usage.turns++;
+						if (asAny.usage) {
+							usage.input += asAny.usage.input || 0;
+							usage.output += asAny.usage.output || 0;
+							usage.cacheRead += asAny.usage.cacheRead || 0;
+							usage.cacheWrite += asAny.usage.cacheWrite || 0;
+							usage.cost += asAny.usage.cost?.total || 0;
+							usage.contextTokens = asAny.usage.totalTokens || usage.contextTokens;
+						}
+						if (asAny.stopReason) stopReason = asAny.stopReason;
+						if (asAny.errorMessage) errorMessage = asAny.errorMessage;
+					}
+					emitUpdate();
+				}
+
+				if (event.type === "tool_result_end" && event.message) {
+					messages.push(event.message as Message);
+					emitUpdate();
+				}
+			};
+
+			proc.stdout.on("data", (chunk) => {
+				stdoutBuffer += chunk.toString();
+				const lines = stdoutBuffer.split("\n");
+				stdoutBuffer = lines.pop() ?? "";
+				for (const line of lines) processLine(line);
+			});
+
+			proc.stderr.on("data", (chunk) => {
+				stderr = appendCapped(stderr, chunk.toString(), MAX_STDERR_BYTES);
+			});
+
+			proc.on("close", (code) => {
+				if (killTimer) clearTimeout(killTimer);
+				if (stdoutBuffer.trim()) processLine(stdoutBuffer);
+				resolve(code ?? 0);
+			});
+
+			proc.on("error", (error) => {
+				stderr = appendCapped(stderr, String(error), MAX_STDERR_BYTES);
+				resolve(1);
+			});
+
+			if (signal) {
+				const killProc = () => {
+					aborted = true;
+					proc.kill("SIGTERM");
+					killTimer = setTimeout(() => proc.kill("SIGKILL"), 5000);
+				};
+				if (signal.aborted) killProc();
+				else signal.addEventListener("abort", killProc, { once: true });
+			}
+		});
+
+		return {
+			agent,
+			task,
+			cwd,
+			model: resolveModelLabel(preset),
+			thinkingLevel: preset.thinkingLevel,
+			exitCode,
+			messages,
+			stderr,
+			usage,
+			stopReason,
+			errorMessage,
+			aborted,
+		};
+	} finally {
+		await removeTempPrompt(tmpDir, tmpPromptPath);
+	}
+}
+
+function formatUsage(usage: UsageStats): string {
+	const parts: string[] = [];
+	if (usage.turns) parts.push(`${usage.turns} turn${usage.turns === 1 ? "" : "s"}`);
+	if (usage.input) parts.push(`in:${usage.input}`);
+	if (usage.output) parts.push(`out:${usage.output}`);
+	if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+	return parts.join(", ");
+}
+
+function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
+	const toolName = agent === "coder" ? "delegate_to_coder" : "delegate_to_reviewer";
+	const label = agent === "coder" ? "Delegate to Coder" : "Delegate to Reviewer";
+	const role = agent === "coder" ? "hands-on implementation" : "independent review";
+
+	pi.registerTool({
+		name: toolName,
+		label,
+		description: `Delegate a self-contained ${role} task to the ${agent} agent using its configured workflow preset. Project .pi/workflow.json overrides global presets.`,
+		promptSnippet: `Delegate ${role} work to the ${agent} subagent`,
+		promptGuidelines: [
+			`Use ${toolName} when Brain needs ${role} in the brain -> coder -> reviewer workflow.`,
+			`Tasks passed to ${toolName} must be self-contained: include goal, relevant files/context, constraints, and expected output.`,
+		],
+		parameters: Type.Object({
+			task: Type.String({ description: `Self-contained task for ${agent}` }),
+			cwd: Type.Optional(Type.String({ description: "Working directory for the delegated Pi process; defaults to current cwd" })),
+		}),
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const task = String((params as any).task ?? "").trim();
+			if (!task) {
+				return { content: [{ type: "text", text: "Missing task." }], isError: true };
+			}
+
+			const result = await runDelegateAgent(ctx, agent, task, (params as any).cwd, signal, onUpdate);
+			const finalOutput = getFinalAssistantText(result.messages) || result.errorMessage || result.stderr || "(no output)";
+			const failed = isFailed(result);
+			const usageText = formatUsage(result.usage);
+			const status = failed ? "failed" : "completed";
+
+			return {
+				content: [
+					{
+						type: "text",
+						text: `[${agent}] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}`,
+					},
+				],
+				details: result,
+				isError: failed,
+			};
+		},
+	});
+}
+
+async function applyBrainPreset(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+	if (process.env.PI_WORKFLOW_CHILD === "1") return;
+	const loaded = loadWorkflowConfig(ctx.cwd);
+	if (loaded.config.autoApplyBrain === false) return;
+
+	const brain = getAgentPreset(loaded.config, "brain");
+	const projectOverridesWorkflow = Boolean(loaded.projectPath);
+	const explicitModel = hasCliFlag(["--model", "--provider"]);
+	const explicitThinking = hasCliFlag(["--thinking"]);
+	const projectSettingsHasModel = projectSettingHas(loaded.projectSettings, ["defaultProvider", "defaultModel"]);
+	const projectSettingsHasThinking = projectSettingHas(loaded.projectSettings, ["defaultThinkingLevel"]);
+
+	if (!explicitModel && (projectOverridesWorkflow || !projectSettingsHasModel) && brain.provider && brain.model) {
+		const model = ctx.modelRegistry.find(brain.provider, brain.model);
+		if (model) {
+			const ok = await pi.setModel(model);
+			if (!ok) ctx.ui.notify(`Brain workflow: no auth for ${brain.provider}/${brain.model}`, "warning");
+		} else {
+			ctx.ui.notify(`Brain workflow: model not found: ${brain.provider}/${brain.model}`, "warning");
+		}
+	}
+
+	if (!explicitThinking && (projectOverridesWorkflow || !projectSettingsHasThinking) && brain.thinkingLevel) {
+		pi.setThinkingLevel(brain.thinkingLevel);
+	}
+
+	ctx.ui.setStatus("workflow", ctx.ui.theme.fg("accent", "brain→coder→reviewer"));
+}
+
+function formatPreset(agent: AgentName, preset: AgentPreset): string {
+	return `${agent}: ${resolveModelLabel(preset)}${preset.tools ? ` tools=${preset.tools.join(",")}` : ""}`;
+}
+
+export default function brainWorkflow(pi: ExtensionAPI) {
+	pi.registerFlag("workflow-agent", {
+		description: "Workflow agent for this process: brain or none",
+		type: "string",
+	});
+
+	makeDelegateTool(pi, "coder");
+	makeDelegateTool(pi, "reviewer");
+
+	pi.registerCommand("workflow", {
+		description: "Show effective brain/coder/reviewer workflow presets",
+		handler: async (_args, ctx) => {
+			const loaded = loadWorkflowConfig(ctx.cwd);
+			const lines = [
+				"Pi workflow: brain -> coder -> reviewer",
+				`global: ${loaded.globalPath}`,
+				`project override: ${loaded.projectPath ?? "(none)"}`,
+				"",
+				formatPreset("brain", getAgentPreset(loaded.config, "brain")),
+				formatPreset("coder", getAgentPreset(loaded.config, "coder")),
+				formatPreset("reviewer", getAgentPreset(loaded.config, "reviewer")),
+			];
+			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (pi.getFlag("workflow-agent") === "none") return;
+		await applyBrainPreset(pi, ctx);
+	});
+
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (process.env.PI_WORKFLOW_CHILD === "1") return;
+		if (pi.getFlag("workflow-agent") === "none") return;
+
+		const loaded = loadWorkflowConfig(ctx.cwd);
+		const brain = getAgentPreset(loaded.config, "brain");
+		if (!brain.instructions?.trim()) return;
+
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n${brain.instructions.trim()}`,
+		};
+	});
+}
