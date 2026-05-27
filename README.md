@@ -1,6 +1,6 @@
 # pi-ai-automation
 
-Sharable Pi package for a `brain -> coder -> reviewer` workflow.
+Sharable Pi package for a `brain -> coder -> reviewer` workflow with an MVP global sprint substrate.
 
 ## Install
 
@@ -14,7 +14,9 @@ Then run Pi normally in a repo:
 pi
 ```
 
-The extension auto-applies the Brain preset (unless disabled), injects Brain orchestration instructions, and adds tools:
+The extensions auto-apply the Brain preset (unless disabled), inject Brain orchestration instructions, add delegate tools, and add a sprint system.
+
+Workflow tools:
 - `delegate_to_coder`
 - `delegate_to_reviewer`
 
@@ -58,13 +60,57 @@ To disable Karpathy Guidelines for delegated coder prompts in overrides:
 pi --workflow-agent none
 ```
 
-Useful command:
+Useful commands:
 
 ```bash
 /workflow
+/sprint init [--private] [--gitignore]
+/sprint new <name>
+/sprint status
+/sprint task add <title>
+/sprint task active <TASK-ID>
+/sprint task done <TASK-ID>
+/sprint epic add <title>
+/sprint log <message>
 ```
 
-Shows effective resolved presets and config sources.
+`/workflow` shows effective resolved presets and config sources.
+
+## Sprint system
+
+- Uses project-local `.sprints/` as AI navigation/execution context.
+- Default: `.sprints/` is committed (`visibility: "committed"`).
+- For sensitive repos: `/sprint init --private` keeps `.sprints/` local via `.git/info/exclude`.
+- Use `/sprint init --private --gitignore` to write to `.gitignore` instead.
+- Linear is the default future projection target (placeholder config/files only; no API sync yet).
+
+Default `.sprints/config.json`:
+
+```json
+{
+  "version": 1,
+  "visibility": "committed",
+  "autoCreate": "ask",
+  "defaultTracker": "linear",
+  "linear": { "enabled": false, "teamKey": null, "projectId": null }
+}
+```
+
+Auto-bootstrap behavior (non-child sessions):
+- If no active sprint, the extension can auto-create based on `~/.pi/agent/sprints.json` (`autoCreate`: `always|ask|never`, default `ask`).
+- It uses a simple non-trivial-work heuristic and skips `/sprint` command prompts.
+- Child delegated sessions still get active sprint pointer injection but do not auto-bootstrap.
+
+AI-callable sprint tools:
+- `sprint_read_context`
+- `sprint_create`
+- `sprint_create_task`
+- `sprint_create_epic`
+- `sprint_set_active`
+- `sprint_update_task`
+- `sprint_log_progress`
+
+See [`examples/sprints-config.json`](./examples/sprints-config.json).
 
 ## Update flow
 
