@@ -21,6 +21,16 @@ type SprintCurrent = {
 	updatedAt: string;
 };
 
+type SessionBinding = {
+	sprintPath: string;
+	taskPath: string;
+	taskId: string;
+	title: string;
+	boundAt: string;
+};
+
+const SPRINT_BINDING_CUSTOM_TYPE = "sprintBinding";
+
 const SPRINTS_DIR = ".sprints";
 const DECLINED_CWDS = new Set<string>();
 
@@ -249,11 +259,91 @@ function nextTaskId(sprintPath: string): string {
 	if (!fs.existsSync(tasksDir)) return "TASK-001";
 	const ids = fs
 		.readdirSync(tasksDir)
-		.map((f) => f.match(/^TASK-(\d+)\./)?.[1])
+		.map((f) => f.match(/^TASK-(\d+)-/)?.[1])
 		.filter(Boolean)
 		.map((n) => Number(n));
 	const n = ids.length ? Math.max(...ids) + 1 : 1;
 	return `TASK-${String(n).padStart(3, "0")}`;
+}
+
+function readSessionBinding(sessionManager: any): SessionBinding | null {
+	try {
+		if (!sessionManager) return null;
+		// Prefer entries on the current branch (getBranch) over all entries
+		// (getEntries) so a sprintBinding custom entry from an abandoned branch
+		// cannot override the current branch's binding.
+		const entries: any[] = typeof sessionManager.getBranch === "function"
+			? (sessionManager.getBranch.call(sessionManager) as any[])
+			: typeof sessionManager.getEntries === "function"
+				? (sessionManager.getEntries.call(sessionManager) as any[])
+				: [];
+		if (!entries.length) return null;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i];
+			if (e && e.type === "custom" && e.customType === SPRINT_BINDING_CUSTOM_TYPE && e.data) {
+				const data = e.data as SessionBinding;
+				if (data && typeof data.sprintPath === "string" && typeof data.taskPath === "string" && typeof data.taskId === "string") {
+					return data;
+				}
+			}
+		}
+	} catch {
+		// ignore
+	}
+	return null;
+}
+
+function resolveSprintAbs(cwd: string, sessionManager?: any): string | null {
+	const binding = sessionManager ? readSessionBinding(sessionManager) : null;
+	if (binding?.sprintPath) {
+		try {
+			return normalizeActiveSprintPath(cwd, binding.sprintPath, true).absolutePath;
+		} catch {
+			// fall through to global pointer
+		}
+	}
+	return activeSprintAbs(cwd);
+}
+
+function findTaskFileInSprint(sprintAbs: string, taskId: string): { file: string; frontmatter: Record<string, unknown> } | null {
+	const tasksDir = path.join(sprintAbs, "tasks");
+	if (!fs.existsSync(tasksDir)) return null;
+	const match = fs.readdirSync(tasksDir).find((f) => f.startsWith(`${taskId}-`));
+	if (!match) return null;
+	const file = path.join(tasksDir, match);
+	const parsed = parseTaskFile(file);
+	return { file, frontmatter: parsed.frontmatter };
+}
+
+function sessionBindingPromptText(binding: SessionBinding): string {
+	return [
+		"Sprint task session bound.",
+		`Bound task: ${binding.taskId} - ${binding.title}`,
+		`Sprint path: ${binding.sprintPath}`,
+		`Task path: ${binding.taskPath}`,
+		"",
+		"This Pi session is dedicated to a single sprint task. Do NOT switch to a different task or sprint in this session, even if .sprints/current.json is later modified by other sessions or commands.",
+		"Work this task using the brain -> coder -> reviewer workflow: delegate implementation to coder and verification to reviewer.",
+		"Keep the task file and PROGRESS.md updated with sprint_update_task and sprint_log_progress as you work.",
+	].join("\n");
+}
+
+function buildTaskSessionKickoff(binding: SessionBinding, autoRun: boolean): string {
+	if (!autoRun) return "";
+	return [
+		`This Pi session is bound to task ${binding.taskId}: ${binding.title}.`,
+		`Sprint path: ${binding.sprintPath}`,
+		`Task path: ${binding.taskPath}`,
+		"",
+		"Read the sprint and task context with sprint_read_context, then implement this task using the brain -> coder -> reviewer workflow:",
+		"1. Plan and inspect enough context yourself.",
+		"2. Delegate implementation to coder with delegate_to_coder. Give coder a self-contained task with relevant files, constraints, and expected checks.",
+		"3. Delegate independent verification to reviewer with delegate_to_reviewer. Use goals mapped to the task's acceptance criteria.",
+		"4. If reviewer requests changes, send focused fixes back to coder, then re-review.",
+		"5. When the task is complete, mark it done with sprint_update_task and append a final progress note with sprint_log_progress.",
+		"",
+		"Do NOT switch to a different task or sprint in this session.",
+	].join("\n");
 }
 
 function nextEpicId(cwd: string): string {
@@ -321,19 +411,32 @@ function setActiveTask(cwd: string, taskId: string) {
 	return full;
 }
 
-function appendProgress(cwd: string, message: string) {
-	const sprintPath = activeSprintAbs(cwd);
+function appendProgress(cwd: string, message: string, sessionManager?: any) {
+	const sprintPath = resolveSprintAbs(cwd, sessionManager);
 	if (!sprintPath) throw new Error("No active sprint.");
 	appendFile(path.join(sprintPath, "PROGRESS.md"), `- ${nowIso()} ${message}\n`);
 }
 
-function updateTaskStatus(cwd: string, taskId: string, status: string, note?: string) {
-	const sprintPath = activeSprintAbs(cwd);
+function updateTaskStatus(cwd: string, taskId: string, status: string, note?: string, sessionManager?: any, boundTaskPath?: string) {
+	const sprintPath = resolveSprintAbs(cwd, sessionManager);
 	if (!sprintPath) throw new Error("No active sprint.");
-	const tasks = fs.readdirSync(path.join(sprintPath, "tasks"));
-	const match = tasks.find((f) => f.startsWith(`${taskId}-`));
-	if (!match) throw new Error(`Task not found: ${taskId}`);
-	const filePath = path.join(sprintPath, "tasks", match);
+	let filePath: string;
+	if (boundTaskPath) {
+		filePath = path.resolve(cwd, boundTaskPath);
+		if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+			throw new Error(`Bound task file not found: ${boundTaskPath}`);
+		}
+		const tasksDir = path.join(sprintPath, "tasks");
+		const rel = path.relative(tasksDir, filePath);
+		if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+			throw new Error(`Bound task path is not under the active sprint tasks directory: ${boundTaskPath}`);
+		}
+	} else {
+		const tasks = fs.readdirSync(path.join(sprintPath, "tasks"));
+		const match = tasks.find((f) => f.startsWith(`${taskId}-`));
+		if (!match) throw new Error(`Task not found: ${taskId}`);
+		filePath = path.join(sprintPath, "tasks", match);
+	}
 	const parsed = parseTaskFile(filePath);
 	parsed.frontmatter.status = status;
 	parsed.frontmatter.updatedAt = nowIso();
@@ -341,7 +444,7 @@ function updateTaskStatus(cwd: string, taskId: string, status: string, note?: st
 	let body = parsed.body;
 	if (note) body = `${body.trimEnd()}\n- ${nowIso()} ${note}\n`;
 	writeTaskFile(filePath, parsed.frontmatter, body);
-	appendProgress(cwd, `task ${taskId} -> ${status}${note ? ` (${note})` : ""}`);
+	appendProgress(cwd, `task ${taskId} -> ${status}${note ? ` (${note})` : ""}`, sessionManager);
 	return filePath;
 }
 
@@ -448,6 +551,70 @@ export default function sprintSystem(pi: ExtensionAPI) {
 					ctx.ui.notify(`Done: ${id}`, "info");
 					return;
 				}
+				if (sub === "task" && args[1] === "start") {
+					const autoRun = args.includes("--auto-run");
+					const positional = args.slice(2).filter((a) => !a.startsWith("--"));
+					let taskId = positional[0];
+					if (!taskId) {
+						const current = loadCurrent(ctx.cwd);
+						if (current?.activeTaskPath) {
+							const base = path.basename(current.activeTaskPath);
+							const m = base.match(/^(TASK-\d+)-/);
+							if (m) taskId = m[1];
+						}
+					}
+					if (!taskId) throw new Error("Usage: /sprint task start <TASK-ID> [--auto-run]");
+
+					const sprintAbs = activeSprintAbs(ctx.cwd);
+					if (!sprintAbs) throw new Error("No active sprint.");
+					const taskInfo = findTaskFileInSprint(sprintAbs, taskId);
+					if (!taskInfo) throw new Error(`Task not found: ${taskId}`);
+
+					const cwd = ctx.cwd;
+					const sprintRel = path.relative(cwd, sprintAbs);
+					const taskRel = path.relative(cwd, taskInfo.file);
+					const title = String(taskInfo.frontmatter.title ?? taskId);
+					const binding: SessionBinding = { sprintPath: sprintRel, taskPath: taskRel, taskId, title, boundAt: nowIso() };
+					const sessionName = `Sprint: ${taskId} ${title}`.slice(0, 80);
+					const kickoff = buildTaskSessionKickoff(binding, autoRun);
+					const parentSession = (ctx.sessionManager && typeof ctx.sessionManager.getSessionFile === "function")
+						? ctx.sessionManager.getSessionFile()
+						: undefined;
+					const newSession = (ctx as any).newSession;
+					if (typeof newSession !== "function") {
+						throw new Error("ctx.newSession is not available in this context.");
+					}
+
+					const result = await newSession.call(ctx, {
+						parentSession,
+						setup: async (sm: any) => {
+							sm.appendCustomEntry(SPRINT_BINDING_CUSTOM_TYPE, binding);
+							sm.appendSessionInfo(sessionName);
+							sm.appendCustomMessageEntry(
+								SPRINT_BINDING_CUSTOM_TYPE,
+								`Sprint task session bound to ${taskId}: ${title}\nSprint: ${sprintRel}\nTask: ${taskRel}`,
+								true,
+								binding,
+							);
+							updateTaskStatus(cwd, taskId, "in_progress", "session started");
+							const current = loadCurrent(cwd) ?? { activeSprintPath: null, activeTaskPath: null, updatedAt: nowIso() } satisfies SprintCurrent;
+							current.activeSprintPath = sprintRel;
+							current.activeTaskPath = taskRel;
+							current.updatedAt = nowIso();
+							saveCurrent(cwd, current);
+							appendProgress(cwd, `task session started ${taskId}${autoRun ? " (auto-run)" : ""}`);
+						},
+						withSession: async (newCtx: any) => {
+							if (autoRun && kickoff) await newCtx.sendUserMessage(kickoff);
+							else newCtx.ui.notify(`Sprint task session started: ${taskId} ${title}`, "info");
+						},
+					});
+
+					if (result?.cancelled) {
+						ctx.ui.notify("Sprint task session creation cancelled", "warning");
+					}
+					return;
+				}
 				if (sub === "epic" && args[1] === "add") {
 					const title = args.slice(2).join(" ").trim();
 					if (!title) throw new Error("Usage: /sprint epic add <title>");
@@ -463,7 +630,7 @@ export default function sprintSystem(pi: ExtensionAPI) {
 					return;
 				}
 				ctx.ui.notify(
-					"Usage: /sprint init [--private] [--gitignore] | new <name> | status | task add <title> | task active <TASK-ID> | task done <TASK-ID> | epic add <title> | log <message>",
+					"Usage: /sprint init [--private] [--gitignore] | new <name> | status | task add <title> | task active <TASK-ID> | task start <TASK-ID> [--auto-run] | task done <TASK-ID> | epic add <title> | log <message>",
 					"info",
 				);
 			} catch (error) {
@@ -475,7 +642,7 @@ export default function sprintSystem(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "sprint_read_context",
 		label: "Sprint: Read Context",
-		description: "Read active sprint config/current/task pointers with brief snippets.",
+		description: "Read active sprint config/current/task pointers with brief snippets. If this session is bound to a sprint task, the binding is reported as the effective context.",
 		promptSnippet: "Read sprint context before planning or coding.",
 		promptGuidelines: ["Use sprint_read_context first when sprint pointers exist or sprint state is unclear."],
 		parameters: Type.Object({}),
@@ -484,12 +651,25 @@ export default function sprintSystem(pi: ExtensionAPI) {
 			const paths = rootPaths(cwd);
 			const config = readJson<SprintConfig>(paths.configPath);
 			const current = readJson<SprintCurrent>(paths.currentPath);
+			const binding = readSessionBinding((ctx as any).sessionManager);
 			let sprintPath: string | null = null;
 			let taskPath: string | null = null;
-			if (current?.activeSprintPath) {
+			let source: "sessionBinding" | "current.json" | "none" = "none";
+			if (binding?.sprintPath && binding?.taskPath) {
+				try {
+					sprintPath = normalizeActiveSprintPath(cwd, binding.sprintPath, true).absolutePath;
+					taskPath = normalizeActiveTaskPath(cwd, binding.taskPath, sprintPath).absolutePath;
+					source = "sessionBinding";
+				} catch {
+					sprintPath = null;
+					taskPath = null;
+				}
+			}
+			if (!sprintPath && current?.activeSprintPath) {
 				try {
 					sprintPath = normalizeActiveSprintPath(cwd, current.activeSprintPath).absolutePath;
 					if (current.activeTaskPath) taskPath = normalizeActiveTaskPath(cwd, current.activeTaskPath, sprintPath).absolutePath;
+					source = "current.json";
 				} catch {
 					sprintPath = null;
 					taskPath = null;
@@ -498,7 +678,19 @@ export default function sprintSystem(pi: ExtensionAPI) {
 			const sprintReadme = sprintPath && fs.existsSync(path.join(sprintPath, "README.md")) ? fs.readFileSync(path.join(sprintPath, "README.md"), "utf8").slice(0, 400) : "";
 			const taskHead = taskPath && fs.existsSync(taskPath) ? fs.readFileSync(taskPath, "utf8").slice(0, 400) : "";
 			return {
-				content: [{ type: "text", text: JSON.stringify({ config, current, sprintPath: sprintPath ? path.relative(cwd, sprintPath) : null, taskPath: taskPath ? path.relative(cwd, taskPath) : null, sprintReadme, taskHead }) }],
+				content: [{
+					type: "text",
+					text: JSON.stringify({
+						config,
+						current,
+						sessionBinding: binding,
+						effectiveSource: source,
+						sprintPath: sprintPath ? path.relative(cwd, sprintPath) : null,
+						taskPath: taskPath ? path.relative(cwd, taskPath) : null,
+						sprintReadme,
+						taskHead,
+					}),
+				}],
 			};
 		},
 	});
@@ -605,16 +797,30 @@ export default function sprintSystem(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "sprint_update_task",
 		label: "Sprint: Update Task",
-		description: "Update task status and append task notes/evidence.",
+		description: "Update task status and append task notes/evidence. Operates on the session-bound sprint/task when this session is pinned to a task, otherwise on the global active sprint. When bound, refuses to update a taskId that does not match the bound task.",
 		promptSnippet: "Update task status during implementation progress.",
-		promptGuidelines: ["Use sprint_update_task to move task state and attach concise evidence notes."],
+		promptGuidelines: [
+			"Use sprint_update_task to move task state and attach concise evidence notes.",
+			"This tool will refuse to update a taskId that does not match the session-bound task. Sessions pinned to a single task cannot accidentally write to a different task.",
+		],
 		parameters: Type.Object({ taskId: Type.String(), status: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as any;
 			const taskId = String(p.taskId || "").trim();
 			if (!taskId) return { isError: true, content: [{ type: "text", text: "Missing taskId" }] };
 			const status = p.status ? String(p.status) : "in_progress";
-			const file = updateTaskStatus(ctx.cwd, taskId, status, p.note ? String(p.note) : undefined);
+			const sessionManager = (ctx as any).sessionManager;
+			const binding = readSessionBinding(sessionManager);
+			if (binding && binding.taskId !== taskId) {
+				return {
+					isError: true,
+					content: [{
+						type: "text",
+						text: `Session is bound to ${binding.taskId}; refusing to update ${taskId}. This session is dedicated to a single sprint task.`,
+					}],
+				};
+			}
+			const file = updateTaskStatus(ctx.cwd, taskId, status, p.note ? String(p.note) : undefined, sessionManager, binding?.taskPath);
 			return { content: [{ type: "text", text: `Updated ${path.basename(file)}` }] };
 		},
 	});
@@ -622,19 +828,86 @@ export default function sprintSystem(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "sprint_log_progress",
 		label: "Sprint: Log Progress",
-		description: "Append message to active sprint PROGRESS.md.",
+		description: "Append message to active sprint PROGRESS.md. Uses the session-bound sprint when this session is pinned to a task.",
 		promptSnippet: "Log notable sprint progress milestones.",
 		promptGuidelines: ["Use sprint_log_progress after meaningful changes, checks, or decisions."],
 		parameters: Type.Object({ message: Type.String() }),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const msg = String((params as any).message || "").trim();
 			if (!msg) return { isError: true, content: [{ type: "text", text: "Missing message" }] };
-			appendProgress(ctx.cwd, msg);
+			appendProgress(ctx.cwd, msg, (ctx as any).sessionManager);
 			return { content: [{ type: "text", text: "Logged" }] };
 		},
 	});
 
+	pi.registerTool({
+		name: "sprint_start_task_session",
+		label: "Sprint: Prepare Task Session Command",
+		description: "Prepare the /sprint task start <TASK-ID> --auto-run command for the user to run. This tool does NOT switch sessions: only the /sprint task start command (invoked by the user) performs the actual session switch. Use as a fallback when the agent cannot issue slash commands directly.",
+		promptSnippet: "Prepare a /sprint task start command for the user to run.",
+		promptGuidelines: [
+			"Prefer running the /sprint task start <TASK-ID> --auto-run slash command directly when the agent can issue slash commands. The command performs the actual session switch.",
+			"Use sprint_start_task_session only as a fallback to present the command to the user (via the editor and a notification) when no slash command can be issued. It does not switch sessions itself.",
+			"Do not call this when the current session is already pinned to the same task.",
+			"After calling, stop and wait: the user must run the command to actually create the task session.",
+		],
+		parameters: Type.Object({ taskId: Type.String({ description: "TASK-ID (e.g. TASK-001) to bind the new session to" }) }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const taskId = String((params as any).taskId || "").trim();
+			if (!taskId) return { isError: true, content: [{ type: "text", text: "Missing taskId" }] };
+			const command = `/sprint task start ${taskId} --auto-run`;
+			const ui = (ctx as any).ui;
+			let placedInEditor = false;
+			if (ctx.hasUI && ui && typeof ui.setEditorText === "function") {
+				try {
+					ui.setEditorText(command);
+					placedInEditor = true;
+				} catch {
+					// ignore; fall back to notification only
+				}
+			}
+			if (ui && typeof ui.notify === "function") {
+				const where = placedInEditor ? "Editor now contains" : "Run";
+				ui.notify(
+					`${where} ${command} to switch to a dedicated session for ${taskId}. sprint_start_task_session does not switch sessions itself; the /sprint task start command does.`,
+					"info",
+				);
+			}
+			return {
+				content: [{
+					type: "text",
+					text: `Prepared command: ${command}. The user must run it to switch sessions. This tool did not switch sessions.`,
+				}],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_get_session_binding",
+		label: "Sprint: Get Session Binding",
+		description: "Read the session-pinned sprint/task binding for the current Pi session, if any. Returns null binding when this session is not bound to a specific task.",
+		promptSnippet: "Check whether the current session is pinned to a sprint task.",
+		promptGuidelines: [
+			"Use sprint_get_session_binding to confirm which task this session is dedicated to before doing task-scoped work.",
+		],
+		parameters: Type.Object({}),
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const binding = readSessionBinding((ctx as any).sessionManager);
+			return { content: [{ type: "text", text: JSON.stringify({ binding }) }] };
+		},
+	});
+
 	pi.on("before_agent_start", async (event, ctx) => {
+		const binding = readSessionBinding((ctx as any).sessionManager);
+		if (binding) {
+			try {
+				normalizeActiveSprintPath(ctx.cwd, binding.sprintPath, true);
+				return { systemPrompt: `${event.systemPrompt}\n\n${sessionBindingPromptText(binding)}` };
+			} catch {
+				// fall through to global pointer handling
+			}
+		}
+
 		const current = loadCurrent(ctx.cwd);
 		if (current?.activeSprintPath) {
 			try {

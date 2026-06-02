@@ -77,10 +77,20 @@ Useful commands:
 /sprint status
 /sprint task add <title>
 /sprint task active <TASK-ID>
+/sprint task start <TASK-ID> [--auto-run]
 /sprint task done <TASK-ID>
 /sprint epic add <title>
 /sprint log <message>
 ```
+
+`/sprint task start <TASK-ID> [--auto-run]` creates a new dedicated Pi session bound to that task:
+
+- The new session is named `Sprint: <TASK-ID> <title>` (visible in `/resume`).
+- A durable `sprintBinding` entry is appended to the new session, pinning it to the task's sprint path, task path, task id, and title.
+- The task is marked `in_progress` and a `task session started` line is appended to the sprint's `PROGRESS.md`.
+- The repo-global `.sprints/current.json` is also updated for consistency, but the new session treats the binding (not `.sprints/current.json`) as its effective context.
+- With `--auto-run`, a kickoff prompt is sent in the new session telling the agent to work the pinned task using the brain -> coder -> reviewer workflow. Without `--auto-run`, the new session is just opened and the user is notified.
+- If `<TASK-ID>` is omitted, the command falls back to the active task from `.sprints/current.json`.
 
 `/workflow` shows effective resolved presets, reviewer swarm settings, and config sources.
 
@@ -117,6 +127,15 @@ AI-callable sprint tools:
 - `sprint_set_active`
 - `sprint_update_task`
 - `sprint_log_progress`
+- `sprint_start_task_session`
+- `sprint_get_session_binding`
+
+Default session-per-task flow:
+
+- For concrete sprint-tracked tasks, the project supports one dedicated Pi session per task. The Brain default instructions tell the Brain agent to invoke the `/sprint task start <TASK-ID> --auto-run` slash command (or call the `sprint_start_task_session` tool as a fallback) before implementation when the current session is not already pinned to that task.
+- Only the `/sprint task start <TASK-ID> --auto-run` command performs the actual session switch by calling `ctx.newSession()`. It is available to the user directly and to any agent that can issue slash commands.
+- `sprint_start_task_session` is an AI-callable tool that prepares the `/sprint task start <TASK-ID> --auto-run` command for the user to run. It places the command in the editor (when UI is available) and notifies the user. It exists because tools cannot call `ctx.newSession()` directly — only commands can — so the tool does NOT switch sessions; it only presents the command. After calling it, stop and wait for the user to run the command.
+- Once a session is pinned, the binding is stored inside the session file itself as a `sprintBinding` custom entry, and `sprint_read_context`, `sprint_update_task`, `sprint_log_progress`, and `before_agent_start` all prefer the binding over `.sprints/current.json`. This means a pinned session remains bound to its task even if `.sprints/current.json` is changed by other sessions or commands. `sprint_update_task` also refuses to update a `taskId` that does not match the bound task, so a pinned session cannot accidentally write to a different task.
 
 See [`examples/sprints-config.json`](./examples/sprints-config.json).
 
