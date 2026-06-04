@@ -21,7 +21,7 @@
       "provider": "openai-codex",
       "model": "gpt-5.3-codex",
       "thinkingLevel": "medium",
-      "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+      "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status"],
       "includeKarpathyGuidelines": true,
       "instructions": "Optional: override Coder instructions."
     },
@@ -29,7 +29,7 @@
       "provider": "openai-codex",
       "model": "gpt-5.5",
       "thinkingLevel": "high",
-      "tools": ["read", "bash", "grep", "find", "ls"],
+      "tools": ["read", "bash", "grep", "find", "ls", "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status"],
       "instructions": "Optional: override Reviewer instructions."
     }
   }
