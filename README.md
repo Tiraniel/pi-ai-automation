@@ -42,8 +42,12 @@ Config is deep-merged in this order:
 1. Package defaults
 2. Global `~/.pi/agent/workflow.json`
 3. Nearest project `.pi/workflow.json`
+4. Optional built-in workflow profile layer, applied at the source that selected it:
+   - global `profile`: package defaults → profile → global → project
+   - project `profile`: package defaults → global → profile → project
+   - CLI `--workflow-profile`: package defaults → global → project → profile
 
-See [`examples/workflow.json`](./examples/workflow.json).
+That means a profile selected in `.pi/workflow.json` can override older global defaults, while fields in the same project file still win over the profile. See [`examples/workflow.json`](./examples/workflow.json).
 
 Reviewer swarm behavior:
 - If `reviewerSwarm.enabled` is `true` (default), `delegate_to_reviewer` runs one read-only reviewer per goal.
@@ -69,6 +73,72 @@ To disable Karpathy Guidelines for delegated coder prompts in overrides:
 ```bash
 pi --workflow-agent none
 ```
+
+## Opt-in Gonka hybrid profile
+
+`extensions/brain-workflow.ts` registers a **`gonka`** provider that points at an OpenAI-compatible broker (`https://node.gonka.lat/v1` by default, override with `GONKA_BROKER_URL`) and ships an opt-in **`gonka-hybrid`** profile. The profile keeps Brain on the current premium default and only swaps the workers, so it is safe to enable without changing how the user talks to the Brain session.
+
+When no profile is set, defaults are exactly the same as before — registering the provider and the profile machinery is a no-op for existing users.
+
+### Enabling the profile
+
+Pick one of:
+
+```bash
+# Ad-hoc: one Pi run on the Gonka hybrid workers
+pi --workflow-profile gonka-hybrid
+```
+
+Project-scoped: drop this into `.pi/workflow.json` (or `~/.pi/agent/workflow.json` for global):
+
+```json
+{ "profile": "gonka-hybrid" }
+```
+
+`--workflow-profile` takes precedence over the config and applies after global/project config, so it is a true one-off switch for the current run. The alias `premium-brain-gonka-workers` is also accepted. The flag is forwarded to child delegates so the Gonka coder/reviewer model follows the parent session end-to-end.
+
+### Required environment variables
+
+The `gonka` provider is registered unconditionally, but its models are only usable when `GONKA_BROKER_API_KEY` is set in the shell that runs Pi (and any child delegate). Set `GONKA_BROKER_URL` too when using a broker other than the default:
+
+| Env var | Purpose |
+| --- | --- |
+| `GONKA_BROKER_URL` | Optional OpenAI-compatible broker base URL; defaults to `https://node.gonka.lat/v1`. |
+| `GONKA_BROKER_API_KEY` | Required bearer token sent as the `Authorization` header. |
+
+`/workflow` shows `set`/`default` for the URL and `set`/`unset` for the key without printing the values.
+
+### Models in the profile
+
+| Worker | Provider / model | Thinking | Notes |
+| --- | --- | --- | --- |
+| Brain | `openai-codex/gpt-5.5` (xhigh) — **unchanged from default** | on (xhigh) | Profile does not touch Brain. |
+| Coder | `gonka/moonshotai/Kimi-K2.6` | off | Best validated coder; Karpathy Guidelines + existing coder tools kept. |
+| Reviewer | `gonka/Qwen/Qwen3-235B-A22B-Instruct-2507-FP8` | off | Best validated primary reviewer; existing reviewer tools kept. |
+| (Optional diversity reviewer) | `gonka/MiniMaxAI/MiniMax-M2.7` | off | Registered for experimentation, **not** used by the built-in profile. See caveat below. |
+
+`Thinking: off` is the Pi setting for these Gonka workers. Some brokers/models may still stream provider reasoning metadata (for example `reasoning_content` from Kimi); Pi handled this in smoke tests, but do not interpret `off` as a guarantee that the upstream model will never emit reasoning metadata.
+
+See [`examples/workflow.gonka-hybrid.json`](./examples/workflow.gonka-hybrid.json) for a minimal opt-in project config.
+
+### Structured tool-call gate
+
+The three broker models pass the OpenAI Chat Completions **auto/default** `tool_choice` test on the current broker (`/v1/chat/completions` returns `finish_reason=tool_calls` and a `message.tool_calls` entry with parsed JSON args; two-turn tool-result roundtrip works). This is the gate for using Gonka as a Pi coder/reviewer — without it, delegations fall back to plain text or refusals, which is unusable for tool-driven workflows.
+
+### `MiniMax-M2.7` forced `tool_choice` caveat
+
+`MiniMaxAI/MiniMax-M2.7` passes the auto/default `tool_choice` test but **fails** when the client forces a tool call: the broker pollutes `function.arguments` with visible `<think>` text, which fails `JSON.parse` and breaks structured tool calls. If you experiment with `MiniMax-M2.7` as a diversity reviewer, keep `tool_choice` at the default (auto) — do **not** force tool choice. Kimi K2.6 and Qwen3-235B do not have this caveat and work with both auto and forced `tool_choice`.
+
+### Example: opt in for one project
+
+```bash
+mkdir -p .pi
+cp examples/workflow.gonka-hybrid.json .pi/workflow.json
+# export GONKA_BROKER_API_KEY (and optionally GONKA_BROKER_URL), then:
+pi
+```
+
+The project-local `profile: "gonka-hybrid"` field is the project's source of truth; the CLI flag overrides it for the current run if you want to A/B test. To leave the profile but pin one worker back to a different model, override `agents.coder` / `agents.reviewer` in the same `.pi/workflow.json` — those fields win over the built-in profile.
 
 ## Workflow Rooms v1
 
@@ -208,7 +278,7 @@ Useful commands:
 - With `--auto-run`, a kickoff prompt is sent in the new session telling the agent to work the pinned task using the brain -> coder -> reviewer workflow. Without `--auto-run`, the new session is just opened and the user is notified.
 - If `<TASK-ID>` is omitted, the command falls back to the active task from `.sprints/current.json`.
 
-`/workflow` shows effective resolved presets, reviewer swarm settings, and config sources.
+`/workflow` shows effective resolved presets, reviewer swarm settings, the active workflow profile, and the `GONKA_BROKER_URL` / `GONKA_BROKER_API_KEY` env status (set/default/unset, no values).
 
 ## Sprint system
 

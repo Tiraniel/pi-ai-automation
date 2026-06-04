@@ -1,0 +1,15 @@
+{
+  "_comment_purpose": "Opt-in Gonka hybrid profile. Keep premium Brain (default), switch coder and reviewer to validated Gonka models via the gonka provider registered by extensions/brain-workflow.ts.",
+  "_comment_enable": "Either run `pi --workflow-profile gonka-hybrid` for a one-off session or set `profile: \"gonka-hybrid\"` here (or globally in ~/.pi/agent/workflow.json) to make it the default for this project. Alias `premium-brain-gonka-workers` is also accepted.",
+  "_comment_env": "Requires GONKA_BROKER_API_KEY in the environment (see README). GONKA_BROKER_URL is optional and defaults to https://node.gonka.lat/v1. The provider is registered unconditionally but the models are unusable without an API key.",
+  "profile": "gonka-hybrid",
+  "agents": {
+    "coder": {
+      "_comment": "Defaults from the built-in gonka-hybrid profile are already applied. Override any field here to win over the profile; other fields (tools, includeKarpathyGuidelines, instructions) keep the package defaults.",
+      "includeKarpathyGuidelines": true
+    },
+    "reviewer": {
+      "_comment": "Defaults from the built-in gonka-hybrid profile are already applied."
+    }
+  }
+}
