@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -31,6 +31,9 @@ interface WorkflowConfig {
 	profile?: string;
 	agents?: Record<string, AgentPreset>;
 	reviewerSwarm?: ReviewerSwarmConfig;
+	/** Delegate display/transport mode. "headless" (default) runs child delegates as JSON subprocesses.
+	 *  "pane" launches them in a visible cmux surface. "auto" uses pane when cmux is available, otherwise headless. */
+	delegateDisplay?: "headless" | "pane" | "auto";
 }
 
 interface LoadedWorkflowConfig {
@@ -64,7 +67,7 @@ interface UsageStats {
 
 interface DelegateProgressItem {
 	at: number;
-	type: "status" | "tool_start" | "tool_update" | "tool_end" | "assistant" | "error";
+	type: "status" | "tool_start" | "tool_update" | "tool_end" | "assistant" | "thinking" | "error";
 	text: string;
 }
 
@@ -85,6 +88,13 @@ interface DelegateRunResult {
 	activeTools?: Array<{ id: string; name: string }>;
 	progress?: DelegateProgressItem[];
 	finalOutput?: string;
+	thinkingChars?: number;
+	/** Display/transport mode used: "headless" or "pane". */
+	display?: string;
+	/** cmux surface id when pane mode was used. */
+	surface?: string;
+	/** Session JSONL file path when pane mode was used. */
+	sessionFile?: string;
 }
 
 interface ReviewerTargetResult {
@@ -96,6 +106,7 @@ interface ReviewerTargetResult {
 
 const DEFAULT_CONFIG: WorkflowConfig = {
 	autoApplyBrain: true,
+	delegateDisplay: "headless",
 	reviewerSwarm: {
 		enabled: true,
 		maxConcurrency: 2,
@@ -135,6 +146,8 @@ Sprint task session flow (default for concrete sprint-tracked tasks):
 - Once bound, treat that session as scoped to a single task. Do not switch tasks mid-session; rely on sprint_update_task and sprint_log_progress to record progress for that task. \`sprint_update_task\` will refuse to update a taskId that does not match the bound task.
 
 Use delegation for non-trivial code changes. For tiny read-only or administrative tasks, you may handle them directly.
+
+Delegation guardrail: when delegate_to_coder fails, returns blockers/problems, or reviewer returns CHANGES_REQUESTED, do NOT take over code edits/fixes yourself with the premium model. Re-delegate a focused fix back to coder (or a room worker) and then re-review. You may do read-only diagnosis/planning/admin only. Direct edits are limited to tiny non-code/admin cases.
 
 Workflow rooms (async coordination between delegated sub-agents):
 - For multi-agent jobs (e.g. backend + frontend, or planner + implementer) call room_create({ roomId, title }) first to allocate a durable room under .pi/workflow-runs/<roomId>/.
@@ -453,6 +466,12 @@ const MAX_TASK_PREVIEW = 140;
 const MAX_FINAL_OUTPUT_PREVIEW = 500;
 const MAX_TOOL_UPDATE_PREVIEW = 180;
 
+const DELEGATE_DISPLAY_ENV = "PI_WORKFLOW_DELEGATE_DISPLAY";
+const DELEGATE_DONE_TOOL_NAME = "workflow_delegate_done";
+const DELEGATE_DONE_ENV_VAR = "PI_WORKFLOW_DELEGATE_DONE_FILE";
+const DELEGATE_PANE_POLL_MS = 600;
+const DELEGATE_PANE_MAX_WAIT_MS = 600000;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -579,10 +598,52 @@ function extractMessageText(message: Message | undefined): string {
 		.trim();
 }
 
+function extractMessageThinking(message: Message | undefined): { text: string; chars: number } {
+	const msg = message as any;
+	if (!msg || !Array.isArray(msg.content)) return { text: "", chars: 0 };
+	const parts = msg.content.filter((part: any) => part?.type === "thinking" && typeof part.thinking === "string");
+	const text = parts.map((part: any) => part.thinking).join("\n").trim();
+	return { text, chars: text.length };
+}
+
+function findLastAssistantMessage(messages: Message[]): any | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i] as any;
+		if (msg.role === "assistant") return msg;
+	}
+	return undefined;
+}
+
+function formatDelegateProgressLine(item: DelegateProgressItem, theme: any): string {
+	switch (item.type) {
+		case "status":
+			return theme.fg("dim", `  · ${item.text}`);
+		case "tool_start":
+			return theme.fg("toolTitle", `  ${item.text}`);
+		case "tool_update":
+			return theme.fg("dim", `  ${item.text}`);
+		case "tool_end":
+			return theme.fg("success", `  ${item.text}`);
+		case "error":
+			return theme.fg("error", `  ${item.text}`);
+		case "assistant":
+			return theme.fg("muted", `  ${item.text}`);
+		case "thinking":
+			return theme.fg("thinkingText", `  ${item.text}`);
+		default:
+			return theme.fg("dim", `  ${item.text}`);
+	}
+}
+
 function truncateText(text: string, max = MAX_PROGRESS_TEXT): string {
 	const clean = text.replace(/\s+/g, " ").trim();
 	if (clean.length <= max) return clean;
 	return `${clean.slice(0, max - 1)}…`;
+}
+
+function countThinkingChars(messages: Message[]): number {
+	const msg = findLastAssistantMessage(messages);
+	return msg ? extractMessageThinking(msg).chars : 0;
 }
 
 function isFailed(result: DelegateRunResult): boolean {
@@ -749,7 +810,63 @@ async function removeTempPrompt(dir: string | null, filePath: string | null): Pr
 	}
 }
 
-function buildAgentSystemPrompt(agent: AgentName, preset: AgentPreset, roomContext?: ResolvedRoomContext): string {
+function resolveDelegateDisplayMode(config: WorkflowConfig): "headless" | "pane" {
+	const fromEnv = process.env[DELEGATE_DISPLAY_ENV]?.trim().toLowerCase();
+	if (fromEnv === "headless" || fromEnv === "pane") return fromEnv;
+	const fromConfig = config.delegateDisplay?.trim().toLowerCase();
+	if (fromConfig === "headless" || fromConfig === "pane") return fromConfig;
+	if (fromEnv === "auto" || fromConfig === "auto") {
+		return isCmuxAvailable() ? "pane" : "headless";
+	}
+	return "headless";
+}
+
+function isCmuxAvailable(): boolean {
+	if (!process.env.CMUX_SOCKET_PATH) return false;
+	try {
+		const result = spawnSync("cmux", ["identify", "--json"], { encoding: "utf8", timeout: 3000 });
+		return result.status === 0;
+	} catch {
+		try {
+			const result = spawnSync("cmux", ["--version"], { encoding: "utf8", timeout: 3000 });
+			return result.status === 0;
+		} catch {
+			return false;
+		}
+	}
+}
+
+function sendCmuxCommand(args: string[]): { stdout: string; stderr: string; ok: boolean } {
+	try {
+		const result = spawnSync("cmux", args, { encoding: "utf8", timeout: 10000 });
+		return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", ok: result.status === 0 };
+	} catch (error) {
+		return { stdout: "", stderr: String(error), ok: false };
+	}
+}
+
+function createCmuxDelegateSurface(title: string): string | null {
+	const args = ["new-split", "right"];
+	if (process.env.CMUX_SURFACE_ID) {
+		args.push("--surface", process.env.CMUX_SURFACE_ID);
+	}
+	const result = sendCmuxCommand(args);
+	if (!result.ok) return null;
+	const match = result.stdout.trim().match(/surface:(\d+)/);
+	if (!match) return null;
+	const surfaceId = match[0]; // preserve "surface:<n>" form
+	if (title) {
+		sendCmuxCommand(["rename-tab", "--surface", surfaceId, title]);
+	}
+	return surfaceId;
+}
+
+function shellEscape(str: string): string {
+	if (!/[^\w@%=+,./-]/.test(str)) return str;
+	return "'" + str.replace(/'/g, "'\"'\"'") + "'";
+}
+
+function buildAgentSystemPrompt(agent: AgentName, preset: AgentPreset, roomContext?: ResolvedRoomContext, paneMode?: boolean): string {
 	const configured = preset.instructions?.trim() ?? "";
 	const includeKarpathyGuidelines = agent === "coder" ? preset.includeKarpathyGuidelines !== false : false;
 	const footer = `You are running as ${agent} in the Pi brain -> coder -> reviewer workflow.
@@ -763,9 +880,716 @@ Return concise handoff output for Brain.`;
 	if (includeKarpathyGuidelines) {
 		sections.push(KARPATHY_GUIDELINES_PROMPT.trim());
 	}
+	if (paneMode) {
+		sections.push(`You are running in a visible cmux pane. After producing your normal concise final handoff, call the \`${DELEGATE_DONE_TOOL_NAME}\` completion tool to signal that you are done. Do not leak raw hidden chain-of-thought in the pane.`);
+	}
 	sections.push(footer);
 
 	return sections.filter((part) => part && part.trim()).join("\n\n");
+}
+
+function buildChildArgs(
+	parentCwd: string,
+	agent: AgentName,
+	preset: AgentPreset,
+	task: string,
+	tmpPromptPath: string | null,
+	roomContext?: ResolvedRoomContext,
+	paneMode?: boolean,
+	sessionFile?: string,
+): string[] {
+	const args: string[] = [];
+	if (!paneMode) {
+		args.push("--mode", "json", "-p", "--no-session");
+	} else if (sessionFile) {
+		args.push("--session", sessionFile);
+	}
+	args.push(...getInheritedExtensionArgs(parentCwd));
+	const modelArg = resolveModelArg(preset);
+	if (modelArg) args.push("--model", modelArg);
+	if (preset.thinkingLevel) args.push("--thinking", preset.thinkingLevel);
+	if (preset.tools) {
+		let effectiveTools = preset.tools.slice();
+		const seen = new Set(effectiveTools);
+		if (roomContext) {
+			for (const name of ROOM_TOOL_NAMES) {
+				if (!seen.has(name)) {
+					effectiveTools.push(name);
+					seen.add(name);
+				}
+			}
+		}
+		if (paneMode) {
+			if (!seen.has(DELEGATE_DONE_TOOL_NAME)) {
+				effectiveTools.push(DELEGATE_DONE_TOOL_NAME);
+			}
+		}
+		if (effectiveTools.length > 0) args.push("--tools", effectiveTools.join(","));
+		else args.push("--no-tools");
+	} else if (paneMode) {
+		// When tools are unrestricted but pane mode still needs the done tool
+		// we can't add it without restricting to a specific list.
+		// Instead, rely on the child completion tool being globally registered
+		// when PI_WORKFLOW_DELEGATE_DONE_FILE is set.
+	}
+	if (tmpPromptPath) args.push("--append-system-prompt", tmpPromptPath);
+	args.push(`Task from Brain to ${agent}:\n\n${task}`);
+	return args;
+}
+
+function buildChildEnv(parentCwd: string, roomContext?: ResolvedRoomContext): NodeJS.ProcessEnv {
+	const childEnv: NodeJS.ProcessEnv = {
+		PI_WORKFLOW_CHILD: "1",
+		PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK ?? "1",
+		HOME: process.env.HOME,
+		PATH: process.env.PATH,
+		TERM: process.env.TERM,
+		SHELL: process.env.SHELL,
+		USER: process.env.USER,
+		LOGNAME: process.env.LOGNAME,
+		TMPDIR: process.env.TMPDIR,
+	};
+	if (roomContext) {
+		childEnv[ROOM_ENV_ROOM_ROOT] = getWorkflowRunsRoot(parentCwd);
+		childEnv[ROOM_ENV_ROOM_ID] = roomContext.roomId;
+		childEnv[ROOM_ENV_AGENT_ID] = roomContext.agentId;
+		childEnv[ROOM_ENV_AGENT_ROLE] = roomContext.role;
+	}
+	return childEnv;
+}
+
+function buildHeadlessChildEnv(parentCwd: string, roomContext?: ResolvedRoomContext): NodeJS.ProcessEnv {
+	const childEnv: NodeJS.ProcessEnv = { ...process.env };
+	for (const key of [ROOM_ENV_ROOM_ROOT, ROOM_ENV_ROOM_ID, ROOM_ENV_AGENT_ID, ROOM_ENV_AGENT_ROLE, DELEGATE_DONE_ENV_VAR]) {
+		delete childEnv[key];
+	}
+	for (const [key, value] of Object.entries(buildChildEnv(parentCwd, roomContext))) {
+		if (value !== undefined) childEnv[key] = value;
+	}
+	return childEnv;
+}
+
+interface DelegateEventState {
+	usage: UsageStats;
+	messages: Message[];
+	progress: DelegateProgressItem[];
+	activeTools: Map<string, { name: string }>;
+	status: string;
+	stderr: string;
+	stopReason?: string;
+	errorMessage?: string;
+	aborted: boolean;
+	lastAssistantPreview: string;
+	lastAssistantEmitAt: number;
+	lastThinkingChars: number;
+	lastThinkingEmitAt: number;
+	latestThinkingChars: number;
+}
+
+function createDelegateEventState(): DelegateEventState {
+	return {
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+		messages: [],
+		progress: [],
+		activeTools: new Map(),
+		status: "starting",
+		stderr: "",
+		aborted: false,
+		lastAssistantPreview: "",
+		lastAssistantEmitAt: 0,
+		lastThinkingChars: 0,
+		lastThinkingEmitAt: 0,
+		latestThinkingChars: 0,
+	};
+}
+
+function processEventLine(state: DelegateEventState, line: string, agent: AgentName, task: string, cwd: string, preset: AgentPreset, onUpdate?: (partial: any) => void) {
+	if (!line.trim()) return;
+	let event: any;
+	try {
+		event = JSON.parse(line);
+	} catch {
+		return;
+	}
+
+	const { usage, messages, progress, activeTools, status } = state;
+	const now = Date.now();
+	const pushProgress = (item: DelegateProgressItem) => {
+		progress.push(item);
+		if (progress.length > MAX_PROGRESS_ITEMS) progress.splice(0, progress.length - MAX_PROGRESS_ITEMS);
+	};
+	const emitUpdate = () => {
+		const output = getFinalAssistantText(messages);
+		const finalOutputPreview = truncateText(output, MAX_FINAL_OUTPUT_PREVIEW);
+		const thinkingChars = Math.max(countThinkingChars(messages), state.latestThinkingChars);
+		onUpdate?.({
+			content: [{ type: "text", text: finalOutputPreview || `${agent} ${state.status}...` }],
+			details: {
+				agent,
+				taskPreview: truncateText(task, MAX_TASK_PREVIEW),
+				cwd,
+				model: resolveModelLabel(preset),
+				usage,
+				status: state.status,
+				activeTools: Array.from(activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
+				progress,
+				finalOutputPreview,
+				thinkingChars,
+			},
+		});
+	};
+
+	switch (event.type) {
+		case "turn_start": {
+			state.status = `turn ${Number(event.turnIndex ?? usage.turns + 1)} running`;
+			pushProgress({ at: now, type: "status", text: state.status });
+			emitUpdate();
+			break;
+		}
+		case "turn_end": {
+			state.status = "turn complete";
+			pushProgress({ at: now, type: "status", text: state.status });
+			emitUpdate();
+			break;
+		}
+		case "tool_execution_start": {
+			const name = String(event.toolName ?? "tool");
+			const id = String(event.toolCallId ?? `${name}-${now}`);
+			activeTools.set(id, { name });
+			state.status = `${name} running`;
+			pushProgress({ at: now, type: "tool_start", text: `→ ${name}` });
+			emitUpdate();
+			break;
+		}
+		case "tool_execution_update": {
+			const name = String(event.toolName ?? "tool");
+			const details = extractToolUpdatePreview(event.partialResult);
+			pushProgress({ at: now, type: "tool_update", text: `… ${name}${details ? ` ${details}` : ""}` });
+			emitUpdate();
+			break;
+		}
+		case "tool_execution_end": {
+			const name = String(event.toolName ?? "tool");
+			const id = String(event.toolCallId ?? "");
+			if (id) activeTools.delete(id);
+			const ok = !event.isError;
+			pushProgress({ at: now, type: ok ? "tool_end" : "error", text: `${ok ? "✓" : "✗"} ${name}` });
+			state.status = ok ? "tool complete" : "tool failed";
+			emitUpdate();
+			break;
+		}
+		case "message_update": {
+			const text = truncateText(extractMessageText(event.message as Message));
+			if (text) {
+				const shouldEmit =
+					text !== state.lastAssistantPreview &&
+					(text.length - state.lastAssistantPreview.length >= 40 || now - state.lastAssistantEmitAt > 400);
+				if (shouldEmit) {
+					state.lastAssistantPreview = text;
+					state.lastAssistantEmitAt = now;
+					pushProgress({ at: now, type: "assistant", text: truncateText(`💬 ${text}`) });
+					emitUpdate();
+				}
+			}
+			if (event.assistantMessageEvent) {
+				const partialMsg = event.assistantMessageEvent.partial as any;
+				if (partialMsg && Array.isArray(partialMsg.content)) {
+					const thinkingParts = partialMsg.content.filter((part: any) => part?.type === "thinking" && typeof part.thinking === "string");
+					if (thinkingParts.length > 0) {
+						const totalChars = thinkingParts.reduce((sum: number, part: any) => sum + part.thinking.length, 0);
+						state.latestThinkingChars = totalChars;
+						if (totalChars > 0 && (totalChars - state.lastThinkingChars > 80 || now - state.lastThinkingEmitAt > 600)) {
+							state.lastThinkingChars = totalChars;
+							state.lastThinkingEmitAt = now;
+							pushProgress({ at: now, type: "thinking", text: `thinking… (${totalChars} chars)` });
+							emitUpdate();
+						}
+					}
+				}
+			}
+			break;
+		}
+		case "message_end": {
+			if (!event.message) break;
+			const msg = event.message as Message;
+			messages.push(msg);
+			const asAny = msg as any;
+			if (asAny.role === "assistant") {
+				usage.turns++;
+				if (asAny.usage) {
+					usage.input += asAny.usage.input || 0;
+					usage.output += asAny.usage.output || 0;
+					usage.cacheRead += asAny.usage.cacheRead || 0;
+					usage.cacheWrite += asAny.usage.cacheWrite || 0;
+					usage.cost += asAny.usage.cost?.total || 0;
+					usage.contextTokens = asAny.usage.totalTokens || usage.contextTokens;
+				}
+				if (asAny.stopReason) state.stopReason = asAny.stopReason;
+				if (asAny.errorMessage) state.errorMessage = asAny.errorMessage;
+				const assistantText = extractMessageText(msg);
+				if (assistantText) pushProgress({ at: now, type: "assistant", text: `💬 ${truncateText(assistantText)}` });
+			}
+			emitUpdate();
+			break;
+		}
+		case "tool_result_end": {
+			if (event.message) messages.push(event.message as Message);
+			emitUpdate();
+			break;
+		}
+		case "agent_end": {
+			state.status = state.aborted ? "aborted" : "completed";
+			pushProgress({ at: now, type: "status", text: state.status });
+			emitUpdate();
+			break;
+		}
+		default: {
+			if (typeof event.type === "string" && (event.type.startsWith("auto_retry") || event.type.startsWith("compaction"))) {
+				pushProgress({ at: now, type: "status", text: truncateText(event.type) });
+				emitUpdate();
+			}
+		}
+	}
+}
+
+/**
+ * Parse a Pi session JSONL entry for pane-mode tailing.
+ * Updates state from finalized messages/tool calls rather than streaming events.
+ * Live partials are not required because the user sees the live pane.
+ */
+function processSessionLine(state: DelegateEventState, line: string, agent: AgentName, task: string, cwd: string, preset: AgentPreset, onUpdate?: (partial: any) => void) {
+	if (!line.trim()) return;
+	let entry: any;
+	try {
+		entry = JSON.parse(line);
+	} catch {
+		return;
+	}
+
+	const { usage, messages, progress, activeTools } = state;
+	const now = Date.now();
+	const pushProgress = (item: DelegateProgressItem) => {
+		progress.push(item);
+		if (progress.length > MAX_PROGRESS_ITEMS) progress.splice(0, progress.length - MAX_PROGRESS_ITEMS);
+	};
+	const emitUpdate = () => {
+		const output = getFinalAssistantText(messages);
+		const finalOutputPreview = truncateText(output, MAX_FINAL_OUTPUT_PREVIEW);
+		const thinkingChars = Math.max(countThinkingChars(messages), state.latestThinkingChars);
+		onUpdate?.({
+			content: [{ type: "text", text: finalOutputPreview || `${agent} ${state.status}...` }],
+			details: {
+				agent,
+				taskPreview: truncateText(task, MAX_TASK_PREVIEW),
+				cwd,
+				model: resolveModelLabel(preset),
+				usage,
+				status: state.status,
+				activeTools: Array.from(activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
+				progress,
+				finalOutputPreview,
+				thinkingChars,
+			},
+		});
+	};
+
+	if (entry.type === "message" && entry.message) {
+		const msg = entry.message as Message;
+		messages.push(msg);
+		const asAny = msg as any;
+		if (asAny.role === "assistant") {
+			usage.turns++;
+			if (asAny.usage) {
+				usage.input += asAny.usage.input || 0;
+				usage.output += asAny.usage.output || 0;
+				usage.cacheRead += asAny.usage.cacheRead || 0;
+				usage.cacheWrite += asAny.usage.cacheWrite || 0;
+				usage.cost += asAny.usage.cost?.total || 0;
+				usage.contextTokens = asAny.usage.totalTokens || usage.contextTokens;
+			}
+			if (asAny.stopReason) state.stopReason = asAny.stopReason;
+			if (asAny.errorMessage) state.errorMessage = asAny.errorMessage;
+			const assistantText = extractMessageText(msg);
+			if (assistantText) pushProgress({ at: now, type: "assistant", text: `💬 ${truncateText(assistantText)}` });
+			const thinking = extractMessageThinking(msg);
+			if (thinking.chars > 0) {
+				state.latestThinkingChars = thinking.chars;
+				pushProgress({ at: now, type: "thinking", text: `thinking… (${thinking.chars} chars)` });
+			}
+		} else if (asAny.role === "toolResult") {
+			const name = asAny.toolName || asAny.name || "tool";
+			const id = asAny.toolCallId || "";
+			if (id) activeTools.delete(id);
+			const ok = !asAny.isError;
+			pushProgress({ at: now, type: ok ? "tool_end" : "error", text: `${ok ? "✓" : "✗"} ${name}` });
+		}
+		// Also emit progress for tool calls embedded in assistant content parts
+		if (asAny.role === "assistant" && Array.isArray(asAny.content)) {
+			for (const part of asAny.content) {
+				if (part?.type === "toolCall") {
+					const tcName = String(part.name ?? part.toolName ?? "tool");
+					const tcId = String(part.id ?? `${tcName}-${now}`);
+					activeTools.set(tcId, { name: tcName });
+					state.status = `${tcName} running`;
+					pushProgress({ at: now, type: "tool_start", text: `→ ${tcName}` });
+				}
+			}
+		}
+		emitUpdate();
+	} else if (entry.type === "tool_call" && entry.tool_call) {
+		const tc = entry.tool_call as any;
+		const name = String(tc.name ?? "tool");
+		const id = String(tc.id ?? `${name}-${now}`);
+		activeTools.set(id, { name });
+		state.status = `${name} running`;
+		pushProgress({ at: now, type: "tool_start", text: `→ ${name}` });
+		emitUpdate();
+	} else if (entry.type === "tool_result" && entry.tool_result) {
+		const tr = entry.tool_result as any;
+		const name = String(tr.name ?? "tool");
+		const id = String(tr.id ?? "");
+		if (id) activeTools.delete(id);
+		const ok = !tr.isError;
+		pushProgress({ at: now, type: ok ? "tool_end" : "error", text: `${ok ? "✓" : "✗"} ${name}` });
+		state.status = ok ? "tool complete" : "tool failed";
+		emitUpdate();
+	}
+}
+
+async function runDelegateAgentHeadless(
+	ctx: ExtensionContext,
+	agent: AgentName,
+	task: string,
+	requestedCwd: string | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: any) => void) | undefined,
+	roomContext?: ResolvedRoomContext,
+): Promise<DelegateRunResult> {
+	const loaded = loadWorkflowConfig(ctx.cwd);
+	const preset = getAgentPreset(loaded.config, agent);
+	const cwd = requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd;
+	let tmpDir: string | null = null;
+	let tmpPromptPath: string | null = null;
+	const state = createDelegateEventState();
+
+	const args = buildChildArgs(ctx.cwd, agent, preset, task, null, roomContext, false);
+	const systemPrompt = buildAgentSystemPrompt(agent, preset, roomContext, false);
+	if (systemPrompt.trim()) {
+		const tmp = await writeSystemPromptFile(agent, systemPrompt);
+		tmpDir = tmp.dir;
+		tmpPromptPath = tmp.filePath;
+		// Insert prompt path at correct position (before task)
+		const taskIndex = args.findIndex((a) => a.startsWith("Task from Brain"));
+		if (taskIndex >= 0) args.splice(taskIndex, 0, "--append-system-prompt", tmpPromptPath);
+		else args.push("--append-system-prompt", tmpPromptPath);
+	}
+
+	try {
+		const exitCode = await new Promise<number>((resolve) => {
+			const invocation = getPiInvocation(args);
+			const childEnv: NodeJS.ProcessEnv = buildHeadlessChildEnv(ctx.cwd, roomContext);
+			const proc = spawn(invocation.command, invocation.args, {
+				cwd,
+				shell: false,
+				stdio: ["ignore", "pipe", "pipe"],
+				env: childEnv,
+			});
+
+			let stdoutBuffer = "";
+			let killTimer: NodeJS.Timeout | undefined;
+
+			proc.stdout.on("data", (chunk) => {
+				stdoutBuffer += chunk.toString();
+				const lines = stdoutBuffer.split("\n");
+				stdoutBuffer = lines.pop() ?? "";
+				for (const line of lines) processEventLine(state, line, agent, task, cwd, preset, onUpdate);
+			});
+
+			proc.stderr.on("data", (chunk) => {
+				state.stderr = appendCapped(state.stderr, chunk.toString(), MAX_STDERR_BYTES);
+			});
+
+			proc.on("close", (code) => {
+				if (killTimer) clearTimeout(killTimer);
+				if (stdoutBuffer.trim()) processEventLine(state, stdoutBuffer, agent, task, cwd, preset, onUpdate);
+				resolve(code ?? 0);
+			});
+
+			proc.on("error", (error) => {
+				state.stderr = appendCapped(state.stderr, String(error), MAX_STDERR_BYTES);
+				resolve(1);
+			});
+
+			if (signal) {
+				const killProc = () => {
+					state.aborted = true;
+					proc.kill("SIGTERM");
+					killTimer = setTimeout(() => proc.kill("SIGKILL"), 5000);
+				};
+				if (signal.aborted) killProc();
+				else signal.addEventListener("abort", killProc, { once: true });
+			}
+		});
+
+		const finalStatus = normalizeFinalStatus({ aborted: state.aborted, stopReason: state.stopReason, exitCode });
+		return {
+			agent,
+			task,
+			cwd,
+			model: resolveModelLabel(preset),
+			thinkingLevel: preset.thinkingLevel,
+			exitCode,
+			messages: state.messages,
+			stderr: state.stderr,
+			usage: state.usage,
+			stopReason: state.stopReason,
+			errorMessage: state.errorMessage,
+			aborted: state.aborted,
+			status: finalStatus,
+			activeTools: Array.from(state.activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
+			progress: state.progress,
+			finalOutput: getFinalAssistantText(state.messages),
+			thinkingChars: countThinkingChars(state.messages),
+		};
+	} finally {
+		await removeTempPrompt(tmpDir, tmpPromptPath);
+	}
+}
+
+async function runDelegateAgentPane(
+	ctx: ExtensionContext,
+	agent: AgentName,
+	task: string,
+	requestedCwd: string | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: any) => void) | undefined,
+	roomContext?: ResolvedRoomContext,
+): Promise<DelegateRunResult> {
+	const loaded = loadWorkflowConfig(ctx.cwd);
+	const preset = getAgentPreset(loaded.config, agent);
+	const cwd = requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd;
+	const runDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-workflow-pane-"));
+	const sessionFile = path.join(runDir, "session.jsonl");
+	const stderrFile = path.join(runDir, "stderr.log");
+	const doneFile = path.join(runDir, "done.json");
+	let tmpDir: string | null = null;
+	let tmpPromptPath: string | null = null;
+	const state = createDelegateEventState();
+
+	const systemPrompt = buildAgentSystemPrompt(agent, preset, roomContext, true);
+	if (systemPrompt.trim()) {
+		const tmp = await writeSystemPromptFile(agent, systemPrompt);
+		tmpDir = tmp.dir;
+		tmpPromptPath = tmp.filePath;
+	}
+
+	const args = buildChildArgs(ctx.cwd, agent, preset, task, tmpPromptPath, roomContext, true, sessionFile);
+	const invocation = getPiInvocation(args);
+	const childEnv = buildChildEnv(ctx.cwd, roomContext);
+	childEnv[DELEGATE_DONE_ENV_VAR] = doneFile;
+
+	// Build shell script to run in the pane
+	const scriptLines: string[] = [
+		"#!/usr/bin/env bash",
+		"set -uo pipefail",
+		`cd ${shellEscape(cwd)}`,
+	];
+	for (const [key, value] of Object.entries(childEnv)) {
+		if (value !== undefined) scriptLines.push(`export ${key}=${shellEscape(String(value))}`);
+	}
+	const piCmd = `${shellEscape(invocation.command)} ${invocation.args.map(shellEscape).join(" ")}`;
+	scriptLines.push(
+		piCmd,
+		`EXIT_CODE=$?`,
+		`if [ ! -f ${shellEscape(doneFile)} ]; then echo '{"done":true,"from_exit":true,"exit_code":'"$EXIT_CODE"'}' > ${shellEscape(doneFile)}; fi`,
+		`exit $EXIT_CODE`,
+	);
+	const scriptPath = path.join(runDir, "run.sh");
+	await fs.promises.writeFile(scriptPath, scriptLines.join("\n") + "\n", { mode: 0o700 });
+
+	const surfaceId = createCmuxDelegateSurface(`pi-${agent}`);
+	if (!surfaceId) {
+		await removeTempPrompt(tmpDir, tmpPromptPath);
+		try { await fs.promises.rm(runDir, { recursive: true }); } catch { /* ignore */ }
+		return {
+			agent, task, cwd,
+			model: resolveModelLabel(preset),
+			thinkingLevel: preset.thinkingLevel,
+			exitCode: 1,
+			messages: [],
+			stderr: "cmux pane creation failed: cmux may not be running or socket not accessible",
+			usage: state.usage,
+			status: "failed",
+			activeTools: [],
+			progress: state.progress,
+			finalOutput: "",
+			thinkingChars: 0,
+		};
+	}
+
+	// Send the script into the pane
+	const sendResult = sendCmuxCommand(["send", "--surface", surfaceId, `bash ${shellEscape(scriptPath)}\n`]);
+	if (!sendResult.ok) {
+		await removeTempPrompt(tmpDir, tmpPromptPath);
+		return {
+			agent, task, cwd,
+			model: resolveModelLabel(preset),
+			thinkingLevel: preset.thinkingLevel,
+			exitCode: 1,
+			messages: [],
+			stderr: `cmux send failed: ${sendResult.stderr}`,
+			usage: state.usage,
+			status: "failed",
+			activeTools: [],
+			progress: state.progress,
+			finalOutput: "",
+			thinkingChars: 0,
+		};
+	}
+
+	let filePos = 0;
+	let stderrPos = 0;
+	let pendingSessionText = "";
+	const startTime = Date.now();
+	let finalDoneData: any;
+
+	const poll = async (): Promise<number> => {
+		while (true) {
+			if (signal?.aborted) {
+				state.aborted = true;
+				// Send actual Escape byte to the pane
+				sendCmuxCommand(["send", "--surface", surfaceId, "\x1b"]);
+				return 1;
+			}
+			if (Date.now() - startTime > DELEGATE_PANE_MAX_WAIT_MS) {
+				state.stderr = appendCapped(state.stderr, "\nPane delegate timed out after 10 minutes", MAX_STDERR_BYTES);
+				sendCmuxCommand(["close-surface", "--surface", surfaceId]);
+				return 1;
+			}
+
+			// Tail session file for new entries
+			try {
+				const stats = await fs.promises.stat(sessionFile);
+				if (stats.size > filePos) {
+					const fd = await fs.promises.open(sessionFile, "r");
+					const buffer = Buffer.alloc(stats.size - filePos);
+					await fd.read(buffer, 0, buffer.length, filePos);
+					await fd.close();
+					const text = buffer.toString("utf8");
+					filePos = stats.size;
+					pendingSessionText += text;
+					const lines = pendingSessionText.split("\n");
+					pendingSessionText = lines.pop() ?? "";
+					for (const line of lines) {
+						if (line.trim()) processSessionLine(state, line, agent, task, cwd, preset, onUpdate);
+					}
+				}
+			} catch {
+				// Session file may not exist yet
+			}
+
+			// Tail stderr file
+			try {
+				const stats = await fs.promises.stat(stderrFile);
+				if (stats.size > stderrPos) {
+					const fd = await fs.promises.open(stderrFile, "r");
+					const buffer = Buffer.alloc(stats.size - stderrPos);
+					await fd.read(buffer, 0, buffer.length, stderrPos);
+					await fd.close();
+					stderrPos = stats.size;
+					state.stderr = appendCapped(state.stderr, buffer.toString("utf8"), MAX_STDERR_BYTES);
+				}
+			} catch {
+				// stderr file may not exist yet
+			}
+
+			// Check done sidecar
+			try {
+				const doneText = await fs.promises.readFile(doneFile, "utf8");
+				finalDoneData = JSON.parse(doneText);
+				if (finalDoneData.done) {
+					break;
+				}
+			} catch {
+				// done file may not exist yet
+			}
+
+			await new Promise((r) => setTimeout(r, DELEGATE_PANE_POLL_MS));
+		}
+
+		// Drain remaining session lines after a short delay so final messages are captured
+		await new Promise((r) => setTimeout(r, 300));
+		try {
+			const stats = await fs.promises.stat(sessionFile);
+			if (stats.size > filePos) {
+				const fd = await fs.promises.open(sessionFile, "r");
+				const buffer = Buffer.alloc(stats.size - filePos);
+				await fd.read(buffer, 0, buffer.length, filePos);
+				await fd.close();
+				const text = buffer.toString("utf8");
+				pendingSessionText += text;
+				const lines = pendingSessionText.split("\n");
+				for (const line of lines) {
+					if (line.trim()) processSessionLine(state, line, agent, task, cwd, preset, onUpdate);
+				}
+				pendingSessionText = "";
+			}
+		} catch { /* ignore */ }
+
+		// Determine exit code from sidecar
+		const sidecarExitCode = typeof finalDoneData?.exit_code === "number" ? finalDoneData.exit_code : undefined;
+		const hasFinalOutput = getFinalAssistantText(state.messages).length > 0;
+		const fromExit = finalDoneData?.from_exit === true;
+
+		if (fromExit) {
+			// Process exited without workflow_delegate_done
+			if (sidecarExitCode === 0) {
+				if (hasFinalOutput) return 0;
+				state.stderr = appendCapped(state.stderr, "\npane delegate exited without workflow_delegate_done", MAX_STDERR_BYTES);
+				return 1;
+			}
+			return sidecarExitCode ?? 1;
+		}
+
+		// Normal done-tool sidecar
+		if (hasFinalOutput) return 0;
+		if (typeof finalDoneData?.summary === "string" && finalDoneData.summary.trim()) {
+			// Accept completion signaled with a summary even if no assistant text was captured
+			return 0;
+		}
+		state.stderr = appendCapped(state.stderr, "\npane delegate completed without output or summary", MAX_STDERR_BYTES);
+		return 1;
+	};
+
+	try {
+		const exitCode = await poll();
+		const finalStatus = normalizeFinalStatus({ aborted: state.aborted, stopReason: state.stopReason, exitCode });
+		return {
+			agent,
+			task,
+			cwd,
+			model: resolveModelLabel(preset),
+			thinkingLevel: preset.thinkingLevel,
+			exitCode,
+			messages: state.messages,
+			stderr: state.stderr,
+			usage: state.usage,
+			stopReason: state.stopReason,
+			errorMessage: state.errorMessage,
+			aborted: state.aborted,
+			status: finalStatus,
+			activeTools: Array.from(state.activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
+			progress: state.progress,
+			finalOutput: getFinalAssistantText(state.messages),
+			thinkingChars: countThinkingChars(state.messages),
+			display: "pane",
+			surface: surfaceId,
+			sessionFile,
+		};
+	} finally {
+		await removeTempPrompt(tmpDir, tmpPromptPath);
+		// Leave runDir for potential inspection; do not delete
+	}
 }
 
 async function runDelegateAgent(
@@ -778,273 +1602,11 @@ async function runDelegateAgent(
 	roomContext?: ResolvedRoomContext,
 ): Promise<DelegateRunResult> {
 	const loaded = loadWorkflowConfig(ctx.cwd);
-	const preset = getAgentPreset(loaded.config, agent);
-	const cwd = requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd;
-	const modelArg = resolveModelArg(preset);
-	const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
-	const messages: Message[] = [];
-
-	let tmpDir: string | null = null;
-	let tmpPromptPath: string | null = null;
-	let stderr = "";
-	let stopReason: string | undefined;
-	let errorMessage: string | undefined;
-	let aborted = false;
-
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	args.push(...getInheritedExtensionArgs(ctx.cwd));
-	if (modelArg) args.push("--model", modelArg);
-	if (preset.thinkingLevel) args.push("--thinking", preset.thinkingLevel);
-	if (preset.tools) {
-		let effectiveTools = preset.tools;
-		if (roomContext) {
-			const seen = new Set(preset.tools);
-			effectiveTools = preset.tools.slice();
-			for (const name of ROOM_TOOL_NAMES) {
-				if (!seen.has(name)) {
-					effectiveTools.push(name);
-					seen.add(name);
-				}
-			}
-		}
-		if (effectiveTools.length > 0) args.push("--tools", effectiveTools.join(","));
-		else args.push("--no-tools");
+	const mode = resolveDelegateDisplayMode(loaded.config);
+	if (mode === "pane") {
+		return runDelegateAgentPane(ctx, agent, task, requestedCwd, signal, onUpdate, roomContext);
 	}
-
-	const systemPrompt = buildAgentSystemPrompt(agent, preset, roomContext);
-	if (systemPrompt.trim()) {
-		const tmp = await writeSystemPromptFile(agent, systemPrompt);
-		tmpDir = tmp.dir;
-		tmpPromptPath = tmp.filePath;
-		args.push("--append-system-prompt", tmpPromptPath);
-	}
-
-	args.push(`Task from Brain to ${agent}:\n\n${task}`);
-
-	const progress: DelegateProgressItem[] = [];
-	const activeTools = new Map<string, { name: string }>();
-	let status = "starting";
-	let lastAssistantPreview = "";
-	let lastAssistantEmitAt = 0;
-
-	const pushProgress = (item: DelegateProgressItem) => {
-		progress.push(item);
-		if (progress.length > MAX_PROGRESS_ITEMS) progress.splice(0, progress.length - MAX_PROGRESS_ITEMS);
-	};
-
-	const emitUpdate = () => {
-		const output = getFinalAssistantText(messages);
-		const finalOutputPreview = truncateText(output, MAX_FINAL_OUTPUT_PREVIEW);
-		onUpdate?.({
-			content: [{ type: "text", text: finalOutputPreview || `${agent} ${status}...` }],
-			details: {
-				agent,
-				taskPreview: truncateText(task, MAX_TASK_PREVIEW),
-				cwd,
-				model: resolveModelLabel(preset),
-				usage,
-				status,
-				activeTools: Array.from(activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
-				progress,
-				finalOutputPreview,
-			},
-		});
-	};
-
-	try {
-		const exitCode = await new Promise<number>((resolve) => {
-			const invocation = getPiInvocation(args);
-			const childEnv: NodeJS.ProcessEnv = {
-				...process.env,
-				PI_WORKFLOW_CHILD: "1",
-				PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK ?? "1",
-			};
-			// Delegates without explicit room context must not inherit a parent/nested
-			// room. Scrub room env first, then add it back only for room-enabled runs.
-			delete childEnv[ROOM_ENV_ROOM_ROOT];
-			delete childEnv[ROOM_ENV_ROOM_ID];
-			delete childEnv[ROOM_ENV_AGENT_ID];
-			delete childEnv[ROOM_ENV_AGENT_ROLE];
-			if (roomContext) {
-				// Point room-enabled children at the parent's workflow-runs root so a
-				// delegated child with a sub-cwd still shares the same room store.
-				childEnv[ROOM_ENV_ROOM_ROOT] = getWorkflowRunsRoot(ctx.cwd);
-				childEnv[ROOM_ENV_ROOM_ID] = roomContext.roomId;
-				childEnv[ROOM_ENV_AGENT_ID] = roomContext.agentId;
-				childEnv[ROOM_ENV_AGENT_ROLE] = roomContext.role;
-			}
-			const proc = spawn(invocation.command, invocation.args, {
-				cwd,
-				shell: false,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: childEnv,
-			});
-
-			let stdoutBuffer = "";
-			let killTimer: NodeJS.Timeout | undefined;
-
-			const processLine = (line: string) => {
-				if (!line.trim()) return;
-				let event: any;
-				try {
-					event = JSON.parse(line);
-				} catch {
-					return;
-				}
-
-				const now = Date.now();
-				switch (event.type) {
-					case "turn_start": {
-						status = `turn ${Number(event.turnIndex ?? usage.turns + 1)} running`;
-						pushProgress({ at: now, type: "status", text: status });
-						emitUpdate();
-						break;
-					}
-					case "turn_end": {
-						status = "turn complete";
-						pushProgress({ at: now, type: "status", text: status });
-						emitUpdate();
-						break;
-					}
-					case "tool_execution_start": {
-						const name = String(event.toolName ?? "tool");
-						const id = String(event.toolCallId ?? `${name}-${now}`);
-						activeTools.set(id, { name });
-						status = `${name} running`;
-						pushProgress({ at: now, type: "tool_start", text: `→ ${name}` });
-						emitUpdate();
-						break;
-					}
-					case "tool_execution_update": {
-						const name = String(event.toolName ?? "tool");
-						const details = extractToolUpdatePreview(event.partialResult);
-						pushProgress({ at: now, type: "tool_update", text: `… ${name}${details ? ` ${details}` : ""}` });
-						emitUpdate();
-						break;
-					}
-					case "tool_execution_end": {
-						const name = String(event.toolName ?? "tool");
-						const id = String(event.toolCallId ?? "");
-						if (id) activeTools.delete(id);
-						const ok = !event.isError;
-						pushProgress({ at: now, type: ok ? "tool_end" : "error", text: `${ok ? "✓" : "✗"} ${name}` });
-						status = ok ? "tool complete" : "tool failed";
-						emitUpdate();
-						break;
-					}
-					case "message_update": {
-						const text = truncateText(extractMessageText(event.message as Message));
-						if (!text) break;
-						const shouldEmit =
-							text !== lastAssistantPreview &&
-							(text.length - lastAssistantPreview.length >= 40 || now - lastAssistantEmitAt > 400);
-						if (shouldEmit) {
-							lastAssistantPreview = text;
-							lastAssistantEmitAt = now;
-							pushProgress({ at: now, type: "assistant", text: truncateText(`💬 ${text}`) });
-							emitUpdate();
-						}
-						break;
-					}
-					case "message_end": {
-						if (!event.message) break;
-						const msg = event.message as Message;
-						messages.push(msg);
-
-						const asAny = msg as any;
-						if (asAny.role === "assistant") {
-							usage.turns++;
-							if (asAny.usage) {
-								usage.input += asAny.usage.input || 0;
-								usage.output += asAny.usage.output || 0;
-								usage.cacheRead += asAny.usage.cacheRead || 0;
-								usage.cacheWrite += asAny.usage.cacheWrite || 0;
-								usage.cost += asAny.usage.cost?.total || 0;
-								usage.contextTokens = asAny.usage.totalTokens || usage.contextTokens;
-							}
-							if (asAny.stopReason) stopReason = asAny.stopReason;
-							if (asAny.errorMessage) errorMessage = asAny.errorMessage;
-							const assistantText = extractMessageText(msg);
-							if (assistantText) pushProgress({ at: now, type: "assistant", text: `💬 ${truncateText(assistantText)}` });
-						}
-						emitUpdate();
-						break;
-					}
-					case "tool_result_end": {
-						if (event.message) messages.push(event.message as Message);
-						emitUpdate();
-						break;
-					}
-					case "agent_end": {
-						status = aborted ? "aborted" : "completed";
-						pushProgress({ at: now, type: "status", text: status });
-						emitUpdate();
-						break;
-					}
-					default: {
-						if (typeof event.type === "string" && (event.type.startsWith("auto_retry") || event.type.startsWith("compaction"))) {
-							pushProgress({ at: now, type: "status", text: truncateText(event.type) });
-							emitUpdate();
-						}
-					}
-				}
-			};
-
-			proc.stdout.on("data", (chunk) => {
-				stdoutBuffer += chunk.toString();
-				const lines = stdoutBuffer.split("\n");
-				stdoutBuffer = lines.pop() ?? "";
-				for (const line of lines) processLine(line);
-			});
-
-			proc.stderr.on("data", (chunk) => {
-				stderr = appendCapped(stderr, chunk.toString(), MAX_STDERR_BYTES);
-			});
-
-			proc.on("close", (code) => {
-				if (killTimer) clearTimeout(killTimer);
-				if (stdoutBuffer.trim()) processLine(stdoutBuffer);
-				resolve(code ?? 0);
-			});
-
-			proc.on("error", (error) => {
-				stderr = appendCapped(stderr, String(error), MAX_STDERR_BYTES);
-				resolve(1);
-			});
-
-			if (signal) {
-				const killProc = () => {
-					aborted = true;
-					proc.kill("SIGTERM");
-					killTimer = setTimeout(() => proc.kill("SIGKILL"), 5000);
-				};
-				if (signal.aborted) killProc();
-				else signal.addEventListener("abort", killProc, { once: true });
-			}
-		});
-
-		const finalStatus = normalizeFinalStatus({ aborted, stopReason, exitCode });
-		return {
-			agent,
-			task,
-			cwd,
-			model: resolveModelLabel(preset),
-			thinkingLevel: preset.thinkingLevel,
-			exitCode,
-			messages,
-			stderr,
-			usage,
-			stopReason,
-			errorMessage,
-			aborted,
-			status: finalStatus,
-			activeTools: Array.from(activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
-			progress,
-			finalOutput: getFinalAssistantText(messages),
-		};
-	} finally {
-		await removeTempPrompt(tmpDir, tmpPromptPath);
-	}
+	return runDelegateAgentHeadless(ctx, agent, task, requestedCwd, signal, onUpdate, roomContext);
 }
 
 async function runReviewerSwarm(
@@ -1179,6 +1741,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			`Use ${toolName} when Brain needs ${role} in the brain -> coder -> reviewer workflow.`,
 			`Tasks passed to ${toolName} must be self-contained: include goal, relevant files/context, constraints, and expected output.`,
 			...(agent === "reviewer" ? ["Pass explicit goals whenever possible so each reviewer target validates one acceptance criterion."] : []),
+			`If this delegation fails or returns CHANGES_REQUESTED, do NOT take over code edits/fixes yourself. Re-delegate a focused fix to coder (or a room worker) and then re-review. Brain may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.`,
 		],
 		parameters: Type.Object({
 			task: Type.String({ description: `Self-contained task for ${agent}` }),
@@ -1206,36 +1769,105 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			const derivedFailed = typeof details.exitCode === "number" ? isFailed(details as DelegateRunResult) : false;
 			const failed = Boolean(context.isError ?? result?.isError ?? derivedFailed);
 			const status = details.status ?? (isPartial ? "running" : failed ? "failed" : "completed");
+			const statusColor = isPartial ? "warning" : failed ? "error" : "success";
 			const icon = isPartial ? "…" : failed ? "✗" : "✓";
 			const recent = progress.slice(-(expanded ? MAX_RENDERED_PROGRESS : 5));
-			const lines = recent.map((p) => p.text);
 			const usageText = details.usage ? formatUsage(details.usage) : "";
 			const taskText = details.task ?? (details as { taskPreview?: string }).taskPreview;
 			const output = details.finalOutput || (result?.content?.[0]?.type === "text" ? result.content[0].text : "");
+			const thinkingChars = (details as any).thinkingChars ?? 0;
 
 			if (!expanded) {
-				let text = `${theme.fg("toolTitle", theme.bold(toolName))} ${theme.fg("accent", agent)} ${theme.fg("muted", `[${status}]`)} ${theme.fg("muted", icon)}`;
-				if (lines.length) text += `\n${lines.map((line) => theme.fg("toolOutput", truncateText(line))).join("\n")}`;
-				if ((details.progress?.length ?? 0) > lines.length) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+				let text = `${theme.fg("toolTitle", theme.bold(toolName))} ${theme.fg("accent", agent)} ${theme.fg(statusColor, `[${status}]`)} ${theme.fg(statusColor, icon)}`;
+				if (taskText) text += `\n${theme.fg("dim", truncateText(taskText))}`;
+				if (recent.length) {
+					text += `\n${recent.map((p) => formatDelegateProgressLine(p, theme)).join("\n")}`;
+				}
+				if (thinkingChars > 0) {
+					text += `\n${theme.fg("thinkingText", `  thinking… (${thinkingChars} chars)`)}`;
+				}
+				if ((details.progress?.length ?? 0) > recent.length) {
+					text += `\n${theme.fg("muted", "  (Ctrl+O to expand)")}`;
+				}
 				return new Text(text, 0, 0);
 			}
 
 			const container = new Container();
-			container.addChild(new Text(`${theme.fg("toolTitle", theme.bold(toolName))} ${theme.fg("accent", agent)} ${theme.fg("muted", `[${status}]`)} ${icon}`, 0, 0));
-			if (taskText) container.addChild(new Text(theme.fg("dim", `task: ${taskText}`), 0, 0));
-			if (details.model || details.cwd) {
-				container.addChild(new Text(theme.fg("dim", `model: ${details.model ?? "default"}  cwd: ${details.cwd ?? ""}`), 0, 0));
+
+			// Header: tool name + agent + status
+			container.addChild(new Text(
+				`${theme.fg("toolTitle", theme.bold(toolName))} ${theme.fg("accent", agent)} ${theme.fg(statusColor, `[${status}]`)} ${theme.fg(statusColor, icon)}`,
+				0, 0,
+			));
+
+			// Task preview
+			if (taskText) {
+				container.addChild(new Text(theme.fg("dim", `task: ${truncateText(taskText, MAX_TASK_PREVIEW)}`), 0, 0));
 			}
-			container.addChild(new Spacer(1));
-			for (const line of lines) container.addChild(new Text(theme.fg("toolOutput", line), 0, 0));
-			if (usageText) {
+
+			// Model / cwd / usage line
+			const metaParts: string[] = [];
+			if (details.model) metaParts.push(`model: ${details.model}`);
+			if (details.cwd) metaParts.push(`cwd: ${details.cwd}`);
+			if (usageText) metaParts.push(usageText);
+			if (metaParts.length) {
+				container.addChild(new Text(theme.fg("dim", metaParts.join("  ")), 0, 0));
+			}
+
+			// Active tools
+			if (details.activeTools && details.activeTools.length > 0) {
+				const toolNames = details.activeTools.map((t) => t.name).join(", ");
+				container.addChild(new Text(theme.fg("warning", `active: ${toolNames}`), 0, 0));
+			}
+
+			// Thinking indicator
+			if (thinkingChars > 0) {
+				container.addChild(new Text(theme.fg("thinkingText", `thinking… (${thinkingChars} chars hidden)`), 0, 0));
+			}
+
+			// Progress section
+			if (recent.length) {
 				container.addChild(new Spacer(1));
-				container.addChild(new Text(theme.fg("dim", usageText), 0, 0));
+				const statusItems = recent.filter((p) => p.type === "status");
+				const toolItems = recent.filter((p) => p.type === "tool_start" || p.type === "tool_update" || p.type === "tool_end" || p.type === "error");
+				const assistantItems = recent.filter((p) => p.type === "assistant");
+				const thinkingItems = recent.filter((p) => p.type === "thinking");
+
+				if (statusItems.length) {
+					container.addChild(new Text(theme.fg("dim", "status:"), 0, 0));
+					for (const item of statusItems.slice(-4)) {
+						container.addChild(new Text(formatDelegateProgressLine(item, theme), 0, 0));
+					}
+				}
+				if (toolItems.length) {
+					if (statusItems.length) container.addChild(new Spacer(1));
+					container.addChild(new Text(theme.fg("dim", "tools:"), 0, 0));
+					for (const item of toolItems.slice(-6)) {
+						container.addChild(new Text(formatDelegateProgressLine(item, theme), 0, 0));
+					}
+				}
+				if (thinkingItems.length) {
+					if (toolItems.length || statusItems.length) container.addChild(new Spacer(1));
+					container.addChild(new Text(theme.fg("dim", "thinking:"), 0, 0));
+					for (const item of thinkingItems.slice(-3)) {
+						container.addChild(new Text(formatDelegateProgressLine(item, theme), 0, 0));
+					}
+				}
+				if (assistantItems.length) {
+					if (toolItems.length || statusItems.length || thinkingItems.length) container.addChild(new Spacer(1));
+					container.addChild(new Text(theme.fg("dim", "output:"), 0, 0));
+					for (const item of assistantItems.slice(-4)) {
+						container.addChild(new Text(formatDelegateProgressLine(item, theme), 0, 0));
+					}
+				}
 			}
+
+			// Final output
 			if (output) {
 				container.addChild(new Spacer(1));
 				container.addChild(new Markdown(output, 0, 0, getMarkdownTheme()));
 			}
+
 			return container;
 		},
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -2159,6 +2791,38 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 
 	makeRoomTools(pi);
 
+	// Child-only completion tool for pane delegates. Only registered when the
+	// env var is set (parent sets it before launching a pane delegate).
+	if (process.env[DELEGATE_DONE_ENV_VAR]) {
+		pi.registerTool({
+			name: DELEGATE_DONE_TOOL_NAME,
+			label: "Delegate Done",
+			description: `Signal that the delegated task is complete. Only available in pane-delegate child sessions. Writes the done sidecar and shuts down the session.`,
+			promptSnippet: "Signal task completion and shut down.",
+			promptGuidelines: [
+				"Call this after producing your normal final handoff to signal completion to the parent.",
+				"This tool writes the done sidecar and terminates the session.",
+			],
+			parameters: Type.Object({
+				summary: Type.Optional(Type.String({ description: "Optional one-line completion summary" })),
+			}),
+			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+				const doneFile = process.env[DELEGATE_DONE_ENV_VAR];
+				if (!doneFile) {
+					return { content: [{ type: "text", text: "Done file path not set in env." }], isError: true, details: { reason: "missing_env" } };
+				}
+				try {
+					const data = { done: true, summary: String(params?.summary ?? "").trim() || undefined, at: new Date().toISOString() };
+					fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
+				} catch (error) {
+					return { content: [{ type: "text", text: `Failed to write done file: ${error}` }], isError: true, details: { reason: "write_failed" } };
+				}
+				setTimeout(() => ctx.shutdown(), 500);
+				return { content: [{ type: "text", text: "Delegate completion signaled. Shutting down." }], details: { doneFile } };
+			},
+		});
+	}
+
 	pi.registerCommand("workflow", {
 		description: "Show effective brain/coder/reviewer workflow presets",
 		handler: async (_args, ctx) => {
@@ -2166,6 +2830,8 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 			const reviewerSwarm = resolveReviewerSwarmConfig(loaded.config);
 			const profile = getWorkflowProfile(loaded.profileId);
 			const gonkaEnv = getGonkaEnvStatus();
+			const delegateMode = resolveDelegateDisplayMode(loaded.config);
+			const cmuxAvailable = isCmuxAvailable();
 			const lines = [
 				"Pi workflow: brain -> coder -> reviewer",
 				`global: ${loaded.globalPath}`,
@@ -2179,6 +2845,9 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 				formatPreset("reviewer", getAgentPreset(loaded.config, "reviewer")),
 				`reviewerSwarm: enabled=${reviewerSwarm.enabled} maxConcurrency=${reviewerSwarm.maxConcurrency}`,
 				`reviewerSwarm targets: ${reviewerSwarm.targets.join(" | ")}`,
+				"",
+				`delegateDisplay: ${delegateMode}${delegateMode !== "headless" ? ` (cmux=${cmuxAvailable ? "available" : "unavailable"})` : ""}`,
+				`env override: ${DELEGATE_DISPLAY_ENV}=${process.env[DELEGATE_DISPLAY_ENV] ?? "(not set)"}`,
 			];
 			ctx.ui.notify(lines.join("\n"), "info");
 		},

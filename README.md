@@ -21,11 +21,11 @@ Workflow tools:
 - `delegate_to_reviewer` (supports optional `goals` for targeted reviewer swarm)
 - `room_create`, `room_job_start`, `room_send`, `room_read`, `room_job_done`, `room_status`
 
-Delegated agents stream bounded live progress back into the parent Pi terminal: current status, recent tool calls, tool completions/errors, assistant text previews, final output, and usage.
+Delegated agents run as headless JSON subprocesses (`--mode json -p --no-session`) and stream bounded live events back to the parent. The parent Pi terminal renders delegate progress using theme-colored sections (status, tools, thinking indicators, assistant output previews, usage, and final output). Thinking/reasoning content from child agents is shown as a sanitized indicator (`thinking…`) rather than raw hidden chain-of-thought. There is no nested interactive TUI inside the child; rendering is handled by the parent using Pi extension rendering/theme APIs.
 
 ## Defaults
 
-- **brain**: `openai-codex/gpt-5.5` thinking `xhigh`
+- **brain**: `openai-codex/gpt-5.5` thinking `xhigh`. Brain orchestrates planning and delegation; it does **not** take over code edits when coder fails or reviewer returns `CHANGES_REQUESTED`. Instead, it re-delegates a focused fix back to coder (or a room worker) and then re-reviews. Brain may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.
 - **coder**: `openai-codex/gpt-5.3-codex` thinking `medium`, tools `read,bash,edit,write,grep,find,ls,room_create,room_job_start,room_send,room_read,room_job_done,room_status`, and **Karpathy Guidelines included by default**
 - **reviewer**: `openai-codex/gpt-5.5` thinking `high`, tools `read,bash,grep,find,ls,room_create,room_job_start,room_send,room_read,room_job_done,room_status` (read-only)
 - **reviewerSwarm**: enabled by default, runs targeted reviewer subprocesses (parallelized with `maxConcurrency`) across configured targets or explicit `goals`
@@ -73,6 +73,53 @@ To disable Karpathy Guidelines for delegated coder prompts in overrides:
 ```bash
 pi --workflow-agent none
 ```
+
+## Delegate display/transport modes (cmux pane support)
+
+By default, delegated agents run as **headless** JSON subprocesses (`--mode json -p --no-session`). You can opt into launching them in a **visible cmux pane** for observability and manual inspection.
+
+### Modes
+
+- **`headless`** (default): child runs as a subprocess; parent tails stdout for structured events. CI-safe and works everywhere.
+- **`pane`**: child runs in a visible cmux terminal surface. Parent still receives structured results by tailing a session JSONL file and polling a done sidecar — the pane is for human visibility, not screen scraping.
+- **`auto`**: uses pane when cmux is available, otherwise falls back to headless.
+
+### Enabling pane mode
+
+Set in `~/.pi/agent/workflow.json` or `.pi/workflow.json`:
+
+```json
+{
+  "delegateDisplay": "pane"
+}
+```
+
+Or override per run with the env var:
+
+```bash
+PI_WORKFLOW_DELEGATE_DISPLAY=pane pi
+```
+
+Valid values: `headless`, `pane`, `auto`. The env var takes precedence over config.
+
+### How pane mode works
+
+1. Parent creates a temp run directory with:
+   - `session.jsonl` — child Pi session file written by `--session`
+   - `done.json` — sidecar written by the child when it calls `workflow_delegate_done`
+   - `run.sh` — generated shell script that launches the child Pi session
+2. Parent opens a new cmux split (`cmux new-split right`) and sends a shell script into it that sets up env vars and runs Pi with `--session <sessionFile>` so the child renders its real TUI in the cmux surface.
+3. Parent tails the session JSONL for finalized messages/tool calls (not streaming events) and polls `done.json` for completion.
+4. The child gets a pane-specific instruction in its system prompt to call `workflow_delegate_done` after producing its final handoff.
+5. On abort, parent sends Escape to the pane.
+
+### Requirements and limitations
+
+- **cmux must be running** and `CMUX_SOCKET_PATH` must be set (or discoverable). If cmux is unavailable and mode is `pane`, the delegate returns a clear failed result. `auto` silently falls back to headless.
+- **API keys must be available to the pane shell** via its own environment, Pi auth, or `~/.pi/.env`. The generated pane script only exports workflow-specific env vars and does not copy arbitrary parent secrets into `/tmp`.
+- **Panes may remain open** after the child finishes (useful for inspection). They are not auto-closed.
+- **Initial support is cmux-only.** tmux/zellij are not implemented unless very cheap to add later.
+- **Reviewer swarm** works with pane mode too — each reviewer target may open its own pane when cmux is available.
 
 ## Opt-in Gonka hybrid profile
 
