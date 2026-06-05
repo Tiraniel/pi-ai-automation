@@ -44,6 +44,9 @@ export const DEFAULT_EVIDENCE_QUEUE = {
 	dedupeWindowHours: 168,
 } as const;
 
+export const DEFAULT_OUTPUT_TRUNCATION_LIMIT_BYTES = 50000;
+export const DEFAULT_OUTPUT_TRUNCATION_LIMIT_LINES = 2000;
+
 export const DEFAULT_SECURITY = {
 	redactionEnabled: true,
 	secretExclusions: [] as string[],

@@ -13,6 +13,7 @@ import { openDb, closeDb } from "./db";
 import { scanRepo, type ScannedFile, readAndHash } from "./scanner";
 import { resolveRepoRoot } from "../runtime";
 import { listGitIgnored, classifyExclusion } from "../security/exclusions";
+import { markPossiblyStaleEvidence } from "../evidence/queue";
 
 export interface SyncResult {
 	repoKey: string;
@@ -48,6 +49,7 @@ export interface SyncResult {
 	topPackageRoots: string[];
 	evidenceCount: number;
 	staleEvidenceCount: number;
+	pendingEvidenceCount: number;
 	healthFindingsCount: number;
 	keeperLeasedBy: string | null;
 	leaseExpiresAt: number | null;
@@ -434,12 +436,18 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 		).all(repoKey) as Array<{ package_root: string; c: number }>;
 		const topPackageRoots = pkgRows.map((r) => r.package_root);
 
+		// Mark possibly stale evidence before counting
+		markPossiblyStaleEvidence(db, repoKey, contextVersion);
+
 		// Evidence counts
 		const evidenceCount = Number(
 			(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ?").get(repoKey) as { c: number }).c
 		);
 		const staleEvidenceCount = Number(
 			(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 1").get(repoKey) as { c: number }).c
+		);
+		const pendingEvidenceCount = Number(
+			(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 0").get(repoKey) as { c: number }).c
 		);
 
 		// Health findings count
@@ -487,6 +495,7 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			topPackageRoots,
 			evidenceCount,
 			staleEvidenceCount,
+			pendingEvidenceCount,
 			healthFindingsCount,
 			keeperLeasedBy,
 			leaseExpiresAt,

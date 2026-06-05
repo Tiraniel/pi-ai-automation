@@ -22,6 +22,19 @@ export interface DatabaseHandle {
 	close(): void;
 }
 
+function ensureColumn(
+	db: InstanceType<ReturnType<typeof getSqlite>["DatabaseSync"]>,
+	table: string,
+	column: string,
+	def: string,
+) {
+	const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+	const exists = info.some((row) => row.name === column);
+	if (!exists) {
+		db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def};`);
+	}
+}
+
 const MIGRATIONS = [
 	`CREATE TABLE IF NOT EXISTS repo_meta (
 		repo_key TEXT PRIMARY KEY,
@@ -83,7 +96,9 @@ const MIGRATIONS = [
 		repo_key TEXT NOT NULL,
 		context_version TEXT NOT NULL,
 		agent_id TEXT NOT NULL,
+		agent_role TEXT NOT NULL DEFAULT '',
 		agent_run_id TEXT NOT NULL,
+		task_id TEXT,
 		recorded_at INTEGER,
 		claim TEXT NOT NULL,
 		evidence_refs TEXT,
@@ -95,10 +110,12 @@ const MIGRATIONS = [
 		is_stale INTEGER DEFAULT 0,
 		stale_reason TEXT,
 		dedupe_key TEXT NOT NULL,
+		file_hashes TEXT,
 		UNIQUE(repo_key, dedupe_key)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_evidence_repo ON evidence(repo_key)`,
 	`CREATE INDEX IF NOT EXISTS idx_evidence_stale ON evidence(repo_key, is_stale)`,
+	`CREATE INDEX IF NOT EXISTS idx_evidence_version ON evidence(repo_key, context_version)`,
 	`CREATE TABLE IF NOT EXISTS health_findings (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		repo_key TEXT NOT NULL,
@@ -139,6 +156,11 @@ export function openDb(repoKey: string, repoRoot: string): DatabaseHandle {
 	for (const migration of MIGRATIONS) {
 		db.exec(migration);
 	}
+
+	// Backward-compatible ALTER TABLE for evidence columns added after TASK-003
+	ensureColumn(db, "evidence", "agent_role", "TEXT NOT NULL DEFAULT ''");
+	ensureColumn(db, "evidence", "task_id", "TEXT");
+	ensureColumn(db, "evidence", "file_hashes", "TEXT");
 
 	return {
 		db,

@@ -4,14 +4,14 @@ Global Pi extension that provides AI-facing repo context, evidence checkpointing
 
 ## Status
 
-**Current:** TASK-003 deterministic index core implemented. SQLite-backed index, git/non-git discovery, exclusions, dirty overlay, and basic status are operational.
+**Current:** TASK-005 implemented. Append-only evidence queue, `repo_checkpoint` persistence, and pending evidence counts are operational. SQLite-backed index, git/non-git discovery, exclusions, dirty overlay, basic status, `repo_context`, auto-brief injection, and context deduplication remain operational.
 
 | Component | Status | Task |
 |-----------|--------|------|
 | Extension skeleton + tool registration | ✅ Done | TASK-002 |
 | Deterministic index (SQLite, scanner, sync) | ✅ Core implemented | TASK-003 |
-| `repo_context` + auto-brief | ⏳ Pending | TASK-004 |
-| `repo_checkpoint` evidence queue | ⏳ Pending | TASK-005 |
+| `repo_context` + auto-brief | ✅ Implemented | TASK-004 |
+| `repo_checkpoint` evidence queue | ✅ Implemented | TASK-005 |
 | Keeper scheduler + file cards | ⏳ Pending | TASK-006 |
 | Integrity consultant + health report | ⏳ Pending | TASK-007 |
 | Parallel/git hardening | ⏳ Pending | TASK-008 |
@@ -38,8 +38,8 @@ After install, the extension auto-registers when Pi starts in any repo.
 
 | Tool | Purpose | Current Behavior |
 |------|---------|------------------|
-| `repo_context` | Bounded repo summary for agent planning | Scaffold: returns metadata and a status message. Deterministic index is available via `repo_index_status`; bounded context/evidence storage remain future tasks. |
-| `repo_checkpoint` | Append evidence to the evidence queue | Scaffold: validates input, returns `recorded: false`, `storage: pending TASK-005`. Deterministic index is available via `repo_index_status`. |
+| `repo_context` | Bounded repo summary for agent planning | Implemented: syncs index, ranks files by query/importance/dirty state, returns file metadata, excerpts, and optional evidence with token/byte/line caps. Stale cards labeled `DO NOT TRUST`. |
+| `repo_checkpoint` | Append evidence to the evidence queue | Implemented: persists redacted evidence to SQLite, records agent/task/context refs, dedupes repeated claims, marks stale context/file-hash drift, and returns queue counts. |
 | `repo_health_report` | Ranked integrity/consultant report | Scaffold: returns empty findings with a status message. No LLM calls yet. Deterministic index is available via `repo_index_status`. |
 | `repo_index_status` | Quick diagnostic of the deterministic index | Core implemented: syncs on demand, shows file counts, dirty/untracked state, exclusion counts, language breakdown, and keeper lease. |
 
@@ -90,10 +90,9 @@ A single-writer SQLite lease prevents concurrent keeper writes across multiple P
 
 ## Scaffold Limitations
 
-- `repo_context` is not yet context-aware (TASK-004).
-- `repo_checkpoint` accepts but does not persist evidence (TASK-005).
+- `repo_checkpoint` persists evidence with deduplication and stale marking (TASK-005).
 - `repo_health_report` does not invoke LLMs or generate findings (TASK-007).
-- `before_agent_start` auto-brief is a no-op (TASK-004).
+- `before_agent_start` auto-brief is implemented (TASK-004).
 - Keeper scheduling is a no-op (TASK-006).
 
 ## Security Defaults
