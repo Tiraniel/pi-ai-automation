@@ -180,8 +180,33 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 		return { messages };
 	});
 
-	pi.on("agent_end", async () => {
-		// Scaffold: no keeper trigger yet (TASK-006)
+	pi.on("agent_end", async (_event, ctx) => {
+		const rt = buildRuntime(ctx);
+		const cfg = loadConfig(rt.repoRoot);
+		if (!cfg.enabled || !cfg.keeper.enabled || !cfg.keeper.runOnAgentEnd) {
+			return;
+		}
+		// Fire-and-forget keeper run; do not block agent_end
+		try {
+			const { syncRepo: syncFn } = await import("./index/sync");
+			const { runKeeperUnit } = await import("./keeper/scheduler");
+			const sync = syncFn(rt.repoRoot, rt.repoKey, rt.cacheDbPath);
+			await runKeeperUnit({
+				repoKey: rt.repoKey,
+				repoRoot: rt.repoRoot,
+				maxRunTimeMs: cfg.keeper.maxRunTimeMs,
+				maxTokensPerRun: cfg.keeper.maxTokensPerRun,
+				batchSize: cfg.keeper.batchSize,
+				leaseDurationMs: cfg.keeper.leaseDurationMs,
+				contextVersion: sync.contextVersion,
+			});
+		} catch (err: any) {
+			// Silently catch; keeper failures must not break agent flow
+			// eslint-disable-next-line no-console
+			if (typeof console !== "undefined" && console.error) {
+				console.error("[pi-ai-automation-memory] keeper agent_end error:", err?.message ?? String(err));
+			}
+		}
 	});
 
 	pi.on("session_shutdown", async () => {

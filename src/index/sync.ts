@@ -50,6 +50,7 @@ export interface SyncResult {
 	evidenceCount: number;
 	staleEvidenceCount: number;
 	pendingEvidenceCount: number;
+	processingEvidenceCount: number;
 	healthFindingsCount: number;
 	keeperLeasedBy: string | null;
 	leaseExpiresAt: number | null;
@@ -206,8 +207,8 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			`INSERT INTO files (
 				repo_key, relative_path, absolute_path, content_hash, git_blob_hash, size_bytes, mtime_ms,
 				is_gitignored, is_generated, is_secret, is_untracked, is_dirty, is_deleted,
-				language, package_root, last_indexed_at, card_freshness, imports_hash
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				language, package_root, last_indexed_at, card_freshness, imports_hash, card_stale_reason
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(repo_key, relative_path) DO UPDATE SET
 				absolute_path = excluded.absolute_path,
 				content_hash = excluded.content_hash,
@@ -224,7 +225,8 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 				package_root = excluded.package_root,
 				last_indexed_at = excluded.last_indexed_at,
 				card_freshness = excluded.card_freshness,
-				imports_hash = excluded.imports_hash
+				imports_hash = excluded.imports_hash,
+				card_stale_reason = excluded.card_stale_reason
 			`
 		);
 
@@ -251,15 +253,20 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 				changedFiles++;
 			}
 
-			// Determine card_freshness: if card exists and content changed, mark stale
+			// Determine card_freshness: if card exists and content changed, or context drifted, mark stale
 			let cardFreshness: string | null = "missing";
+			let cardStaleReason: string | null = null;
 			if (known) {
 				const existing = db.prepare(
-					"SELECT card_freshness, card_content, content_hash FROM files WHERE repo_key = ? AND relative_path = ?"
-				).get(repoKey, f.relativePath) as { card_freshness: string | null; card_content: string | null; content_hash: string } | undefined;
+					"SELECT card_freshness, card_content, content_hash, card_source_hash, card_context_version FROM files WHERE repo_key = ? AND relative_path = ?"
+				).get(repoKey, f.relativePath) as { card_freshness: string | null; card_content: string | null; content_hash: string; card_source_hash: string | null; card_context_version: string | null } | undefined;
 				if (existing) {
 					if (existing.card_content && existing.content_hash !== f.contentHash) {
 						cardFreshness = "stale";
+						cardStaleReason = "content_hash changed since card generation";
+					} else if (existing.card_content && existing.card_context_version && existing.card_context_version !== contextVersion) {
+						cardFreshness = "stale";
+						cardStaleReason = `context_version drift: card ${existing.card_context_version} vs current ${contextVersion}`;
 					} else if (existing.card_content) {
 						cardFreshness = existing.card_freshness ?? "fresh";
 					} else {
@@ -287,6 +294,7 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 				lastSyncAt,
 				cardFreshness,
 				f.importsHash,
+				cardStaleReason,
 			);
 		}
 
@@ -446,8 +454,21 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 		const staleEvidenceCount = Number(
 			(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 1").get(repoKey) as { c: number }).c
 		);
+		const now = Date.now();
 		const pendingEvidenceCount = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 0").get(repoKey) as { c: number }).c
+			(db.prepare(
+				`SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 0
+				 AND (
+					 (keeper_state IS NULL OR keeper_state = 'pending')
+					 OR (keeper_state = 'processing' AND keeper_expires_at <= ?)
+				 )
+				 AND keeper_processed_at IS NULL`
+			).get(repoKey, now) as { c: number }).c
+		);
+		const processingEvidenceCount = Number(
+			(db.prepare(
+				"SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND keeper_state = 'processing' AND keeper_expires_at > ?"
+			).get(repoKey, now) as { c: number }).c
 		);
 
 		// Health findings count
@@ -496,6 +517,7 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			evidenceCount,
 			staleEvidenceCount,
 			pendingEvidenceCount,
+			processingEvidenceCount,
 			healthFindingsCount,
 			keeperLeasedBy,
 			leaseExpiresAt,

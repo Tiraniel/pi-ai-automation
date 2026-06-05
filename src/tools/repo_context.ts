@@ -31,6 +31,14 @@ interface FileRecord {
 	package_root: string | null;
 	card_freshness: string | null;
 	card_content: string | null;
+	card_source_hash: string | null;
+	card_context_version: string | null;
+	card_refs: string | null;
+	card_excerpts: string | null;
+	card_confidence: number | null;
+	card_worker_id: string | null;
+	card_metadata: string | null;
+	card_stale_reason: string | null;
 	is_dirty: number;
 	is_untracked: number;
 	imports_hash: string | null;
@@ -224,6 +232,8 @@ export function registerRepoContext(pi: ExtensionAPI) {
 				const fileRows = db.prepare(
 					`SELECT relative_path, content_hash, git_blob_hash, size_bytes,
 						language, package_root, card_freshness, card_content,
+						card_source_hash, card_context_version, card_refs, card_excerpts,
+						card_confidence, card_worker_id, card_metadata, card_stale_reason,
 						is_dirty, is_untracked, imports_hash
 					 FROM files
 					 WHERE repo_key = ? AND is_deleted = 0
@@ -369,15 +379,27 @@ export function registerRepoContext(pi: ExtensionAPI) {
 					if (f.is_untracked) fileLines.push("- **untracked**");
 					if (imports.length > 0) fileLines.push(`- imports: ${imports.slice(0, 10).join(", ")}${imports.length > 10 ? " …" : ""}`);
 
-					if (includeCards && f.card_content && f.card_freshness === "fresh") {
-						fileLines.push("- card (fresh):");
+					// Trust rule: card is only trusted if freshness is fresh AND source/context match current sync
+					const cardTrusted =
+						f.card_freshness === "fresh" &&
+						f.card_source_hash === f.content_hash &&
+						f.card_context_version === sync.contextVersion;
+
+					if (includeCards && f.card_content && cardTrusted) {
+						fileLines.push("- card (fresh, trusted):");
 						fileLines.push("  ```");
 						const cardLines = f.card_content.split(/\r?\n/).slice(0, 10);
 						for (const cl of cardLines) fileLines.push(`  ${cl}`);
 						if (f.card_content.split(/\r?\n/).length > 10) fileLines.push("  …");
 						fileLines.push("  ```");
-					} else if (isStaleCard) {
+						if (f.card_confidence !== null) {
+							fileLines.push(`  confidence: ${f.card_confidence}, worker: ${f.card_worker_id ?? "?"}`);
+						}
+					} else if (isStaleCard || (f.card_content && !cardTrusted)) {
 						fileLines.push("- card: **DO NOT TRUST** (stale)");
+						if (f.card_stale_reason) {
+							fileLines.push(`  reason: ${f.card_stale_reason}`);
+						}
 					}
 
 					// Excerpts

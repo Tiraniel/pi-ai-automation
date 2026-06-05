@@ -13,6 +13,7 @@ import {
 	DEFAULT_OUTPUT_TRUNCATION_LIMIT_BYTES,
 	DEFAULT_OUTPUT_TRUNCATION_LIMIT_LINES,
 	DEFAULT_EVIDENCE_QUEUE,
+	DEFAULT_KEEPER,
 } from "./defaults";
 
 export interface RepoMemoryConfig {
@@ -44,6 +45,15 @@ export interface RepoMemoryConfig {
 		dedupeWindowHours: number;
 	};
 	warnings: string[];
+	keeper: {
+		enabled: boolean;
+		leaseDurationMs: number;
+		maxRunTimeMs: number;
+		maxTokensPerRun: number;
+		batchSize: number;
+		runOnAgentEnd: boolean;
+		fileCardPriority: string[];
+	};
 }
 
 export function loadConfig(repoRoot: string): RepoMemoryConfig {
@@ -87,6 +97,7 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 
 	const outputSrc = (src.output ?? {}) as Record<string, unknown>;
 	const evidenceQueueSrc = (src.evidenceQueue ?? {}) as Record<string, unknown>;
+	const keeperSrc = (src.keeper ?? {}) as Record<string, unknown>;
 
 	return {
 		enabled: bool(src.enabled, true),
@@ -127,6 +138,17 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 			maxClaimLength: num(evidenceQueueSrc.maxClaimLength, DEFAULT_EVIDENCE_QUEUE.maxClaimLength, 1, 10000),
 			maxMetadataSizeBytes: num(evidenceQueueSrc.maxMetadataSizeBytes, DEFAULT_EVIDENCE_QUEUE.maxMetadataSizeBytes, 128, 1_000_000),
 			dedupeWindowHours: num(evidenceQueueSrc.dedupeWindowHours, DEFAULT_EVIDENCE_QUEUE.dedupeWindowHours, 1, 8760),
+		},
+		keeper: {
+			enabled: bool(keeperSrc.enabled, DEFAULT_KEEPER.enabled),
+			leaseDurationMs: num(keeperSrc.leaseDurationMs, DEFAULT_KEEPER.leaseDurationMs, 1000, 3600000),
+			maxRunTimeMs: num(keeperSrc.maxRunTimeMs, DEFAULT_KEEPER.maxRunTimeMs, 1000, 600000),
+			maxTokensPerRun: num(keeperSrc.maxTokensPerRun, DEFAULT_KEEPER.maxTokensPerRun, 1000, 500000),
+			batchSize: num(keeperSrc.batchSize, DEFAULT_KEEPER.batchSize, 1, 500),
+			runOnAgentEnd: bool(keeperSrc.runOnAgentEnd, DEFAULT_KEEPER.runOnAgentEnd),
+			fileCardPriority: arrStr(keeperSrc.fileCardPriority).length > 0
+				? arrStr(keeperSrc.fileCardPriority)
+				: DEFAULT_KEEPER.fileCardPriority,
 		},
 		warnings,
 	};

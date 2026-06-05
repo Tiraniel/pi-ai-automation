@@ -8,6 +8,7 @@
  */
 
 import * as crypto from "node:crypto";
+import * as os from "node:os";
 import { redactText, redactStrings, redactMetadata } from "../security/redaction";
 import { openDb, closeDb } from "../index/db";
 
@@ -221,9 +222,7 @@ export function getEvidenceQueueCounts(
 	const staleEvidence = Number(
 		(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 1").get(repoKey) as { c: number }).c
 	);
-	const pendingEvidence = Number(
-		(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 0").get(repoKey) as { c: number }).c
-	);
+	const pendingEvidence = getPendingEvidenceCount(db, repoKey);
 	return { totalEvidence, staleEvidence, pendingEvidence };
 }
 
@@ -232,6 +231,161 @@ export function getEvidenceQueueCounts(
  * current indexed file hashes. This is called during sync/status/read.
  * Does not delete rows; only updates is_stale and stale_reason.
  */
+export interface EvidenceBatchRow {
+	id: number;
+	repo_key: string;
+	context_version: string;
+	agent_id: string;
+	agent_role: string;
+	agent_run_id: string;
+	claim: string;
+	evidence_refs: string | null;
+	changed_files: string | null;
+	confidence: number | null;
+	recorded_at: number;
+}
+
+export interface ClaimEvidenceBatchResult {
+	claimed: EvidenceBatchRow[];
+	leaseHolder: string;
+	leaseExpiresAt: number;
+}
+
+const PROCESS_ID = `${os.hostname()}-${process.pid}-${Date.now()}`;
+
+function makeLeaseHolder(): string {
+	return PROCESS_ID;
+}
+
+/**
+ * Claim a batch of unprocessed evidence rows with a short-term lease.
+ * Uses BEGIN IMMEDIATE to prevent concurrent claimers from overlapping.
+ * Reclaims expired leases automatically.
+ */
+export function claimEvidenceBatch(
+	db: SqliteDb,
+	repoKey: string,
+	batchSize: number,
+	leaseDurationMs: number,
+): ClaimEvidenceBatchResult {
+	const now = Date.now();
+	const leaseHolder = makeLeaseHolder();
+	const leaseExpiresAt = now + leaseDurationMs;
+
+	const beginStmt = db.prepare("BEGIN IMMEDIATE");
+	const commitStmt = db.prepare("COMMIT");
+	const rollbackStmt = db.prepare("ROLLBACK");
+
+	beginStmt.run();
+
+	try {
+		// Reclaim expired leases first
+		const expiredStmt = db.prepare(
+			`UPDATE evidence SET keeper_state = 'pending', keeper_lease_holder = NULL,
+			 keeper_leased_at = NULL, keeper_expires_at = NULL
+			 WHERE repo_key = ? AND keeper_state = 'processing' AND keeper_expires_at < ?`
+		);
+		expiredStmt.run(repoKey, now);
+
+		// Claim unprocessed rows (pending or null state)
+		const claimStmt = db.prepare(
+			`UPDATE evidence SET keeper_state = 'processing', keeper_lease_holder = ?,
+			 keeper_leased_at = ?, keeper_expires_at = ?
+			 WHERE id IN (
+				 SELECT id FROM evidence
+				 WHERE repo_key = ? AND is_stale = 0
+					 AND (keeper_state IS NULL OR keeper_state = 'pending')
+					 AND (keeper_processed_at IS NULL)
+				 ORDER BY recorded_at ASC
+				 LIMIT ?
+			 )
+			 RETURNING id, repo_key, context_version, agent_id, agent_role, agent_run_id,
+			   claim, evidence_refs, changed_files, confidence, recorded_at`
+		);
+
+		const rows = claimStmt.all(leaseHolder, now, leaseExpiresAt, repoKey, batchSize) as EvidenceBatchRow[];
+
+		commitStmt.run();
+		return { claimed: rows ?? [], leaseHolder, leaseExpiresAt };
+	} catch (err) {
+		try {
+			rollbackStmt.run();
+		} catch {
+			// ignore rollback errors
+		}
+		throw err;
+	}
+}
+
+export interface CompleteEvidenceBatchResult {
+	completed: number;
+	errors: number;
+}
+
+/**
+ * Mark evidence rows as processed (or error) and release their lease.
+ */
+export function completeEvidenceBatch(
+	db: SqliteDb,
+	repoKey: string,
+	ids: number[],
+	success: boolean,
+	error?: string,
+	leaseHolder?: string,
+): CompleteEvidenceBatchResult {
+	if (ids.length === 0) return { completed: 0, errors: 0 };
+
+	const now = Date.now();
+	const state = success ? 'processed' : 'error';
+	const placeholders = ids.map(() => '?').join(',');
+
+	const leaseClause = leaseHolder ? 'AND keeper_lease_holder = ?' : '';
+	const stmt = db.prepare(
+		`UPDATE evidence SET keeper_state = ?, keeper_processed_at = ?,
+		 keeper_lease_holder = NULL, keeper_expires_at = NULL,
+		 keeper_error = ?
+		 WHERE repo_key = ? AND id IN (${placeholders}) ${leaseClause}`
+	);
+
+	const params = [state, now, error ?? null, repoKey, ...ids];
+	if (leaseHolder) params.push(leaseHolder);
+	const result = stmt.run(...params);
+	const changes = result.changes ?? 0;
+	return {
+		completed: success ? changes : 0,
+		errors: success ? 0 : changes,
+	};
+}
+
+export function getPendingEvidenceCount(db: SqliteDb, repoKey: string): number {
+	try {
+		const row = db.prepare(
+			`SELECT COUNT(*) as c FROM evidence
+			 WHERE repo_key = ? AND is_stale = 0
+				 AND (
+					 (keeper_state IS NULL OR keeper_state = 'pending')
+					 OR (keeper_state = 'processing' AND keeper_expires_at <= ?)
+				 )
+				 AND keeper_processed_at IS NULL`
+		).get(repoKey, Date.now()) as { c: number } | undefined;
+		return Number(row?.c ?? 0);
+	} catch {
+		return 0;
+	}
+}
+
+export function getProcessingEvidenceCount(db: SqliteDb, repoKey: string): number {
+	try {
+		const row = db.prepare(
+			`SELECT COUNT(*) as c FROM evidence
+			 WHERE repo_key = ? AND keeper_state = 'processing' AND keeper_expires_at > ?`
+		).get(repoKey, Date.now()) as { c: number } | undefined;
+		return Number(row?.c ?? 0);
+	} catch {
+		return 0;
+	}
+}
+
 export function markPossiblyStaleEvidence(
 	db: SqliteDb,
 	repoKey: string,

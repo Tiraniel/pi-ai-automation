@@ -138,6 +138,25 @@ const MIGRATIONS = [
 	)`,
 ];
 
+function isRetryableOpenError(err: unknown): boolean {
+	if (!err) return false;
+	const msg = String((err as any)?.message ?? err);
+	const code = String((err as any)?.code ?? "");
+	return (
+		msg.includes("SQLITE_BUSY") ||
+		msg.includes("locked") ||
+		msg.includes("busy") ||
+		code.includes("SQLITE_BUSY") ||
+		code.includes("EBUSY")
+	);
+}
+
+function sleepMs(ms: number): void {
+	const sab = new SharedArrayBuffer(4);
+	const ia = new Int32Array(sab);
+	Atomics.wait(ia, 0, 0, Math.max(1, Math.floor(ms)));
+}
+
 /**
  * Open the SQLite database lazily, create cache dir, run migrations,
  * and set WAL/parallel-read-safe pragmas.
@@ -147,27 +166,59 @@ export function openDb(repoKey: string, repoRoot: string): DatabaseHandle {
 	const cacheDir = ensureCacheDir(repoKey);
 	const dbPath = path.join(cacheDir, "index.sqlite");
 
-	const db = new DatabaseSync(dbPath);
-	db.exec("PRAGMA journal_mode = WAL;");
-	db.exec("PRAGMA synchronous = NORMAL;");
-	db.exec("PRAGMA busy_timeout = 5000;");
-	db.exec("PRAGMA foreign_keys = ON;");
+	const delays = [10, 25, 50];
+	let lastErr: unknown;
+	for (let attempt = 0; attempt <= delays.length; attempt++) {
+		try {
+			const db = new DatabaseSync(dbPath);
+			db.exec("PRAGMA journal_mode = WAL;");
+			db.exec("PRAGMA synchronous = NORMAL;");
+			db.exec("PRAGMA busy_timeout = 5000;");
+			db.exec("PRAGMA foreign_keys = ON;");
 
-	for (const migration of MIGRATIONS) {
-		db.exec(migration);
+			for (const migration of MIGRATIONS) {
+				db.exec(migration);
+			}
+
+			// Backward-compatible ALTER TABLE for evidence columns added after TASK-003
+			ensureColumn(db, "evidence", "agent_role", "TEXT NOT NULL DEFAULT ''");
+			ensureColumn(db, "evidence", "task_id", "TEXT");
+			ensureColumn(db, "evidence", "file_hashes", "TEXT");
+
+			// TASK-006: evidence processing lease columns
+			ensureColumn(db, "evidence", "keeper_state", "TEXT");
+			ensureColumn(db, "evidence", "keeper_lease_holder", "TEXT");
+			ensureColumn(db, "evidence", "keeper_leased_at", "INTEGER");
+			ensureColumn(db, "evidence", "keeper_expires_at", "INTEGER");
+			ensureColumn(db, "evidence", "keeper_processed_at", "INTEGER");
+			ensureColumn(db, "evidence", "keeper_error", "TEXT");
+
+			// TASK-006: file card metadata columns
+			ensureColumn(db, "files", "card_source_hash", "TEXT");
+			ensureColumn(db, "files", "card_context_version", "TEXT");
+			ensureColumn(db, "files", "card_refs", "TEXT");
+			ensureColumn(db, "files", "card_excerpts", "TEXT");
+			ensureColumn(db, "files", "card_confidence", "REAL");
+			ensureColumn(db, "files", "card_worker_id", "TEXT");
+			ensureColumn(db, "files", "card_metadata", "TEXT");
+			ensureColumn(db, "files", "card_stale_reason", "TEXT");
+
+			return {
+				db,
+				close() {
+					try { db.close(); } catch { /* ignore */ }
+				},
+			};
+		} catch (err) {
+			lastErr = err;
+			if (attempt < delays.length && isRetryableOpenError(err)) {
+				sleepMs(delays[attempt]);
+				continue;
+			}
+			throw err;
+		}
 	}
-
-	// Backward-compatible ALTER TABLE for evidence columns added after TASK-003
-	ensureColumn(db, "evidence", "agent_role", "TEXT NOT NULL DEFAULT ''");
-	ensureColumn(db, "evidence", "task_id", "TEXT");
-	ensureColumn(db, "evidence", "file_hashes", "TEXT");
-
-	return {
-		db,
-		close() {
-			try { db.close(); } catch { /* ignore */ }
-		},
-	};
+	throw lastErr;
 }
 
 export function closeDb(handle: DatabaseHandle | null) {

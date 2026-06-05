@@ -21,6 +21,7 @@ export const DEFAULT_KEEPER = {
 	maxTokensPerRun: 50000,
 	batchSize: 10,
 	runOnAgentEnd: true,
+	fileCardPriority: ["missing", "stale", "fresh"] as string[],
 } as const;
 
 export const DEFAULT_INTEGRITY = {
