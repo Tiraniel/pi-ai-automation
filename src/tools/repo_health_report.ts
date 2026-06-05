@@ -36,8 +36,8 @@ export function registerRepoHealthReport(pi: ExtensionAPI) {
 			const lines = [
 				"# repo_health_report (MVP scaffold)",
 				"",
-				"> **Note:** This is a TASK-002 scaffold. The integrity consultant is not yet implemented (TASK-007).",
-				"> No findings were generated and no LLM calls were made.",
+				"> **Note:** The integrity consultant is not yet implemented (TASK-007).",
+				"> Deterministic index is available via `repo_index_status`. No findings were generated and no LLM calls were made.",
 				"",
 				"## Parameters",
 				`- maxFindings: ${maxFindings}`,

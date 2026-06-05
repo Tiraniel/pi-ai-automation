@@ -19,7 +19,7 @@ export function registerRepoContext(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "repo_context",
 		label: "Repo: Context",
-		description: "Return a bounded, structured summary of the repo for the current agent turn. (Scaffold — no index built yet.)",
+		description: "Return a bounded, structured summary of the repo for the current agent turn. Deterministic index is available via repo_index_status; bounded context/evidence storage remain future tasks.",
 		promptSnippet: "Get bounded repo context before planning or coding",
 		promptGuidelines: [
 			"Use repo_context when you need a quick overview of the repo structure, key files, or current state.",
@@ -33,10 +33,9 @@ export function registerRepoContext(pi: ExtensionAPI) {
 			const maxTokens = Number(p?.maxTokens ?? 8000);
 
 			const lines = [
-				"# repo_context (MVP scaffold)",
+				"# repo_context (scaffold)",
 				"",
-				"> **Note:** This is a TASK-002 scaffold. No deterministic index, file cards, or evidence queue exists yet.",
-				"> Indexing will be implemented in TASK-003; cards/brief in TASK-004; evidence in TASK-005.",
+				"> **Note:** Deterministic index is available via `repo_index_status`. Bounded context and evidence storage remain future tasks (TASK-004/005).",
 				"",
 				"## Parameters",
 				`- maxFiles: ${maxFiles}`,
@@ -48,10 +47,12 @@ export function registerRepoContext(pi: ExtensionAPI) {
 				"## Runtime",
 				`- cwd: ${rt.cwd}`,
 				`- repoRoot: ${rt.repoRoot}`,
+				`- repoKey: ${rt.repoKey}`,
+				`- cacheDbPath: ${rt.cacheDbPath}`,
 				"",
 				"## Result",
-				"No repository scan was performed. This tool will return ranked file summaries, key imports/exports,",
-				"and optional evidence once the deterministic index is built (TASK-003/004).",
+				"No ranked file summary was generated. This tool will return ranked file summaries, key imports/exports,",
+				"and optional evidence once bounded context is implemented (TASK-004).",
 			];
 
 			return {
@@ -59,10 +60,12 @@ export function registerRepoContext(pi: ExtensionAPI) {
 				details: {
 					scaffold: true,
 					repoRoot: rt.repoRoot,
+					repoKey: rt.repoKey,
+					cacheDbPath: rt.cacheDbPath,
 					maxFiles,
 					maxTokens,
 					query: p?.query,
-					indexBuilt: false,
+					indexBuilt: true,
 					cardsAvailable: false,
 					evidenceAvailable: false,
 				},

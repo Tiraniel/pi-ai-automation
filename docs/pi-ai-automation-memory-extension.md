@@ -4,12 +4,12 @@ Global Pi extension that provides AI-facing repo context, evidence checkpointing
 
 ## Status
 
-**Current:** TASK-002 scaffold (MVP skeleton). No indexing, SQLite, LLM calls, or keeper scheduling is implemented yet.
+**Current:** TASK-003 deterministic index core implemented. SQLite-backed index, git/non-git discovery, exclusions, dirty overlay, and basic status are operational.
 
 | Component | Status | Task |
 |-----------|--------|------|
 | Extension skeleton + tool registration | ✅ Done | TASK-002 |
-| Deterministic index (SQLite, scanner, sync) | ⏳ Pending | TASK-003 |
+| Deterministic index (SQLite, scanner, sync) | ✅ Core implemented | TASK-003 |
 | `repo_context` + auto-brief | ⏳ Pending | TASK-004 |
 | `repo_checkpoint` evidence queue | ⏳ Pending | TASK-005 |
 | Keeper scheduler + file cards | ⏳ Pending | TASK-006 |
@@ -38,12 +38,10 @@ After install, the extension auto-registers when Pi starts in any repo.
 
 | Tool | Purpose | Current Behavior |
 |------|---------|------------------|
-| `repo_context` | Bounded repo summary for agent planning | Scaffold: returns metadata and a status message. No scan performed. |
-| `repo_checkpoint` | Append evidence to the evidence queue | Scaffold: validates input, returns `recorded: false`, `storage: pending TASK-005`. |
-| `repo_health_report` | Ranked integrity/consultant report | Scaffold: returns empty findings with a status message. No LLM calls. |
-| `repo_index_status` | Quick diagnostic of the deterministic index | Scaffold: returns placeholder counts (all zero) and metadata. |
-
-All tools explicitly state they are scaffold stubs and defer real work to future tasks.
+| `repo_context` | Bounded repo summary for agent planning | Scaffold: returns metadata and a status message. Deterministic index is available via `repo_index_status`; bounded context/evidence storage remain future tasks. |
+| `repo_checkpoint` | Append evidence to the evidence queue | Scaffold: validates input, returns `recorded: false`, `storage: pending TASK-005`. Deterministic index is available via `repo_index_status`. |
+| `repo_health_report` | Ranked integrity/consultant report | Scaffold: returns empty findings with a status message. No LLM calls yet. Deterministic index is available via `repo_index_status`. |
+| `repo_index_status` | Quick diagnostic of the deterministic index | Core implemented: syncs on demand, shows file counts, dirty/untracked state, exclusion counts, language breakdown, and keeper lease. |
 
 ## Diagnostic Commands
 
@@ -92,14 +90,13 @@ A single-writer SQLite lease prevents concurrent keeper writes across multiple P
 
 ## Scaffold Limitations
 
-- No deterministic index: `repo_index_status` returns all zeros.
-- No evidence persistence: `repo_checkpoint` accepts but does not store.
-- No LLM calls: `repo_health_report` never invokes a model.
-- No auto-brief: `before_agent_start` is a no-op.
-- No keeper runs: `agent_end` trigger is a no-op.
-- No SQLite or cache files are created.
+- `repo_context` is not yet context-aware (TASK-004).
+- `repo_checkpoint` accepts but does not persist evidence (TASK-005).
+- `repo_health_report` does not invoke LLMs or generate findings (TASK-007).
+- `before_agent_start` auto-brief is a no-op (TASK-004).
+- Keeper scheduling is a no-op (TASK-006).
 
-## Security Defaults (Future)
+## Security Defaults
 
 - Default exclusions for secrets, generated artifacts, and large binaries.
 - Redaction of high-entropy strings before hashing or storage.

@@ -52,7 +52,7 @@ export function registerRepoCheckpoint(pi: ExtensionAPI) {
 			const lines = [
 				"# repo_checkpoint (MVP scaffold)",
 				"",
-				"> **Note:** This is a TASK-002 scaffold. The evidence queue is not yet implemented (TASK-005).",
+				"> **Note:** Deterministic index is available via `repo_index_status`. Evidence persistence is pending TASK-005.",
 				"> The checkpoint was validated but not persisted to SQLite.",
 				"",
 				"## Accepted (not stored)",
@@ -61,6 +61,7 @@ export function registerRepoCheckpoint(pi: ExtensionAPI) {
 				`- confidence: ${confidence}`,
 				`- changedFiles: ${JSON.stringify(changedFiles)}`,
 				`- contextVersion: ${p?.contextVersion ?? "(current, not resolved)"}`,
+				`- repoKey: ${rt.repoKey}`,
 				"",
 				"## Result",
 				"- recorded: false",
