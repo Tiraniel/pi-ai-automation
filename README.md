@@ -326,6 +326,41 @@ Default session-per-task flow:
 
 See [`examples/sprints-config.json`](./examples/sprints-config.json).
 
+## pi-ai-automation-memory (repo context extension)
+
+This package also includes a global repo-memory extension that gives every Brain/agent turn fast, bounded repo context via a deterministic SQLite-backed index.
+
+### Install
+
+The extension is bundled with this package — no separate install needed. It auto-registers when Pi starts.
+
+### AI tools
+
+- `repo_context` — Bounded repo summary for agent planning.
+- `repo_checkpoint` — Append-only evidence queue for claims, test refs, and confidence.
+- `repo_health_report` — Ranked integrity/consultant findings (optional Gantt).
+- `repo_index_status` — Quick diagnostic of index state and keeper lease.
+
+### Current status
+
+**MVP scaffold (TASK-002).** The extension loads without errors and registers all four tools, but no repository scanning, SQLite indexing, LLM calls, or keeper scheduling is implemented yet. Each tool returns a clear scaffold status message. Real functionality will land in TASK-003 through TASK-007.
+
+### No-load-scan guarantee
+
+The extension does **not** scan the repo, open SQLite, run `git status`, or walk the file tree on extension load. All indexing is deferred to lazy/on-demand tool calls. This keeps Pi startup fast and side-effect free.
+
+### Diagnostic command
+
+- `/repo-memory-status` — Show extension status, registered tools, and model preset list.
+
+### Intended usage
+
+- **Brain**: call `repo_context` before planning; call `repo_checkpoint` after delegating to record claims.
+- **Coder**: call `repo_context` with a focused `query`; call `repo_checkpoint` after completing work.
+- **Reviewer**: call `repo_health_report` to surface integrity findings.
+
+See [`docs/pi-ai-automation-memory-extension.md`](./docs/pi-ai-automation-memory-extension.md) for the full extension docs, and [`docs/pi-ai-automation-memory-spec.md`](./docs/pi-ai-automation-memory-spec.md) for the architecture blueprint.
+
 ## Update flow
 
 - Update this package version/ref in your Pi package source.

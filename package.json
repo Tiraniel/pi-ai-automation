@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Brain -> coder -> reviewer automation workflow for Pi",
   "license": "MIT",
-  "keywords": ["pi-package", "pi", "workflow", "automation"],
+  "keywords": ["pi-package", "pi", "workflow", "automation", "repo-memory", "ai-context"],
   "pi": {
-    "extensions": ["./extensions/brain-workflow.ts", "./extensions/sprint-system.ts"],
+    "extensions": ["./extensions/brain-workflow.ts", "./extensions/sprint-system.ts", "./src/index.ts"],
     "skills": ["./skills"]
   },
   "peerDependencies": {
