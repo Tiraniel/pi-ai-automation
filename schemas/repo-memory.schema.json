@@ -1,0 +1,524 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tiraniel.dev/schemas/pi-ai-automation-memory/repo-memory.schema.json",
+  "title": "pi-ai-automation-memory Configuration",
+  "description": "Project-local configuration for the pi-ai-automation-memory extension. Place at .pi/repo-memory.json",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "Master switch for the extension in this project.",
+      "default": true
+    },
+    "cache": {
+      "type": "object",
+      "description": "Global cache settings.",
+      "properties": {
+        "basePath": {
+          "type": "string",
+          "description": "Base directory for the global repo-memory cache. '~' is expanded to the user's home directory.",
+          "default": "~/.pi/agent/repo-memory"
+        },
+        "maxSizeMb": {
+          "type": "integer",
+          "minimum": 64,
+          "description": "Soft maximum cache size in megabytes. Older repos may be pruned.",
+          "default": 1024
+        },
+        "pruneAgeDays": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Delete cached repo data older than this many days of inactivity.",
+          "default": 90
+        }
+      },
+      "additionalProperties": false
+    },
+    "indexing": {
+      "type": "object",
+      "description": "Deterministic index behavior.",
+      "properties": {
+        "respectGitignore": {
+          "type": "boolean",
+          "description": "Skip files matched by .gitignore during indexing.",
+          "default": true
+        },
+        "defaultExclusions": {
+          "type": "array",
+          "description": "Default glob patterns excluded from indexing. These are built-in and cannot be removed, only supplemented.",
+          "items": { "type": "string" },
+          "default": [
+            ".env*",
+            "*.pem",
+            "*.key",
+            "*.p12",
+            "*.pfx",
+            "id_rsa*",
+            "id_ed25519*",
+            ".aws/",
+            ".ssh/",
+            "credentials*",
+            "secrets*",
+            "*.secret",
+            "*.token",
+            "*.passwd",
+            "node_modules/",
+            "dist/",
+            "build/",
+            ".next/",
+            "coverage/",
+            "*.min.js",
+            "*.min.css",
+            "*.map",
+            "*.zip",
+            "*.tar.gz",
+            "*.png",
+            "*.jpg",
+            "*.gif",
+            "*.mp4",
+            "*.pdf",
+            "*.woff*",
+            "*.ttf",
+            ".vscode/",
+            ".idea/",
+            "*.iml",
+            ".DS_Store",
+            "Thumbs.db"
+          ]
+        },
+        "additionalExclusions": {
+          "type": "array",
+          "description": "User-supplied glob patterns to exclude from indexing in addition to defaults.",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "maxFileSizeBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "description": "Files larger than this are indexed for metadata only; content is not hashed or carded.",
+          "default": 1048576
+        },
+        "includeLockfiles": {
+          "type": "boolean",
+          "description": "Whether to include lock files (package-lock.json, yarn.lock, etc.) in the index.",
+          "default": false
+        },
+        "languages": {
+          "type": "array",
+          "description": "Language identifiers to restrict indexing to. Empty means auto-detect all.",
+          "items": { "type": "string" },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "memory": {
+      "type": "object",
+      "description": "Card and evidence retention limits.",
+      "properties": {
+        "maxCardsPerRepo": {
+          "type": "integer",
+          "minimum": 100,
+          "description": "Maximum number of file cards to retain per repo. Oldest stale cards are pruned first.",
+          "default": 10000
+        },
+        "maxEvidencePerRepo": {
+          "type": "integer",
+          "minimum": 100,
+          "description": "Maximum evidence items to retain per repo. Oldest stale evidence is pruned first.",
+          "default": 5000
+        },
+        "cardRetentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Prune cards older than this many days if over maxCardsPerRepo.",
+          "default": 90
+        },
+        "evidenceRetentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Prune evidence older than this many days if over maxEvidencePerRepo.",
+          "default": 180
+        }
+      },
+      "additionalProperties": false
+    },
+    "autoBrief": {
+      "type": "object",
+      "description": "Automatic Brain repo brief injected before_agent_start.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable automatic brief injection.",
+          "default": true
+        },
+        "maxTokens": {
+          "type": "integer",
+          "minimum": 500,
+          "description": "Approximate token budget for the brief.",
+          "default": 4000
+        },
+        "minIntervalMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum time between brief regenerations if context_version has not changed.",
+          "default": 30000
+        },
+        "includeCards": {
+          "type": "boolean",
+          "description": "Include file cards in the brief when fresh.",
+          "default": true
+        },
+        "includeEvidence": {
+          "type": "boolean",
+          "description": "Include recent evidence items in the brief.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "tools": {
+      "type": "object",
+      "description": "Default parameters for AI-facing tools.",
+      "properties": {
+        "repo_context": {
+          "type": "object",
+          "properties": {
+            "maxFiles": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 30
+            },
+            "maxTokens": {
+              "type": "integer",
+              "minimum": 500,
+              "default": 8000
+            }
+          },
+          "additionalProperties": false
+        },
+        "repo_health_report": {
+          "type": "object",
+          "properties": {
+            "maxFindings": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20
+            },
+            "includeGanttDefault": {
+              "type": "boolean",
+              "description": "Default value for the includeGantt parameter.",
+              "default": false
+            },
+            "forceRefreshDefault": {
+              "type": "boolean",
+              "description": "Default value for the forceRefresh parameter.",
+              "default": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidenceQueue": {
+      "type": "object",
+      "description": "Evidence queue behavior.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the evidence queue.",
+          "default": true
+        },
+        "maxClaimLength": {
+          "type": "integer",
+          "minimum": 50,
+          "description": "Maximum character length for a claim string.",
+          "default": 500
+        },
+        "maxMetadataSizeBytes": {
+          "type": "integer",
+          "minimum": 256,
+          "description": "Maximum size of the metadata JSON object in bytes.",
+          "default": 4096
+        },
+        "dedupeWindowHours": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Deduplication window: identical claims within this many hours are ignored.",
+          "default": 168
+        }
+      },
+      "additionalProperties": false
+    },
+    "keeper": {
+      "type": "object",
+      "description": "Async hybrid keeper scheduling.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the keeper.",
+          "default": true
+        },
+        "leaseDurationMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Keeper lease TTL in milliseconds.",
+          "default": 300000
+        },
+        "maxRunTimeMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Maximum wall-clock time for one keeper work unit.",
+          "default": 30000
+        },
+        "maxTokensPerRun": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Maximum input+output tokens for one keeper work unit.",
+          "default": 50000
+        },
+        "batchSize": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of file cards to generate in one batch.",
+          "default": 10
+        },
+        "runOnAgentEnd": {
+          "type": "boolean",
+          "description": "Trigger keeper after each agent turn completes.",
+          "default": true
+        },
+        "fileCardPriority": {
+          "type": "array",
+          "description": "Order of priority for file card generation.",
+          "items": {
+            "type": "string",
+            "enum": ["missing", "stale", "fresh"]
+          },
+          "default": ["missing", "stale", "fresh"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "integrity": {
+      "type": "object",
+      "description": "Integrity consultant settings.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the integrity consultant.",
+          "default": true
+        },
+        "maxAgeMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum age of cached health findings before regeneration.",
+          "default": 3600000
+        },
+        "principles": {
+          "type": "array",
+          "description": "User-defined principle strings to guide the consultant.",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "defaultCategories": {
+          "type": "array",
+          "description": "Categories the consultant evaluates by default.",
+          "items": {
+            "type": "string",
+            "enum": [
+              "test_coverage",
+              "type_safety",
+              "doc_freshness",
+              "dependency_risk",
+              "architectural_drift",
+              "security"
+            ]
+          },
+          "default": [
+            "test_coverage",
+            "type_safety",
+            "doc_freshness",
+            "dependency_risk",
+            "architectural_drift",
+            "security"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "modelPresets": {
+      "type": "object",
+      "description": "Provider-agnostic model presets for memory tasks.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Preset identifier. Must match the object key."
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description of the preset's purpose."
+          },
+          "providerHint": {
+            "type": "string",
+            "description": "Optional preferred provider name (e.g., 'anthropic', 'openai')."
+          },
+          "modelHint": {
+            "type": "string",
+            "description": "Optional preferred model pattern (e.g., 'claude-sonnet-*')."
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2,
+            "description": "Sampling temperature.",
+            "default": 0.2
+          },
+          "maxTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum output tokens."
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": ["off", "minimal", "low", "medium", "high", "xhigh"],
+            "description": "Thinking level for reasoning models.",
+            "default": "off"
+          },
+          "systemPrompt": {
+            "type": "string",
+            "description": "Task-specific system prompt override."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether this preset is active.",
+            "default": false
+          },
+          "budgetMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "description": "Maximum wall-clock time for a call using this preset.",
+            "default": 30000
+          },
+          "budgetTokens": {
+            "type": "integer",
+            "minimum": 1000,
+            "description": "Maximum input+output tokens for a call using this preset.",
+            "default": 16000
+          },
+          "fallbackBehavior": {
+            "type": "string",
+            "enum": ["error", "skip", "degrade"],
+            "description": "Behavior when the preferred model is unavailable.",
+            "default": "skip"
+          }
+        },
+        "required": ["name"],
+        "additionalProperties": false
+      },
+      "default": {
+        "index_keeper": {
+          "name": "index_keeper",
+          "description": "Generate and refresh file cards for the deterministic index.",
+          "temperature": 0.2,
+          "maxTokens": 4096,
+          "thinkingLevel": "off",
+          "enabled": true,
+          "budgetMs": 30000,
+          "budgetTokens": 16000,
+          "fallbackBehavior": "skip"
+        },
+        "integrity_keeper": {
+          "name": "integrity_keeper",
+          "description": "Generate ranked health findings and advisory reports.",
+          "temperature": 0.2,
+          "maxTokens": 4096,
+          "thinkingLevel": "off",
+          "enabled": true,
+          "budgetMs": 60000,
+          "budgetTokens": 32000,
+          "fallbackBehavior": "skip"
+        },
+        "scout_broad": {
+          "name": "scout_broad",
+          "description": "Cross-file pattern scan: TODOs, deprecated APIs, broad architectural smells.",
+          "temperature": 0.3,
+          "maxTokens": 4096,
+          "thinkingLevel": "off",
+          "enabled": false,
+          "budgetMs": 60000,
+          "budgetTokens": 32000,
+          "fallbackBehavior": "skip"
+        },
+        "scout_deep": {
+          "name": "scout_deep",
+          "description": "Deep architectural analysis and dependency risk assessment.",
+          "temperature": 0.3,
+          "maxTokens": 8192,
+          "thinkingLevel": "low",
+          "enabled": false,
+          "budgetMs": 120000,
+          "budgetTokens": 64000,
+          "fallbackBehavior": "skip"
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "description": "Security and privacy settings.",
+      "properties": {
+        "redactionEnabled": {
+          "type": "boolean",
+          "description": "Enable automatic redaction of likely secrets before indexing or storing evidence.",
+          "default": true
+        },
+        "redactionPatterns": {
+          "type": "array",
+          "description": "Additional regex patterns (as strings) for secret redaction.",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "secretExclusions": {
+          "type": "array",
+          "description": "Additional glob patterns for secret files to exclude entirely.",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "allowSecretFilesInIndex": {
+          "type": "boolean",
+          "description": "If true, secret-matched files are indexed for metadata but never carded. If false, they are skipped entirely.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "description": "Output formatting defaults.",
+      "properties": {
+        "defaultTruncationLimitBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "description": "Default byte limit for tool output truncation.",
+          "default": 51200
+        },
+        "defaultTruncationLimitLines": {
+          "type": "integer",
+          "minimum": 10,
+          "description": "Default line limit for tool output truncation.",
+          "default": 2000
+        },
+        "includeHashInOutput": {
+          "type": "boolean",
+          "description": "Include content hash strings in tool output.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

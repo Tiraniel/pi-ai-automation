@@ -1,0 +1,162 @@
+{
+  "enabled": true,
+  "cache": {
+    "basePath": "~/.pi/agent/repo-memory",
+    "maxSizeMb": 1024,
+    "pruneAgeDays": 90
+  },
+  "indexing": {
+    "respectGitignore": true,
+    "defaultExclusions": [
+      ".env*",
+      "*.pem",
+      "*.key",
+      "*.p12",
+      "*.pfx",
+      "id_rsa*",
+      "id_ed25519*",
+      ".aws/",
+      ".ssh/",
+      "credentials*",
+      "secrets*",
+      "*.secret",
+      "*.token",
+      "*.passwd",
+      "node_modules/",
+      "dist/",
+      "build/",
+      ".next/",
+      "coverage/",
+      "*.min.js",
+      "*.min.css",
+      "*.map",
+      "*.zip",
+      "*.tar.gz",
+      "*.png",
+      "*.jpg",
+      "*.gif",
+      "*.mp4",
+      "*.pdf",
+      "*.woff*",
+      "*.ttf",
+      ".vscode/",
+      ".idea/",
+      "*.iml",
+      ".DS_Store",
+      "Thumbs.db"
+    ],
+    "additionalExclusions": [],
+    "maxFileSizeBytes": 1048576,
+    "includeLockfiles": false,
+    "languages": []
+  },
+  "memory": {
+    "maxCardsPerRepo": 10000,
+    "maxEvidencePerRepo": 5000,
+    "cardRetentionDays": 90,
+    "evidenceRetentionDays": 180
+  },
+  "autoBrief": {
+    "enabled": true,
+    "maxTokens": 4000,
+    "minIntervalMs": 30000,
+    "includeCards": true,
+    "includeEvidence": false
+  },
+  "tools": {
+    "repo_context": {
+      "maxFiles": 30,
+      "maxTokens": 8000
+    },
+    "repo_health_report": {
+      "maxFindings": 20,
+      "includeGanttDefault": false,
+      "forceRefreshDefault": false
+    }
+  },
+  "evidenceQueue": {
+    "enabled": true,
+    "maxClaimLength": 500,
+    "maxMetadataSizeBytes": 4096,
+    "dedupeWindowHours": 168
+  },
+  "keeper": {
+    "enabled": true,
+    "leaseDurationMs": 300000,
+    "maxRunTimeMs": 30000,
+    "maxTokensPerRun": 50000,
+    "batchSize": 10,
+    "runOnAgentEnd": true,
+    "fileCardPriority": ["missing", "stale", "fresh"]
+  },
+  "integrity": {
+    "enabled": true,
+    "maxAgeMs": 3600000,
+    "principles": [],
+    "defaultCategories": [
+      "test_coverage",
+      "type_safety",
+      "doc_freshness",
+      "dependency_risk",
+      "architectural_drift",
+      "security"
+    ]
+  },
+  "modelPresets": {
+    "index_keeper": {
+      "name": "index_keeper",
+      "description": "Generate and refresh file cards for the deterministic index.",
+      "temperature": 0.2,
+      "maxTokens": 4096,
+      "thinkingLevel": "off",
+      "enabled": true,
+      "budgetMs": 30000,
+      "budgetTokens": 16000,
+      "fallbackBehavior": "skip"
+    },
+    "integrity_keeper": {
+      "name": "integrity_keeper",
+      "description": "Generate ranked health findings and advisory reports.",
+      "temperature": 0.2,
+      "maxTokens": 4096,
+      "thinkingLevel": "off",
+      "enabled": true,
+      "budgetMs": 60000,
+      "budgetTokens": 32000,
+      "fallbackBehavior": "skip"
+    },
+    "scout_broad": {
+      "name": "scout_broad",
+      "description": "Cross-file pattern scan: TODOs, deprecated APIs, broad architectural smells.",
+      "temperature": 0.3,
+      "maxTokens": 4096,
+      "thinkingLevel": "off",
+      "enabled": false,
+      "budgetMs": 60000,
+      "budgetTokens": 32000,
+      "fallbackBehavior": "skip"
+    },
+    "scout_deep": {
+      "name": "scout_deep",
+      "description": "Deep architectural analysis and dependency risk assessment.",
+      "temperature": 0.3,
+      "maxTokens": 8192,
+      "thinkingLevel": "low",
+      "enabled": false,
+      "budgetMs": 120000,
+      "budgetTokens": 64000,
+      "fallbackBehavior": "skip"
+    }
+  },
+  "security": {
+    "redactionEnabled": true,
+    "redactionPatterns": [],
+    "secretExclusions": [],
+    "allowSecretFilesInIndex": false
+  },
+  "output": {
+    "defaultTruncationLimitBytes": 51200,
+    "defaultTruncationLimitLines": 2000,
+    "includeHashInOutput": false
+  }
+}
