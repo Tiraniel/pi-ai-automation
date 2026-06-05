@@ -252,6 +252,8 @@ const GONKA_PROVIDER_NAME = "gonka";
 const GONKA_BROKER_URL_ENV = "GONKA_BROKER_URL";
 const GONKA_BROKER_API_KEY_ENV = "GONKA_BROKER_API_KEY";
 const GONKA_DEFAULT_BROKER_URL = "https://node.gonka.lat/v1";
+const GONKA_DOTENV_PATH = path.join(os.homedir(), ".pi", ".env");
+const GONKA_DOTENV_KEYS = [GONKA_BROKER_URL_ENV, GONKA_BROKER_API_KEY_ENV] as const;
 
 /**
  * Conservative vLLM/OpenAI-compatible broker compat for the current Gonka broker.
@@ -335,6 +337,55 @@ const WORKFLOW_PROFILES: Record<WorkflowProfileId, WorkflowProfile> = {
 		apply: GONKA_HYBRID_PROFILE_APPLY,
 	},
 };
+
+function parseGonkaDotenvValue(rawValue: string): string {
+	let value = rawValue.trim();
+	if (!value) return "";
+
+	const quote = value[0];
+	if ((quote === '"' || quote === "'") && value.length > 1) {
+		const end = value.lastIndexOf(quote);
+		value = end > 0 ? value.slice(1, end) : value.slice(1);
+		if (quote === '"') {
+			value = value
+				.replace(/\\n/g, "\n")
+				.replace(/\\r/g, "\r")
+				.replace(/\\t/g, "\t")
+				.replace(/\\"/g, '"')
+				.replace(/\\\\/g, "\\");
+		}
+		return value;
+	}
+
+	const commentStart = value.search(/\s#/);
+	if (commentStart >= 0) value = value.slice(0, commentStart).trim();
+	return value;
+}
+
+function loadGonkaEnvFromDefaultDotenv(): void {
+	let text: string;
+	try {
+		text = fs.readFileSync(GONKA_DOTENV_PATH, "utf8");
+	} catch {
+		return;
+	}
+
+	for (const rawLine of text.split(/\r?\n/)) {
+		let line = rawLine.trim();
+		if (!line || line.startsWith("#")) continue;
+		if (line.startsWith("export ")) line = line.slice("export ".length).trim();
+
+		const separator = line.indexOf("=");
+		if (separator <= 0) continue;
+
+		const key = line.slice(0, separator).trim();
+		if (!GONKA_DOTENV_KEYS.includes(key as (typeof GONKA_DOTENV_KEYS)[number])) continue;
+		if (process.env[key]?.trim()) continue;
+
+		const value = parseGonkaDotenvValue(line.slice(separator + 1));
+		if (value.trim()) process.env[key] = value;
+	}
+}
 
 function readWorkflowProfileFlagFromArgv(): string | undefined {
 	const argv = process.argv.slice(2);
@@ -2082,6 +2133,8 @@ function makeRoomTools(pi: ExtensionAPI) {
 }
 
 export default function brainWorkflow(pi: ExtensionAPI) {
+	loadGonkaEnvFromDefaultDotenv();
+
 	pi.registerFlag("workflow-agent", {
 		description: "Workflow agent for this process: brain or none",
 		type: "string",

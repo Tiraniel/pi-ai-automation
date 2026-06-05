@@ -97,16 +97,16 @@ Project-scoped: drop this into `.pi/workflow.json` (or `~/.pi/agent/workflow.jso
 
 `--workflow-profile` takes precedence over the config and applies after global/project config, so it is a true one-off switch for the current run. The alias `premium-brain-gonka-workers` is also accepted. The flag is forwarded to child delegates so the Gonka coder/reviewer model follows the parent session end-to-end.
 
-### Required environment variables
+### Required Gonka credentials
 
-The `gonka` provider is registered unconditionally, but its models are only usable when `GONKA_BROKER_API_KEY` is set in the shell that runs Pi (and any child delegate). Set `GONKA_BROKER_URL` too when using a broker other than the default:
+The `gonka` provider is registered unconditionally, but its models are only usable when `GONKA_BROKER_API_KEY` is available. Pi first respects values already exported in the shell, then falls back to `~/.pi/.env` for the Gonka keys so child delegates inherit them automatically. Set `GONKA_BROKER_URL` too when using a broker other than the default:
 
 | Env var | Purpose |
 | --- | --- |
 | `GONKA_BROKER_URL` | Optional OpenAI-compatible broker base URL; defaults to `https://node.gonka.lat/v1`. |
 | `GONKA_BROKER_API_KEY` | Required bearer token sent as the `Authorization` header. |
 
-`/workflow` shows `set`/`default` for the URL and `set`/`unset` for the key without printing the values.
+`/workflow` shows `set`/`default` for the URL and `set`/`unset` for the key without printing the values. Explicit shell values take precedence over `~/.pi/.env`; missing or unreadable `.env` files are ignored.
 
 ### Models in the profile
 
@@ -134,7 +134,8 @@ The three broker models pass the OpenAI Chat Completions **auto/default** `tool_
 ```bash
 mkdir -p .pi
 cp examples/workflow.gonka-hybrid.json .pi/workflow.json
-# export GONKA_BROKER_API_KEY (and optionally GONKA_BROKER_URL), then:
+# Put GONKA_BROKER_API_KEY (and optionally GONKA_BROKER_URL) in ~/.pi/.env,
+# or export them in this shell, then:
 pi
 ```
 
