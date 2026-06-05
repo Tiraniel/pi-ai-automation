@@ -34,6 +34,9 @@ interface WorkflowConfig {
 	/** Delegate display/transport mode. "headless" (default) runs child delegates as JSON subprocesses.
 	 *  "pane" launches them in a visible cmux surface. "auto" uses pane when cmux is available, otherwise headless. */
 	delegateDisplay?: "headless" | "pane" | "auto";
+	/** When pane mode is used, auto-close the cmux surface/tab when the sub-agent finishes.
+	 *  Default: true. Set to false to leave the surface open for inspection. */
+	delegatePaneAutoClose?: boolean;
 }
 
 interface LoadedWorkflowConfig {
@@ -107,6 +110,7 @@ interface ReviewerTargetResult {
 const DEFAULT_CONFIG: WorkflowConfig = {
 	autoApplyBrain: true,
 	delegateDisplay: "headless",
+	delegatePaneAutoClose: true,
 	reviewerSwarm: {
 		enabled: true,
 		maxConcurrency: 2,
@@ -845,11 +849,43 @@ function sendCmuxCommand(args: string[]): { stdout: string; stderr: string; ok: 
 	}
 }
 
-function createCmuxDelegateSurface(title: string): string | null {
-	const args = ["new-split", "right"];
-	if (process.env.CMUX_SURFACE_ID) {
-		args.push("--surface", process.env.CMUX_SURFACE_ID);
+interface CmuxSurfaceContext {
+	workspace?: string;
+	pane?: string;
+	window?: string;
+}
+
+function readStringField(source: Record<string, unknown>, keys: string[]): string | undefined {
+	for (const key of keys) {
+		const value = source[key];
+		if (typeof value === "string" && value.trim()) return value.trim();
 	}
+	return undefined;
+}
+
+function parseCmuxSurfaceContext(stdout: string): CmuxSurfaceContext | undefined {
+	try {
+		const parsed = JSON.parse(stdout);
+		if (!isPlainObject(parsed)) return undefined;
+		const source = isPlainObject(parsed.caller) ? parsed.caller : isPlainObject(parsed.focused) ? parsed.focused : parsed;
+		const context = {
+			workspace: readStringField(source, ["workspace_ref", "workspace"]),
+			pane: readStringField(source, ["pane_ref", "pane"]),
+			window: readStringField(source, ["window_ref", "window"]),
+		};
+		return context.workspace || context.pane || context.window ? context : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function createCmuxDelegateTab(title: string): string | null {
+	// Gather caller context so the new surface opens in the same workspace/pane
+	const context = parseCmuxSurfaceContext(sendCmuxCommand(["identify", "--json"]).stdout);
+	const args = ["new-surface", "--type", "terminal"];
+	if (context?.workspace) args.push("--workspace", context.workspace);
+	if (context?.pane) args.push("--pane", context.pane);
+	if (context?.window) args.push("--window", context.window);
 	const result = sendCmuxCommand(args);
 	if (!result.ok) return null;
 	const match = result.stdout.trim().match(/surface:(\d+)/);
@@ -859,6 +895,10 @@ function createCmuxDelegateSurface(title: string): string | null {
 		sendCmuxCommand(["rename-tab", "--surface", surfaceId, title]);
 	}
 	return surfaceId;
+}
+
+function closeCmuxSurface(surfaceId: string): void {
+	sendCmuxCommand(["close-surface", "--surface", surfaceId]);
 }
 
 function shellEscape(str: string): string {
@@ -1407,7 +1447,10 @@ async function runDelegateAgentPane(
 	const scriptPath = path.join(runDir, "run.sh");
 	await fs.promises.writeFile(scriptPath, scriptLines.join("\n") + "\n", { mode: 0o700 });
 
-	const surfaceId = createCmuxDelegateSurface(`pi-${agent}`);
+	const autoClose = loaded.config.delegatePaneAutoClose !== false;
+	let surfaceClosed = false;
+
+	const surfaceId = createCmuxDelegateTab(`pi-${agent}`);
 	if (!surfaceId) {
 		await removeTempPrompt(tmpDir, tmpPromptPath);
 		try { await fs.promises.rm(runDir, { recursive: true }); } catch { /* ignore */ }
@@ -1430,6 +1473,10 @@ async function runDelegateAgentPane(
 	// Send the script into the pane
 	const sendResult = sendCmuxCommand(["send", "--surface", surfaceId, `bash ${shellEscape(scriptPath)}\n`]);
 	if (!sendResult.ok) {
+		if (autoClose && !surfaceClosed) {
+			closeCmuxSurface(surfaceId);
+			surfaceClosed = true;
+		}
 		await removeTempPrompt(tmpDir, tmpPromptPath);
 		return {
 			agent, task, cwd,
@@ -1463,7 +1510,8 @@ async function runDelegateAgentPane(
 			}
 			if (Date.now() - startTime > DELEGATE_PANE_MAX_WAIT_MS) {
 				state.stderr = appendCapped(state.stderr, "\nPane delegate timed out after 10 minutes", MAX_STDERR_BYTES);
-				sendCmuxCommand(["close-surface", "--surface", surfaceId]);
+				closeCmuxSurface(surfaceId);
+				surfaceClosed = true;
 				return 1;
 			}
 
@@ -1588,6 +1636,10 @@ async function runDelegateAgentPane(
 		};
 	} finally {
 		await removeTempPrompt(tmpDir, tmpPromptPath);
+		if (autoClose && !surfaceClosed && surfaceId) {
+			closeCmuxSurface(surfaceId);
+			surfaceClosed = true;
+		}
 		// Leave runDir for potential inspection; do not delete
 	}
 }
@@ -2847,6 +2899,7 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 				`reviewerSwarm targets: ${reviewerSwarm.targets.join(" | ")}`,
 				"",
 				`delegateDisplay: ${delegateMode}${delegateMode !== "headless" ? ` (cmux=${cmuxAvailable ? "available" : "unavailable"})` : ""}`,
+				`delegatePaneAutoClose: ${loaded.config.delegatePaneAutoClose !== false ? "true (default)" : "false"}`,
 				`env override: ${DELEGATE_DISPLAY_ENV}=${process.env[DELEGATE_DISPLAY_ENV] ?? "(not set)"}`,
 			];
 			ctx.ui.notify(lines.join("\n"), "info");

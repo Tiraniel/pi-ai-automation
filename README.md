@@ -108,16 +108,17 @@ Valid values: `headless`, `pane`, `auto`. The env var takes precedence over conf
    - `session.jsonl` — child Pi session file written by `--session`
    - `done.json` — sidecar written by the child when it calls `workflow_delegate_done`
    - `run.sh` — generated shell script that launches the child Pi session
-2. Parent opens a new cmux split (`cmux new-split right`) and sends a shell script into it that sets up env vars and runs Pi with `--session <sessionFile>` so the child renders its real TUI in the cmux surface.
+2. Parent opens a new cmux terminal surface in the **same workspace/pane** (`cmux new-surface --type terminal`, scoped by `cmux identify --json` context) and sends a shell script into it that sets up env vars and runs Pi with `--session <sessionFile>` so the child renders its real TUI in the cmux tab.
 3. Parent tails the session JSONL for finalized messages/tool calls (not streaming events) and polls `done.json` for completion.
 4. The child gets a pane-specific instruction in its system prompt to call `workflow_delegate_done` after producing its final handoff.
 5. On abort, parent sends Escape to the pane.
+6. By default, the surface is **auto-closed** when the sub-agent finishes (success, failure, or abort). Set `delegatePaneAutoClose: false` to leave it open for inspection.
 
 ### Requirements and limitations
 
 - **cmux must be running** and `CMUX_SOCKET_PATH` must be set (or discoverable). If cmux is unavailable and mode is `pane`, the delegate returns a clear failed result. `auto` silently falls back to headless.
 - **API keys must be available to the pane shell** via its own environment, Pi auth, or `~/.pi/.env`. The generated pane script only exports workflow-specific env vars and does not copy arbitrary parent secrets into `/tmp`.
-- **Panes may remain open** after the child finishes (useful for inspection). They are not auto-closed.
+- **Surfaces auto-close by default** after the child finishes. Set `delegatePaneAutoClose: false` to keep them open for inspection.
 - **Initial support is cmux-only.** tmux/zellij are not implemented unless very cheap to add later.
 - **Reviewer swarm** works with pane mode too — each reviewer target may open its own pane when cmux is available.
 

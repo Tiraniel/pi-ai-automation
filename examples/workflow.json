@@ -1,6 +1,7 @@
 {
   "autoApplyBrain": true,
   "delegateDisplay": "headless",
+  "delegatePaneAutoClose": true,
   "reviewerSwarm": {
     "enabled": true,
     "maxConcurrency": 2,
