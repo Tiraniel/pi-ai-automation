@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -149,6 +150,7 @@ const MAX_FINAL_OUTPUT_PREVIEW = 500;
 const MAX_TOOL_UPDATE_PREVIEW = 180;
 
 const DELEGATE_DISPLAY_ENV = "PI_WORKFLOW_DELEGATE_DISPLAY";
+const SUB_AGENT_DONE_TOOL_NAME = "sub_agent_done";
 const DELEGATE_DONE_TOOL_NAME = "workflow_delegate_done";
 const DELEGATE_DONE_ENV_VAR = "PI_WORKFLOW_DELEGATE_DONE_FILE";
 const DELEGATE_PANE_POLL_MS = 600;
@@ -557,13 +559,44 @@ function parseCmuxSurfaceContext(stdout: string): CmuxSurfaceContext | undefined
 	}
 }
 
-function createCmuxDelegateTab(title: string): string | null {
-	// Gather caller context so the new surface opens in the same workspace/pane
-	const context = parseCmuxSurfaceContext(sendCmuxCommand(["identify", "--json"]).stdout);
+const cmuxWorkspaceCache = new Map<string, string>();
+
+function deriveGroupKeyAndTitle(roomContext: ResolvedRoomContext | undefined, task: string): { groupKey: string; groupTitle: string } {
+	if (roomContext?.roomId) {
+		return { groupKey: roomContext.roomId, groupTitle: roomContext.roomId };
+	}
+	const taskIdMatch = task.match(/\b([A-Z]+-\d+)\b/);
+	if (taskIdMatch) {
+		return { groupKey: taskIdMatch[1], groupTitle: taskIdMatch[1] };
+	}
+	const hash = createHash("sha256").update(task).digest("hex").slice(0, 8);
+	const preview = task.slice(0, 20).replace(/[^\w-]+/g, "-").replace(/^-+|-+$/g, "");
+	const title = `${preview || "task"}-${hash}`;
+	return { groupKey: title, groupTitle: title };
+}
+
+function buildTabTitle(groupTitle: string, roomContext: ResolvedRoomContext | undefined, agent: AgentName): string {
+	const roleLabel = roomContext?.role
+		? sanitizeRole(roomContext.role)
+		: roomContext?.agentId
+		? sanitizeAgentId(roomContext.agentId)
+		: agent;
+	const safeGroup = groupTitle.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "task";
+	const safeRole = roleLabel.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || agent;
+	return `${safeGroup}-${safeRole}`;
+}
+
+function createCmuxDelegateTab(title: string, workspace?: string): string | null {
 	const args = ["new-surface", "--type", "terminal"];
-	if (context?.workspace) args.push("--workspace", context.workspace);
-	if (context?.pane) args.push("--pane", context.pane);
-	if (context?.window) args.push("--window", context.window);
+	if (workspace) {
+		args.push("--workspace", workspace);
+	} else {
+		// Gather caller context so the new surface opens in the same workspace/pane
+		const context = parseCmuxSurfaceContext(sendCmuxCommand(["identify", "--json"]).stdout);
+		if (context?.workspace) args.push("--workspace", context.workspace);
+		if (context?.pane) args.push("--pane", context.pane);
+		if (context?.window) args.push("--window", context.window);
+	}
 	const result = sendCmuxCommand(args);
 	if (!result.ok) return null;
 	const match = result.stdout.trim().match(/surface:(\d+)/);
@@ -573,6 +606,14 @@ function createCmuxDelegateTab(title: string): string | null {
 		sendCmuxCommand(["rename-tab", "--surface", surfaceId, title]);
 	}
 	return surfaceId;
+}
+
+function createCmuxWorkspaceForGroup(groupTitle: string, firstSurfaceId: string): string | undefined {
+	const moveResult = sendCmuxCommand(["move-tab-to-new-workspace", "--surface", firstSurfaceId, "--title", groupTitle]);
+	if (!moveResult.ok) return undefined;
+	const identifyResult = sendCmuxCommand(["identify", "--json", "--no-caller", "--surface", firstSurfaceId]);
+	const context = parseCmuxSurfaceContext(identifyResult.stdout);
+	return context?.workspace;
 }
 
 function closeCmuxSurface(surfaceId: string): void {
@@ -599,7 +640,7 @@ Return concise handoff output for Brain.`;
 		sections.push(KARPATHY_GUIDELINES_PROMPT.trim());
 	}
 	if (paneMode) {
-		sections.push(`You are running in a visible cmux pane. After producing your normal concise final handoff, call the \`${DELEGATE_DONE_TOOL_NAME}\` completion tool to signal that you are done. Do not leak raw hidden chain-of-thought in the pane.`);
+		sections.push(`You are running in a visible cmux pane. After producing your normal concise final handoff, you MUST call the \`${SUB_AGENT_DONE_TOOL_NAME}\` completion tool as your final action to return control to Brain. Final text alone is insufficient. Do not leak raw hidden chain-of-thought in the pane.`);
 	}
 	sections.push(footer);
 
@@ -638,6 +679,10 @@ function buildChildArgs(
 			}
 		}
 		if (paneMode) {
+			if (!seen.has(SUB_AGENT_DONE_TOOL_NAME)) {
+				effectiveTools.push(SUB_AGENT_DONE_TOOL_NAME);
+			}
+			// Optionally register legacy alias for backward compat
 			if (!seen.has(DELEGATE_DONE_TOOL_NAME)) {
 				effectiveTools.push(DELEGATE_DONE_TOOL_NAME);
 			}
@@ -645,10 +690,10 @@ function buildChildArgs(
 		if (effectiveTools.length > 0) args.push("--tools", effectiveTools.join(","));
 		else args.push("--no-tools");
 	} else if (paneMode) {
-		// When tools are unrestricted but pane mode still needs the done tool
-		// we can't add it without restricting to a specific list.
-		// Instead, rely on the child completion tool being globally registered
-		// when PI_WORKFLOW_DELEGATE_DONE_FILE is set.
+		// When tools are unrestricted, the child completion tool is globally
+		// registered when PI_WORKFLOW_DELEGATE_DONE_FILE is set.
+		// The primary tool is sub_agent_done; workflow_delegate_done is kept
+		// as a backward-compatible alias.
 	}
 	if (tmpPromptPath) args.push("--append-system-prompt", tmpPromptPath);
 	args.push(`Task from Brain to ${agent}:\n\n${task}`);
@@ -1128,7 +1173,14 @@ async function runDelegateAgentPane(
 	const autoClose = loaded.config.delegatePaneAutoClose !== false;
 	let surfaceClosed = false;
 
-	const surfaceId = createCmuxDelegateTab(`pi-${agent}`);
+	// Workspace grouping: derive group key/title from room or task
+	const { groupKey, groupTitle } = deriveGroupKeyAndTitle(roomContext, task);
+	let workspaceId = cmuxWorkspaceCache.get(groupKey);
+
+	// Create the surface. If we have a cached workspace, reuse it; otherwise
+	// open in caller context then move to a new workspace on first use.
+	const tabTitle = buildTabTitle(groupTitle, roomContext, agent);
+	let surfaceId: string | null = createCmuxDelegateTab(tabTitle, workspaceId);
 	if (!surfaceId) {
 		await removeTempPrompt(tmpDir, tmpPromptPath);
 		try { await fs.promises.rm(runDir, { recursive: true }); } catch { /* ignore */ }
@@ -1146,6 +1198,16 @@ async function runDelegateAgentPane(
 			finalOutput: "",
 			thinkingChars: 0,
 		};
+	}
+
+	if (!workspaceId) {
+		// First delegate for this group: move tab to a new workspace
+		const createdWorkspace = createCmuxWorkspaceForGroup(groupTitle, surfaceId);
+		if (createdWorkspace) {
+			cmuxWorkspaceCache.set(groupKey, createdWorkspace);
+			workspaceId = createdWorkspace;
+		}
+		// Fallback: keep surface in caller context if move fails
 	}
 
 	// Send the script into the pane
@@ -1268,16 +1330,16 @@ async function runDelegateAgentPane(
 		const fromExit = finalDoneData?.from_exit === true;
 
 		if (fromExit) {
-			// Process exited without workflow_delegate_done
-			if (sidecarExitCode === 0) {
-				if (hasFinalOutput) return 0;
-				state.stderr = appendCapped(state.stderr, "\npane delegate exited without workflow_delegate_done", MAX_STDERR_BYTES);
-				return 1;
-			}
-			return sidecarExitCode ?? 1;
+			// Process exited without calling sub_agent_done — treat as failure
+			state.stderr = appendCapped(
+				state.stderr,
+				`\npane delegate exited without calling ${SUB_AGENT_DONE_TOOL_NAME} (exit ${sidecarExitCode ?? "unknown"}). The child MUST call ${SUB_AGENT_DONE_TOOL_NAME} as its final action to return control to Brain.`,
+				MAX_STDERR_BYTES,
+			);
+			return sidecarExitCode || 1;
 		}
 
-		// Normal done-tool sidecar
+		// Normal done-tool sidecar (sub_agent_done was called)
 		if (hasFinalOutput) return 0;
 		if (typeof finalDoneData?.summary === "string" && finalDoneData.summary.trim()) {
 			// Accept completion signaled with a summary even if no assistant text was captured
@@ -2521,35 +2583,53 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 
 	makeRoomTools(pi);
 
-	// Child-only completion tool for pane delegates. Only registered when the
+	// Child-only completion tools for pane delegates. Only registered when the
 	// env var is set (parent sets it before launching a pane delegate).
+	// sub_agent_done is the primary tool; workflow_delegate_done is a legacy alias.
+	function makeDoneToolExecute(toolName: string) {
+		return async (_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: ExtensionContext) => {
+			const doneFile = process.env[DELEGATE_DONE_ENV_VAR];
+			if (!doneFile) {
+				return { content: [{ type: "text", text: "Done file path not set in env." }], isError: true, details: { reason: "missing_env" } };
+			}
+			try {
+				const data = { done: true, summary: String(params?.summary ?? "").trim() || undefined, at: new Date().toISOString() };
+				fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
+			} catch (error) {
+				return { content: [{ type: "text", text: `Failed to write done file: ${error}` }], isError: true, details: { reason: "write_failed" } };
+			}
+			setTimeout(() => ctx.shutdown(), 500);
+			return { content: [{ type: "text", text: "Delegate completion signaled. Shutting down." }], details: { doneFile, tool: toolName } };
+		};
+	}
+
 	if (process.env[DELEGATE_DONE_ENV_VAR]) {
 		pi.registerTool({
-			name: DELEGATE_DONE_TOOL_NAME,
-			label: "Delegate Done",
+			name: SUB_AGENT_DONE_TOOL_NAME,
+			label: "Sub-Agent Done",
 			description: `Signal that the delegated task is complete. Only available in pane-delegate child sessions. Writes the done sidecar and shuts down the session.`,
 			promptSnippet: "Signal task completion and shut down.",
 			promptGuidelines: [
-				"Call this after producing your normal final handoff to signal completion to the parent.",
+				"Call this as your final action after producing your normal concise handoff to return control to Brain.",
 				"This tool writes the done sidecar and terminates the session.",
 			],
 			parameters: Type.Object({
 				summary: Type.Optional(Type.String({ description: "Optional one-line completion summary" })),
 			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				const doneFile = process.env[DELEGATE_DONE_ENV_VAR];
-				if (!doneFile) {
-					return { content: [{ type: "text", text: "Done file path not set in env." }], isError: true, details: { reason: "missing_env" } };
-				}
-				try {
-					const data = { done: true, summary: String(params?.summary ?? "").trim() || undefined, at: new Date().toISOString() };
-					fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
-				} catch (error) {
-					return { content: [{ type: "text", text: `Failed to write done file: ${error}` }], isError: true, details: { reason: "write_failed" } };
-				}
-				setTimeout(() => ctx.shutdown(), 500);
-				return { content: [{ type: "text", text: "Delegate completion signaled. Shutting down." }], details: { doneFile } };
-			},
+			execute: makeDoneToolExecute(SUB_AGENT_DONE_TOOL_NAME),
+		});
+		pi.registerTool({
+			name: DELEGATE_DONE_TOOL_NAME,
+			label: "Delegate Done (legacy)",
+			description: `Legacy alias for ${SUB_AGENT_DONE_TOOL_NAME}. Use ${SUB_AGENT_DONE_TOOL_NAME} instead.`,
+			promptSnippet: "Signal task completion and shut down (legacy alias).",
+			promptGuidelines: [
+				`Prefer ${SUB_AGENT_DONE_TOOL_NAME}. This alias exists for backward compatibility only.`,
+			],
+			parameters: Type.Object({
+				summary: Type.Optional(Type.String({ description: "Optional one-line completion summary" })),
+			}),
+			execute: makeDoneToolExecute(DELEGATE_DONE_TOOL_NAME),
 		});
 	}
 

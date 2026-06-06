@@ -106,11 +106,11 @@ Valid values: `headless`, `pane`, `auto`. The env var takes precedence over conf
 
 1. Parent creates a temp run directory with:
    - `session.jsonl` — child Pi session file written by `--session`
-   - `done.json` — sidecar written by the child when it calls `workflow_delegate_done`
+   - `done.json` — sidecar written by the child when it calls `sub_agent_done`
    - `run.sh` — generated shell script that launches the child Pi session
-2. Parent opens a new cmux terminal surface in the **same workspace/pane** (`cmux new-surface --type terminal`, scoped by `cmux identify --json` context) and sends a shell script into it that sets up env vars and runs Pi with `--session <sessionFile>` so the child renders its real TUI in the cmux tab.
+2. Parent opens a new cmux terminal surface in the **same workspace/pane** (`cmux new-surface --type terminal`, scoped by `cmux identify --json` context). If the delegate has `room` context (or a task id like `TASK-015`), the first surface is moved to a **new cmux workspace** (`move-tab-to-new-workspace`) named after the room/task id; subsequent delegates with the same group key reuse that workspace. Each agent gets a tab titled `{group}-{role}`, e.g. `auth-refactor-backend` or `TASK-015-coder`.
 3. Parent tails the session JSONL for finalized messages/tool calls (not streaming events) and polls `done.json` for completion.
-4. The child gets a pane-specific instruction in its system prompt to call `workflow_delegate_done` after producing its final handoff.
+4. The child gets a pane-specific instruction in its system prompt: after producing the concise final handoff, **MUST call `sub_agent_done`** as the final action to return control to Brain. Final text alone is insufficient.
 5. On abort, parent sends Escape to the pane.
 6. By default, the surface is **auto-closed** when the sub-agent finishes (success, failure, or abort). Set `delegatePaneAutoClose: false` to leave it open for inspection.
 
@@ -121,6 +121,7 @@ Valid values: `headless`, `pane`, `auto`. The env var takes precedence over conf
 - **Surfaces auto-close by default** after the child finishes. Set `delegatePaneAutoClose: false` to keep them open for inspection.
 - **Initial support is cmux-only.** tmux/zellij are not implemented unless very cheap to add later.
 - **Reviewer swarm** works with pane mode too — each reviewer target may open its own pane when cmux is available.
+- **`sub_agent_done` is required** in pane mode. A child that exits without calling it is treated as a failure, even on exit code 0. The legacy alias `workflow_delegate_done` is still registered for backward compatibility but prompts and system instructions prefer `sub_agent_done`.
 
 ## Opt-in Gonka hybrid profile
 
