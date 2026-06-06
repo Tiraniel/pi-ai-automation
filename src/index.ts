@@ -7,6 +7,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isBashToolResult, isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent";
 import { registerDiagnostics } from "./diagnostics";
 import { registerRepoContext } from "./tools/repo_context";
 import { registerRepoCheckpoint } from "./tools/repo_checkpoint";
@@ -178,6 +179,26 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 			return { messages: filtered };
 		}
 		return { messages };
+	});
+
+	// tool_result hook: lazily sync after mutation tools to mark stale
+	pi.on("tool_result", async (event, ctx) => {
+		if (!isBashToolResult(event) && !isEditToolResult(event) && !isWriteToolResult(event)) {
+			return;
+		}
+		try {
+			const rt = buildRuntime(ctx);
+			const cfg = loadConfig(rt.repoRoot);
+			if (!cfg.enabled) return;
+			// Lazy sync to mark status/hash/card/evidence stale after mutations
+			const { syncRepo: syncFn } = await import("./index/sync");
+			syncFn(rt.repoRoot, rt.repoKey, rt.cacheDbPath);
+		} catch (err: any) {
+			// Catch and log; never throw from hook
+			if (typeof console !== "undefined" && console.error) {
+				console.error("[pi-ai-automation-memory] tool_result sync error:", err?.message ?? String(err));
+			}
+		}
 	});
 
 	pi.on("agent_end", async (_event, ctx) => {

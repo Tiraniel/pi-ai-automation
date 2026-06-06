@@ -14,7 +14,7 @@ Global Pi extension that provides AI-facing repo context, evidence checkpointing
 | `repo_checkpoint` evidence queue | ✅ Implemented | TASK-005 |
 | Keeper scheduler + file cards | ✅ Implemented | TASK-006 |
 | Integrity consultant + health report | ⏳ Pending | TASK-007 |
-| Parallel/git hardening | ⏳ Pending | TASK-008 |
+| Parallel/git hardening | ✅ Implemented | TASK-008 |
 | Model presets + scouts | ⏳ Pending | TASK-009 |
 | OSS docs + tests | ⏳ Pending | TASK-010 |
 
@@ -97,6 +97,14 @@ Until TASK-009 implements model-preset LLM integration, the keeper generates car
 - Cards are bounded by `keeper.maxTokensPerRun` and `keeper.maxRunTimeMs`.
 
 This fallback ensures the keeper infrastructure is testable and useful even without an LLM provider configured.
+
+## Mutation Tracking & Stale Context (TASK-008)
+
+- After `bash`, `edit`, or `write` tools complete, a lazy `syncRepo` is triggered via `tool_result` hook to mark status/hash/card/evidence stale. Errors are caught and logged; the hook never throws.
+- `repo_context` accepts an optional `contextVersion` parameter. If provided and different from the current sync version, a top-level warning indicates stale requested context.
+- Merge conflicts are detected via `git status` and reported as high-risk warnings in both `repo_context` and `repo_index_status`. Conflicted file cards are forced stale with reason `"merge conflict detected"`.
+- Branch/HEAD switches reuse cards by content hash when the file content is identical, avoiding unnecessary stale marking.
+- DB writes during sync are wrapped in `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` for one-writer safety.
 
 ## Limitations
 

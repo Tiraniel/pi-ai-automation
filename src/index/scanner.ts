@@ -29,6 +29,7 @@ export interface ScannedFile {
 	isSecret: boolean;
 	isUntracked: boolean;
 	isDirty: boolean;
+	isConflicted: boolean;
 	language: string | null;
 	packageRoot: string | null;
 	importsHash: string | null;
@@ -360,6 +361,7 @@ export function scanRepo(
 			isSecret: false,
 			isUntracked: false,
 			isDirty: false,
+			isConflicted: false,
 			language,
 			packageRoot: packageRoot ? path.relative(repoRootResolved, packageRoot) || "." : null,
 			importsHash,

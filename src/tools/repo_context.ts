@@ -20,6 +20,7 @@ export const repoContextParameters = Type.Object({
 	maxTokens: Type.Optional(Type.Integer({ default: 8000, description: "Approximate token budget for response" })),
 	includeCards: Type.Optional(Type.Boolean({ default: true, description: "Include file cards if fresh" })),
 	includeEvidence: Type.Optional(Type.Boolean({ default: false, description: "Include recent evidence items" })),
+	contextVersion: Type.Optional(Type.String({ description: "Optional expected context version; warns if stale" })),
 });
 
 interface FileRecord {
@@ -222,6 +223,7 @@ export function registerRepoContext(pi: ExtensionAPI) {
 			const includeCards = Boolean(p?.includeCards ?? true);
 			const includeEvidence = Boolean(p?.includeEvidence ?? false);
 			const query = typeof p?.query === "string" ? p.query : undefined;
+			const requestedContextVersion = typeof p?.contextVersion === "string" ? p.contextVersion : undefined;
 
 			const sync = syncRepo(rt.repoRoot, rt.repoKey, rt.cacheDbPath);
 			const handle = openDb(rt.repoKey, rt.repoRoot);
@@ -300,6 +302,9 @@ export function registerRepoContext(pi: ExtensionAPI) {
 				const warnings: string[] = [...cfg.warnings];
 				if (sync.staleCards > 0) warnings.push(`${sync.staleCards} stale cards — do not trust card content.`);
 				if (sync.hasConflicts) warnings.push("Merge conflicts detected.");
+				if (requestedContextVersion && requestedContextVersion !== sync.contextVersion) {
+					warnings.push(`Context version mismatch: requested ${requestedContextVersion}, current ${sync.contextVersion}.`);
+				}
 				if (warnings.length > 0) {
 					lines.push("## Warnings");
 					for (const w of warnings) lines.push(`- ${w}`);
@@ -379,11 +384,10 @@ export function registerRepoContext(pi: ExtensionAPI) {
 					if (f.is_untracked) fileLines.push("- **untracked**");
 					if (imports.length > 0) fileLines.push(`- imports: ${imports.slice(0, 10).join(", ")}${imports.length > 10 ? " …" : ""}`);
 
-					// Trust rule: card is only trusted if freshness is fresh AND source/context match current sync
+					// Trust rule: card is trusted if freshness is fresh AND source hash matches current content
 					const cardTrusted =
 						f.card_freshness === "fresh" &&
-						f.card_source_hash === f.content_hash &&
-						f.card_context_version === sync.contextVersion;
+						(f.card_source_hash ?? f.content_hash) === f.content_hash;
 
 					if (includeCards && f.card_content && cardTrusted) {
 						fileLines.push("- card (fresh, trusted):");
@@ -487,6 +491,8 @@ export function registerRepoContext(pi: ExtensionAPI) {
 					content: [{ type: "text", text }],
 					details: {
 						context_version: sync.contextVersion,
+						requested_context_version: requestedContextVersion ?? null,
+						stale_context_warning: !!(requestedContextVersion && requestedContextVersion !== sync.contextVersion),
 						last_sync_at: sync.lastSyncAt,
 						index_freshness_ms: Date.now() - sync.lastSyncAt,
 						repoRoot: rt.repoRoot,
@@ -512,6 +518,8 @@ export function registerRepoContext(pi: ExtensionAPI) {
 						principles: cfg.integrity.principles,
 						warnings,
 						stale_card_files: staleCardFiles,
+						conflictCount: sync.conflictCount,
+						conflictPaths: sync.conflictPaths,
 					},
 				};
 			} finally {

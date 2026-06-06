@@ -42,6 +42,8 @@ export interface SyncResult {
 	osExcludedCount: number;
 	untrackedCount: number;
 	dirtyCount: number;
+	conflictCount: number;
+	conflictPaths: string[];
 	newFiles: number;
 	changedFiles: number;
 	removedFiles: number;
@@ -57,6 +59,21 @@ export interface SyncResult {
 	cacheDbPath: string;
 }
 
+interface CardReuseRow {
+	content_hash: string;
+	card_content: string | null;
+	card_source_hash: string | null;
+	card_context_version: string | null;
+	card_refs: string | null;
+	card_excerpts: string | null;
+	card_confidence: number | null;
+	card_worker_id: string | null;
+	card_metadata: string | null;
+	card_model_preset: string | null;
+	card_token_budget: number | null;
+	card_generated_at: number | null;
+}
+
 function computeConfigHash(repoRoot: string): string {
 	const configPath = path.join(repoRoot, ".pi", "repo-memory.json");
 	try {
@@ -67,12 +84,6 @@ function computeConfigHash(repoRoot: string): string {
 	}
 }
 
-/**
- * Compute a disk-based fingerprint for dirty/untracked/conflict files.
- * Reads current disk content directly for each path. Falls back to fileHashes
- * only if direct read is not possible.
- * Format: sorted(status\0relPath\0contentHash-or-DELETED-or-UNREADABLE\n)
- */
 function computeContentFingerprint(
 	paths: string[],
 	status: string,
@@ -109,7 +120,6 @@ function computeContextVersion(
 		if (gitState.hasUntracked) version += "-untracked";
 		if (gitState.hasConflicts) version += "-conflicts";
 
-		// Content-based fingerprints so version changes when dirty file content changes
 		const dirtyFp = computeContentFingerprint(gitState.dirtyPaths, "dirty", repoRoot, fileHashes);
 		const untrackedFp = computeContentFingerprint(gitState.untrackedPaths, "untracked", repoRoot, fileHashes);
 		const conflictFp = computeContentFingerprint(gitState.conflictPaths, "conflict", repoRoot, fileHashes);
@@ -118,7 +128,6 @@ function computeContextVersion(
 		if (conflictFp) version += "-cfp" + conflictFp.slice(0, 8);
 		return version;
 	}
-	// Non-git: merkle-like hash of all tracked file hashes
 	const sorted = Array.from(fileHashes.entries()).sort(([a], [b]) => a.localeCompare(b));
 	const hash = crypto.createHash("sha256");
 	for (const [rel, h] of sorted) {
@@ -127,16 +136,6 @@ function computeContextVersion(
 	return "nogit-" + hash.digest("hex").slice(0, 32);
 }
 
-/**
- * Run a deterministic sync for the repo at the given cwd.
- *
- * Resolves repoRoot from cwd (looks for .pi/repo-memory.json, then .git, then cwd).
- * Syncs the resolved repoRoot, not the raw cwd.
- *
- * @param cwd Working directory (usually from Pi context)
- * @param repoKey Deterministic repo key (from cache/paths)
- * @param cacheDbPath Path to SQLite DB
- */
 export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): SyncResult {
 	const repoRoot = resolveRepoRoot(cwd);
 	const gitRoot = findGitRoot(repoRoot);
@@ -159,11 +158,10 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			});
 		}
 
-		// Scan files
+		// Scan files (outside transaction)
 		const scanResult = scanRepo(repoRoot, gitRoot, knownFiles);
 		const scanned = scanResult.files;
 
-		// Mark existing files as deleted if not in scan
 		const scannedPaths = new Set(scanned.map((f) => f.relativePath));
 		const removedPaths: string[] = [];
 		for (const [relPath] of knownFiles) {
@@ -172,7 +170,7 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			}
 		}
 
-		// Apply git dirty/untracked flags with repoRoot-relative path matching
+		// Apply git dirty/untracked/conflict flags
 		if (gitState) {
 			const dirtySet = new Set(gitState.dirtyPaths);
 			const untrackedSet = new Set(gitState.untrackedPaths);
@@ -180,9 +178,16 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			for (const f of scanned) {
 				if (dirtySet.has(f.relativePath)) f.isDirty = true;
 				if (untrackedSet.has(f.relativePath)) f.isUntracked = true;
-				if (conflictSet.has(f.relativePath)) f.isDirty = true;
+				if (conflictSet.has(f.relativePath)) {
+					f.isConflicted = true;
+					f.isDirty = true;
+				}
 			}
 		}
+
+		// Prefer gitState.conflictPaths; still report excluded/missing ones
+		const conflictPaths = gitState?.conflictPaths ?? [];
+		const conflictCount = conflictPaths.length;
 
 		// Compute file hashes map for context version and fingerprints
 		const fileHashes = new Map<string, string>();
@@ -194,7 +199,6 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 		const contextVersion = computeContextVersion(gitState, repoRoot, fileHashes);
 		const lastSyncAt = Date.now();
 
-		// Content-based fingerprints
 		const dirtyFp = gitState
 			? computeContentFingerprint(gitState.dirtyPaths, "dirty", repoRoot, fileHashes)
 			: null;
@@ -202,33 +206,19 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			? computeContentFingerprint(gitState.untrackedPaths, "untracked", repoRoot, fileHashes)
 			: null;
 
-		// Upsert files
-		const insertStmt = db.prepare(
-			`INSERT INTO files (
-				repo_key, relative_path, absolute_path, content_hash, git_blob_hash, size_bytes, mtime_ms,
-				is_gitignored, is_generated, is_secret, is_untracked, is_dirty, is_deleted,
-				language, package_root, last_indexed_at, card_freshness, imports_hash, card_stale_reason
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(repo_key, relative_path) DO UPDATE SET
-				absolute_path = excluded.absolute_path,
-				content_hash = excluded.content_hash,
-				git_blob_hash = excluded.git_blob_hash,
-				size_bytes = excluded.size_bytes,
-				mtime_ms = excluded.mtime_ms,
-				is_gitignored = excluded.is_gitignored,
-				is_generated = excluded.is_generated,
-				is_secret = excluded.is_secret,
-				is_untracked = excluded.is_untracked,
-				is_dirty = excluded.is_dirty,
-				is_deleted = 0,
-				language = excluded.language,
-				package_root = excluded.package_root,
-				last_indexed_at = excluded.last_indexed_at,
-				card_freshness = excluded.card_freshness,
-				imports_hash = excluded.imports_hash,
-				card_stale_reason = excluded.card_stale_reason
-			`
-		);
+		// Build card reuse map by content hash from existing DB rows (including deleted)
+		const cardReuseMap = new Map<string, CardReuseRow>();
+		const allCardRows = db.prepare(
+			`SELECT content_hash, card_content, card_source_hash, card_context_version,
+				card_refs, card_excerpts, card_confidence, card_worker_id, card_metadata,
+				card_model_preset, card_token_budget, card_generated_at
+			 FROM files WHERE repo_key = ? AND card_freshness = 'fresh' AND card_content IS NOT NULL`
+		).all(repoKey) as CardReuseRow[];
+		for (const row of allCardRows) {
+			if (!cardReuseMap.has(row.content_hash)) {
+				cardReuseMap.set(row.content_hash, row);
+			}
+		}
 
 		// Track existing imports to preserve on unchanged files
 		const existingImports = new Map<string, string[]>();
@@ -243,142 +233,280 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			}
 		}
 
+		// --- BEGIN TRANSACTION ---
 		let newFiles = 0;
 		let changedFiles = 0;
-		for (const f of scanned) {
-			const known = knownFiles.get(f.relativePath);
-			if (!known) {
-				newFiles++;
-			} else if (known.contentHash !== f.contentHash) {
-				changedFiles++;
-			}
+		db.exec("BEGIN IMMEDIATE;");
+		let txCommitted = false;
 
-			// Determine card_freshness: if card exists and content changed, or context drifted, mark stale
-			let cardFreshness: string | null = "missing";
-			let cardStaleReason: string | null = null;
-			if (known) {
-				const existing = db.prepare(
-					"SELECT card_freshness, card_content, content_hash, card_source_hash, card_context_version FROM files WHERE repo_key = ? AND relative_path = ?"
-				).get(repoKey, f.relativePath) as { card_freshness: string | null; card_content: string | null; content_hash: string; card_source_hash: string | null; card_context_version: string | null } | undefined;
-				if (existing) {
-					if (existing.card_content && existing.content_hash !== f.contentHash) {
-						cardFreshness = "stale";
-						cardStaleReason = "content_hash changed since card generation";
-					} else if (existing.card_content && existing.card_context_version && existing.card_context_version !== contextVersion) {
-						cardFreshness = "stale";
-						cardStaleReason = `context_version drift: card ${existing.card_context_version} vs current ${contextVersion}`;
-					} else if (existing.card_content) {
-						cardFreshness = existing.card_freshness ?? "fresh";
-					} else {
-						cardFreshness = "missing";
+		try {
+			const insertStmt = db.prepare(
+				`INSERT INTO files (
+					repo_key, relative_path, absolute_path, content_hash, git_blob_hash, size_bytes, mtime_ms,
+					is_gitignored, is_generated, is_secret, is_untracked, is_dirty, is_deleted,
+					language, package_root, last_indexed_at, card_freshness, imports_hash,
+					card_content, card_source_hash, card_context_version, card_refs, card_excerpts,
+					card_confidence, card_worker_id, card_metadata, card_model_preset, card_token_budget,
+					card_generated_at, card_stale_reason
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(repo_key, relative_path) DO UPDATE SET
+					absolute_path = excluded.absolute_path,
+					content_hash = excluded.content_hash,
+					git_blob_hash = excluded.git_blob_hash,
+					size_bytes = excluded.size_bytes,
+					mtime_ms = excluded.mtime_ms,
+					is_gitignored = excluded.is_gitignored,
+					is_generated = excluded.is_generated,
+					is_secret = excluded.is_secret,
+					is_untracked = excluded.is_untracked,
+					is_dirty = excluded.is_dirty,
+					is_deleted = 0,
+					language = excluded.language,
+					package_root = excluded.package_root,
+					last_indexed_at = excluded.last_indexed_at,
+					card_freshness = excluded.card_freshness,
+					imports_hash = excluded.imports_hash,
+					card_content = excluded.card_content,
+					card_source_hash = excluded.card_source_hash,
+					card_context_version = excluded.card_context_version,
+					card_refs = excluded.card_refs,
+					card_excerpts = excluded.card_excerpts,
+					card_confidence = excluded.card_confidence,
+					card_worker_id = excluded.card_worker_id,
+					card_metadata = excluded.card_metadata,
+					card_model_preset = excluded.card_model_preset,
+					card_token_budget = excluded.card_token_budget,
+					card_generated_at = excluded.card_generated_at,
+					card_stale_reason = excluded.card_stale_reason
+				`
+			);
+
+			for (const f of scanned) {
+				const known = knownFiles.get(f.relativePath);
+				if (!known) {
+					newFiles++;
+				} else if (known.contentHash !== f.contentHash) {
+					changedFiles++;
+				}
+
+				let cardFreshness: string | null = "missing";
+				let cardStaleReason: string | null = null;
+				let cardContent: string | null = null;
+				let cardSourceHash: string | null = null;
+				let cardContextVersion: string | null = null;
+				let cardRefs: string | null = null;
+				let cardExcerpts: string | null = null;
+				let cardConfidence: number | null = null;
+				let cardWorkerId: string | null = null;
+				let cardMetadata: string | null = null;
+				let cardModelPreset: string | null = null;
+				let cardTokenBudget: number | null = null;
+				let cardGeneratedAt: number | null = null;
+
+				if (f.isConflicted) {
+					cardFreshness = "stale";
+					cardStaleReason = "merge conflict detected";
+					const existing = db.prepare(
+						`SELECT card_content, card_source_hash, card_context_version, card_refs,
+							card_excerpts, card_confidence, card_worker_id, card_metadata,
+							card_model_preset, card_token_budget, card_generated_at
+						 FROM files WHERE repo_key = ? AND relative_path = ?`
+					).get(repoKey, f.relativePath) as CardReuseRow | undefined;
+					if (existing) {
+						cardContent = existing.card_content;
+						cardSourceHash = existing.card_source_hash;
+						cardContextVersion = existing.card_context_version;
+						cardRefs = existing.card_refs;
+						cardExcerpts = existing.card_excerpts;
+						cardConfidence = existing.card_confidence;
+						cardWorkerId = existing.card_worker_id;
+						cardMetadata = existing.card_metadata;
+						cardModelPreset = existing.card_model_preset;
+						cardTokenBudget = existing.card_token_budget;
+						cardGeneratedAt = existing.card_generated_at;
+					}
+				} else if (known) {
+					const existing = db.prepare(
+						`SELECT card_freshness, card_content, content_hash, card_source_hash, card_context_version,
+							card_refs, card_excerpts, card_confidence, card_worker_id, card_metadata,
+							card_model_preset, card_token_budget, card_generated_at
+						 FROM files WHERE repo_key = ? AND relative_path = ?`
+					).get(repoKey, f.relativePath) as {
+						card_freshness: string | null;
+						card_content: string | null;
+						content_hash: string;
+						card_source_hash: string | null;
+						card_context_version: string | null;
+						card_refs: string | null;
+						card_excerpts: string | null;
+						card_confidence: number | null;
+						card_worker_id: string | null;
+						card_metadata: string | null;
+						card_model_preset: string | null;
+						card_token_budget: number | null;
+						card_generated_at: number | null;
+					} | undefined;
+					if (existing) {
+						if (existing.card_content) {
+							const sourceHash = existing.card_source_hash ?? existing.content_hash;
+							if (sourceHash !== f.contentHash) {
+								cardFreshness = "stale";
+								cardStaleReason = "content_hash changed since card generation";
+							} else {
+								cardFreshness = "fresh";
+								cardStaleReason = null;
+								cardContent = existing.card_content;
+								cardSourceHash = existing.card_source_hash ?? f.contentHash;
+								cardContextVersion = existing.card_context_version;
+								cardRefs = existing.card_refs;
+								cardExcerpts = existing.card_excerpts;
+								cardConfidence = existing.card_confidence;
+								cardWorkerId = existing.card_worker_id;
+								cardMetadata = existing.card_metadata;
+								cardModelPreset = existing.card_model_preset;
+								cardTokenBudget = existing.card_token_budget;
+								cardGeneratedAt = existing.card_generated_at;
+							}
+						} else {
+							cardFreshness = "missing";
+						}
+					}
+				} else {
+					// New file: try to reuse a fresh card by content hash
+					const reused = cardReuseMap.get(f.contentHash);
+					if (reused) {
+						cardFreshness = "fresh";
+						cardContent = reused.card_content;
+						cardSourceHash = reused.card_source_hash ?? f.contentHash;
+						cardContextVersion = reused.card_context_version;
+						cardRefs = reused.card_refs;
+						cardExcerpts = reused.card_excerpts;
+						cardConfidence = reused.card_confidence;
+						cardWorkerId = reused.card_worker_id;
+						cardMetadata = reused.card_metadata;
+						cardModelPreset = reused.card_model_preset;
+						cardTokenBudget = reused.card_token_budget;
+						cardGeneratedAt = reused.card_generated_at;
 					}
 				}
+
+				insertStmt.run(
+					repoKey,
+					f.relativePath,
+					f.absolutePath,
+					f.contentHash,
+					f.gitBlobHash,
+					f.sizeBytes,
+					f.mtimeMs,
+					f.isGitignored ? 1 : 0,
+					f.isGenerated ? 1 : 0,
+					f.isSecret ? 1 : 0,
+					f.isUntracked ? 1 : 0,
+					f.isDirty ? 1 : 0,
+					0,
+					f.language,
+					f.packageRoot,
+					lastSyncAt,
+					cardFreshness,
+					f.importsHash,
+					cardContent,
+					cardSourceHash,
+					cardContextVersion,
+					cardRefs,
+					cardExcerpts,
+					cardConfidence,
+					cardWorkerId,
+					cardMetadata,
+					cardModelPreset,
+					cardTokenBudget,
+					cardGeneratedAt,
+					cardStaleReason,
+				);
 			}
 
-			insertStmt.run(
-				repoKey,
-				f.relativePath,
-				f.absolutePath,
-				f.contentHash,
-				f.gitBlobHash,
-				f.sizeBytes,
-				f.mtimeMs,
-				f.isGitignored ? 1 : 0,
-				f.isGenerated ? 1 : 0,
-				f.isSecret ? 1 : 0,
-				f.isUntracked ? 1 : 0,
-				f.isDirty ? 1 : 0,
-				0,
-				f.language,
-				f.packageRoot,
-				lastSyncAt,
-				cardFreshness,
-				f.importsHash,
-				cardStaleReason,
-			);
-		}
+			const deleteImportsStmt = db.prepare("DELETE FROM imports WHERE from_file_id = (SELECT id FROM files WHERE repo_key = ? AND relative_path = ?)");
+			const insertImportStmt = db.prepare("INSERT INTO imports (from_file_id, to_file_id, import_path, import_type, repo_key) VALUES ((SELECT id FROM files WHERE repo_key = ? AND relative_path = ?), NULL, ?, ?, ?)");
+			const updateImportsHashStmt = db.prepare("UPDATE files SET imports_hash = ? WHERE repo_key = ? AND relative_path = ?");
 
-		// Populate imports table
-		// Delete old imports for changed/removed files, insert new ones.
-		// Preserve existing imports_hash on unchanged files.
-		const deleteImportsStmt = db.prepare("DELETE FROM imports WHERE from_file_id = (SELECT id FROM files WHERE repo_key = ? AND relative_path = ?)");
-		const insertImportStmt = db.prepare("INSERT INTO imports (from_file_id, to_file_id, import_path, import_type, repo_key) VALUES ((SELECT id FROM files WHERE repo_key = ? AND relative_path = ?), NULL, ?, ?, ?)");
-		const updateImportsHashStmt = db.prepare("UPDATE files SET imports_hash = ? WHERE repo_key = ? AND relative_path = ?");
-
-		for (const f of scanned) {
-			const known = knownFiles.get(f.relativePath);
-			let imports = f.importPaths;
-			let importsHash = f.importsHash;
-			if (known && known.contentHash === f.contentHash) {
-				// Hash unchanged; reuse existing imports and imports_hash if available
-				const existing = existingImports.get(f.relativePath);
-				if (existing && existing.length > 0) {
-					imports = existing;
-					importsHash = crypto.createHash("sha256").update(imports.sort().join("\n")).digest("hex");
+			for (const f of scanned) {
+				const known = knownFiles.get(f.relativePath);
+				let imports = f.importPaths;
+				let importsHash = f.importsHash;
+				if (known && known.contentHash === f.contentHash) {
+					const existing = existingImports.get(f.relativePath);
+					if (existing && existing.length > 0) {
+						imports = existing;
+						importsHash = crypto.createHash("sha256").update(imports.sort().join("\n")).digest("hex");
+					}
+				}
+				if (imports.length > 0) {
+					deleteImportsStmt.run(repoKey, f.relativePath);
+					for (const imp of imports) {
+						const importType = classifyImportType(imp);
+						insertImportStmt.run(repoKey, f.relativePath, imp, importType, repoKey);
+					}
+					if (importsHash) {
+						updateImportsHashStmt.run(importsHash, repoKey, f.relativePath);
+					}
+				} else if (known) {
+					deleteImportsStmt.run(repoKey, f.relativePath);
+					updateImportsHashStmt.run(null, repoKey, f.relativePath);
 				}
 			}
-			if (imports.length > 0) {
-				deleteImportsStmt.run(repoKey, f.relativePath);
-				for (const imp of imports) {
-					const importType = classifyImportType(imp);
-					insertImportStmt.run(repoKey, f.relativePath, imp, importType, repoKey);
-				}
-				if (importsHash) {
-					updateImportsHashStmt.run(importsHash, repoKey, f.relativePath);
-				}
-			} else if (known) {
-				// File changed or unchanged with zero imports: clear any stale imports rows
-				deleteImportsStmt.run(repoKey, f.relativePath);
-				updateImportsHashStmt.run(null, repoKey, f.relativePath);
-			}
-		}
 
-		// Mark removed files as deleted
-		for (const relPath of removedPaths) {
+			for (const relPath of removedPaths) {
+				db.prepare(
+					"UPDATE files SET is_deleted = 1 WHERE repo_key = ? AND relative_path = ?"
+				).run(repoKey, relPath);
+				deleteImportsStmt.run(repoKey, relPath);
+			}
+
 			db.prepare(
-				"UPDATE files SET is_deleted = 1 WHERE repo_key = ? AND relative_path = ?"
-			).run(repoKey, relPath);
-			deleteImportsStmt.run(repoKey, relPath);
+				`INSERT INTO repo_meta (
+					repo_key, repo_root, git_root, current_branch, current_head,
+					is_dirty, has_untracked, has_conflicts, last_sync_at,
+					context_version, config_hash, dirty_fingerprint, untracked_fingerprint
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT(repo_key) DO UPDATE SET
+					repo_root = excluded.repo_root,
+					git_root = excluded.git_root,
+					current_branch = excluded.current_branch,
+					current_head = excluded.current_head,
+					is_dirty = excluded.is_dirty,
+					has_untracked = excluded.has_untracked,
+					has_conflicts = excluded.has_conflicts,
+					last_sync_at = excluded.last_sync_at,
+					context_version = excluded.context_version,
+					config_hash = excluded.config_hash,
+					dirty_fingerprint = excluded.dirty_fingerprint,
+					untracked_fingerprint = excluded.untracked_fingerprint
+				`
+			).run(
+				repoKey,
+				repoRoot,
+				gitRoot,
+				gitState?.branch ?? null,
+				gitState?.head ?? null,
+				gitState?.isDirty ? 1 : 0,
+				gitState?.hasUntracked ? 1 : 0,
+				gitState?.hasConflicts ? 1 : 0,
+				lastSyncAt,
+				contextVersion,
+				configHash,
+				dirtyFp,
+				untrackedFp,
+			);
+
+			db.exec("COMMIT;");
+			txCommitted = true;
+		} catch (err) {
+			if (!txCommitted) {
+				try { db.exec("ROLLBACK;"); } catch { /* ignore */ }
+			}
+			throw err;
 		}
 
-		// Update repo_meta
-		db.prepare(
-			`INSERT INTO repo_meta (
-				repo_key, repo_root, git_root, current_branch, current_head,
-				is_dirty, has_untracked, has_conflicts, last_sync_at,
-				context_version, config_hash, dirty_fingerprint, untracked_fingerprint
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(repo_key) DO UPDATE SET
-				repo_root = excluded.repo_root,
-				git_root = excluded.git_root,
-				current_branch = excluded.current_branch,
-				current_head = excluded.current_head,
-				is_dirty = excluded.is_dirty,
-				has_untracked = excluded.has_untracked,
-				has_conflicts = excluded.has_conflicts,
-				last_sync_at = excluded.last_sync_at,
-				context_version = excluded.context_version,
-				config_hash = excluded.config_hash,
-				dirty_fingerprint = excluded.dirty_fingerprint,
-				untracked_fingerprint = excluded.untracked_fingerprint
-			`
-		).run(
-			repoKey,
-			repoRoot,
-			gitRoot,
-			gitState?.branch ?? null,
-			gitState?.head ?? null,
-			gitState?.isDirty ? 1 : 0,
-			gitState?.hasUntracked ? 1 : 0,
-			gitState?.hasConflicts ? 1 : 0,
-			lastSyncAt,
-			contextVersion,
-			configHash,
-			dirtyFp,
-			untrackedFp,
-		);
-
-		// Counts
+		// Counts (after transaction)
 		const totalFiles = Number(
 			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND is_deleted = 0").get(repoKey) as { c: number }).c
 		);
@@ -428,7 +556,6 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND is_dirty = 1 AND is_deleted = 0").get(repoKey) as { c: number }).c
 		);
 
-		// Language breakdown
 		const langRows = db.prepare(
 			"SELECT language, COUNT(*) as c FROM files WHERE repo_key = ? AND is_deleted = 0 GROUP BY language"
 		).all(repoKey) as Array<{ language: string | null; c: number }>;
@@ -438,16 +565,13 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			languageCounts[key] = (languageCounts[key] ?? 0) + Number(row.c);
 		}
 
-		// Top package roots
 		const pkgRows = db.prepare(
 			"SELECT package_root, COUNT(*) as c FROM files WHERE repo_key = ? AND package_root IS NOT NULL AND is_deleted = 0 GROUP BY package_root ORDER BY c DESC LIMIT 10"
 		).all(repoKey) as Array<{ package_root: string; c: number }>;
 		const topPackageRoots = pkgRows.map((r) => r.package_root);
 
-		// Mark possibly stale evidence before counting
 		markPossiblyStaleEvidence(db, repoKey, contextVersion);
 
-		// Evidence counts
 		const evidenceCount = Number(
 			(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ?").get(repoKey) as { c: number }).c
 		);
@@ -471,12 +595,10 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			).get(repoKey, now) as { c: number }).c
 		);
 
-		// Health findings count
 		const healthFindingsCount = Number(
 			(db.prepare("SELECT COUNT(*) as c FROM health_findings WHERE repo_key = ?").get(repoKey) as { c: number }).c
 		);
 
-		// Keeper lease
 		const leaseRow = db.prepare("SELECT lease_holder, expires_at FROM keeper_leases WHERE repo_key = ?").get(repoKey) as
 			{ lease_holder: string | null; expires_at: number | null } | undefined;
 		const keeperLeasedBy = leaseRow?.lease_holder ?? null;
@@ -499,7 +621,7 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			totalFiles,
 			freshCards,
 			staleCards,
-			missingCards,
+				missingCards,
 			gitignoredCount,
 			secretExcludedCount: scanResult.exclusions.secretExcludedCount + gitignoredSecret,
 			generatedExcludedCount: scanResult.exclusions.generatedExcludedCount + gitignoredGenerated,
@@ -509,6 +631,8 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			osExcludedCount: scanResult.exclusions.osExcludedCount + gitignoredOs,
 			untrackedCount,
 			dirtyCount,
+			conflictCount,
+			conflictPaths,
 			newFiles,
 			changedFiles,
 			removedFiles: removedPaths.length,
@@ -530,6 +654,5 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 
 function classifyImportType(importPath: string): string {
 	if (importPath.startsWith(".") || importPath.startsWith("/")) return "relative";
-	// Scoped packages like @org/pkg are packages; everything else is package
 	return "package";
 }

@@ -50,6 +50,7 @@ export function registerRepoIndexStatus(pi: ExtensionAPI) {
 				`| is_dirty | ${status.isDirty ? "yes" : "no"} |`,
 				`| has_untracked | ${status.hasUntracked ? "yes" : "no"} |`,
 				`| has_conflicts | ${status.hasConflicts ? "yes" : "no"} |`,
+				`| conflict_count | ${status.conflictCount} |`,
 				`| context_version | ${status.contextVersion} |`,
 				`| last_sync_at | ${new Date(status.lastSyncAt).toISOString()} (${ageText}) |`,
 				`| cache_db_path | ${status.cacheDbPath} |`,
@@ -78,6 +79,15 @@ export function registerRepoIndexStatus(pi: ExtensionAPI) {
 				"## Package Roots (top)",
 				...status.topPackageRoots.map((r) => `- ${r}`),
 				"",
+				...(status.hasConflicts
+					? [
+						"## ⚠️ HIGH RISK: Merge Conflicts",
+						`- ${status.conflictCount} conflicted file(s) detected.`,
+						`- Conflicted file cards are stale and untrusted.`,
+						`- Paths: ${status.conflictPaths.slice(0, 20).join(", ")}${status.conflictPaths.length > 20 ? " …" : ""}`,
+						"",
+					]
+					: []),
 				"## Evidence Queue",
 				"| Metric | Count |",
 				"| --- | --- |",
@@ -101,6 +111,8 @@ export function registerRepoIndexStatus(pi: ExtensionAPI) {
 					isDirty: status.isDirty,
 					hasUntracked: status.hasUntracked,
 					hasConflicts: status.hasConflicts,
+					conflictCount: status.conflictCount,
+					conflictPaths: status.conflictPaths,
 					contextVersion: status.contextVersion,
 					lastSyncAt: status.lastSyncAt,
 					cacheDbPath: status.cacheDbPath,
