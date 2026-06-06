@@ -3,18 +3,22 @@
  *
  * Resolves repoRoot, detects git state, opens DB lazily, scans files,
  * upserts rows incrementally, marks stale/missing, computes context_version.
+ *
+ * Context-version/fingerprint helpers live in ./sync_version.ts and the
+ * post-transaction count aggregation lives in ./sync_counts.ts.
  */
 
 import * as crypto from "node:crypto";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { findGitRoot, collectGitState } from "../git/state";
 import { openDb, closeDb } from "./db";
-import { scanRepo, type ScannedFile, readAndHash } from "./scanner";
+import { scanRepo } from "./scanner";
 import { resolveRepoRoot } from "../runtime";
-import { listGitIgnored, classifyExclusion } from "../security/exclusions";
-import { markPossiblyStaleEvidence } from "../evidence/queue";
-import { errorCode } from "../util/errors";
+import {
+	computeConfigHash,
+	computeContentFingerprint,
+	computeContextVersion,
+} from "./sync_version";
+import { collectSyncCounts } from "./sync_counts";
 
 export interface SyncResult {
 	repoKey: string;
@@ -73,68 +77,6 @@ interface CardReuseRow {
 	card_model_preset: string | null;
 	card_token_budget: number | null;
 	card_generated_at: number | null;
-}
-
-function computeConfigHash(repoRoot: string): string {
-	const configPath = path.join(repoRoot, ".pi", "repo-memory.json");
-	try {
-		const content = fs.readFileSync(configPath, "utf-8");
-		return crypto.createHash("sha256").update(content).digest("hex");
-	} catch {
-		return "";
-	}
-}
-
-function computeContentFingerprint(
-	paths: string[],
-	status: string,
-	repoRoot: string,
-	fileHashes?: Map<string, string>,
-): string | null {
-	if (paths.length === 0) return null;
-	const entries = [...paths].sort().map((p) => {
-		const absPath = path.join(repoRoot, p);
-		let hash: string;
-		try {
-			const { contentHash } = readAndHash(absPath);
-			hash = contentHash;
-		} catch (err) {
-			if (errorCode(err) === "ENOENT") {
-				hash = "DELETED";
-			} else {
-				hash = fileHashes?.get(p) ?? `UNREADABLE:${status}:${p}`;
-			}
-		}
-		return `${status}\0${p}\0${hash}`;
-	});
-	return crypto.createHash("sha256").update(entries.join("\n")).digest("base64url").slice(0, 16);
-}
-
-function computeContextVersion(
-	gitState: ReturnType<typeof collectGitState> | null,
-	repoRoot: string,
-	fileHashes: Map<string, string>,
-): string {
-	if (gitState && gitState.head) {
-		let version = gitState.head;
-		if (gitState.isDirty) version += "-dirty";
-		if (gitState.hasUntracked) version += "-untracked";
-		if (gitState.hasConflicts) version += "-conflicts";
-
-		const dirtyFp = computeContentFingerprint(gitState.dirtyPaths, "dirty", repoRoot, fileHashes);
-		const untrackedFp = computeContentFingerprint(gitState.untrackedPaths, "untracked", repoRoot, fileHashes);
-		const conflictFp = computeContentFingerprint(gitState.conflictPaths, "conflict", repoRoot, fileHashes);
-		if (dirtyFp) version += "-dfp" + dirtyFp.slice(0, 8);
-		if (untrackedFp) version += "-ufp" + untrackedFp.slice(0, 8);
-		if (conflictFp) version += "-cfp" + conflictFp.slice(0, 8);
-		return version;
-	}
-	const sorted = Array.from(fileHashes.entries()).sort(([a], [b]) => a.localeCompare(b));
-	const hash = crypto.createHash("sha256");
-	for (const [rel, h] of sorted) {
-		hash.update(rel + "\0" + h + "\n");
-	}
-	return "nogit-" + hash.digest("hex").slice(0, 32);
 }
 
 export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): SyncResult {
@@ -508,102 +450,14 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 		}
 
 		// Counts (after transaction)
-		const totalFiles = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND is_deleted = 0").get(repoKey) as { c: number }).c
+		const counts = collectSyncCounts(
+			db,
+			repoKey,
+			gitRoot,
+			repoRoot,
+			scanResult.exclusions,
+			contextVersion,
 		);
-		const freshCards = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND card_freshness = 'fresh' AND is_deleted = 0").get(repoKey) as { c: number }).c
-		);
-		const staleCards = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND card_freshness = 'stale' AND is_deleted = 0").get(repoKey) as { c: number }).c
-		);
-		const missingCards = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND (card_freshness = 'missing' OR card_freshness IS NULL) AND is_deleted = 0").get(repoKey) as { c: number }).c
-		);
-		let gitignoredCount = 0;
-		let gitignoredGenerated = 0;
-		let gitignoredSecret = 0;
-		let gitignoredBinary = 0;
-		let gitignoredLock = 0;
-		let gitignoredIde = 0;
-		let gitignoredOs = 0;
-
-		if (gitRoot) {
-			const gitIgnoredResult = listGitIgnored(gitRoot, repoRoot);
-			gitignoredCount = gitIgnoredResult.count;
-			for (const p of gitIgnoredResult.repoRelPaths) {
-				const cls = classifyExclusion(p);
-				if (cls.category === "generated") gitignoredGenerated++;
-				else if (cls.category === "secret") gitignoredSecret++;
-				else if (cls.category === "binary") gitignoredBinary++;
-				else if (cls.category === "lock") gitignoredLock++;
-				else if (cls.category === "ide") gitignoredIde++;
-				else if (cls.category === "os") gitignoredOs++;
-			}
-		} else {
-			gitignoredCount = scanResult.exclusions.gitignoredExcludedCount;
-		}
-
-		const secretExcludedCount = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND is_secret = 1 AND is_deleted = 0").get(repoKey) as { c: number }).c
-		);
-		const generatedExcludedCount = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND is_generated = 1 AND is_deleted = 0").get(repoKey) as { c: number }).c
-		);
-		const untrackedCount = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND is_untracked = 1 AND is_deleted = 0").get(repoKey) as { c: number }).c
-		);
-		const dirtyCount = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM files WHERE repo_key = ? AND is_dirty = 1 AND is_deleted = 0").get(repoKey) as { c: number }).c
-		);
-
-		const langRows = db.prepare(
-			"SELECT language, COUNT(*) as c FROM files WHERE repo_key = ? AND is_deleted = 0 GROUP BY language"
-		).all(repoKey) as Array<{ language: string | null; c: number }>;
-		const languageCounts: Record<string, number> = {};
-		for (const row of langRows) {
-			const key = row.language ?? "unknown";
-			languageCounts[key] = (languageCounts[key] ?? 0) + Number(row.c);
-		}
-
-		const pkgRows = db.prepare(
-			"SELECT package_root, COUNT(*) as c FROM files WHERE repo_key = ? AND package_root IS NOT NULL AND is_deleted = 0 GROUP BY package_root ORDER BY c DESC LIMIT 10"
-		).all(repoKey) as Array<{ package_root: string; c: number }>;
-		const topPackageRoots = pkgRows.map((r) => r.package_root);
-
-		markPossiblyStaleEvidence(db, repoKey, contextVersion);
-
-		const evidenceCount = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ?").get(repoKey) as { c: number }).c
-		);
-		const staleEvidenceCount = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 1").get(repoKey) as { c: number }).c
-		);
-		const now = Date.now();
-		const pendingEvidenceCount = Number(
-			(db.prepare(
-				`SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND is_stale = 0
-				 AND (
-					 (keeper_state IS NULL OR keeper_state = 'pending')
-					 OR (keeper_state = 'processing' AND keeper_expires_at <= ?)
-				 )
-				 AND keeper_processed_at IS NULL`
-			).get(repoKey, now) as { c: number }).c
-		);
-		const processingEvidenceCount = Number(
-			(db.prepare(
-				"SELECT COUNT(*) as c FROM evidence WHERE repo_key = ? AND keeper_state = 'processing' AND keeper_expires_at > ?"
-			).get(repoKey, now) as { c: number }).c
-		);
-
-		const healthFindingsCount = Number(
-			(db.prepare("SELECT COUNT(*) as c FROM health_findings WHERE repo_key = ?").get(repoKey) as { c: number }).c
-		);
-
-		const leaseRow = db.prepare("SELECT lease_holder, expires_at FROM keeper_leases WHERE repo_key = ?").get(repoKey) as
-			{ lease_holder: string | null; expires_at: number | null } | undefined;
-		const keeperLeasedBy = leaseRow?.lease_holder ?? null;
-		const leaseExpiresAt = leaseRow?.expires_at ?? null;
 
 		return {
 			repoKey,
@@ -619,33 +473,12 @@ export function syncRepo(cwd: string, repoKey: string, cacheDbPath: string): Syn
 			configHash,
 			dirtyFingerprint: dirtyFp,
 			untrackedFingerprint: untrackedFp,
-			totalFiles,
-			freshCards,
-			staleCards,
-				missingCards,
-			gitignoredCount,
-			secretExcludedCount: scanResult.exclusions.secretExcludedCount + gitignoredSecret,
-			generatedExcludedCount: scanResult.exclusions.generatedExcludedCount + gitignoredGenerated,
-			binaryExcludedCount: scanResult.exclusions.binaryExcludedCount + gitignoredBinary,
-			lockExcludedCount: scanResult.exclusions.lockExcludedCount + gitignoredLock,
-			ideExcludedCount: scanResult.exclusions.ideExcludedCount + gitignoredIde,
-			osExcludedCount: scanResult.exclusions.osExcludedCount + gitignoredOs,
-			untrackedCount,
-			dirtyCount,
+			...counts,
 			conflictCount,
 			conflictPaths,
 			newFiles,
 			changedFiles,
 			removedFiles: removedPaths.length,
-			languageCounts,
-			topPackageRoots,
-			evidenceCount,
-			staleEvidenceCount,
-			pendingEvidenceCount,
-			processingEvidenceCount,
-			healthFindingsCount,
-			keeperLeasedBy,
-			leaseExpiresAt,
 			cacheDbPath,
 		};
 	} finally {
