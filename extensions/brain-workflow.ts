@@ -7,353 +7,42 @@ import { getAgentDir, getMarkdownTheme, type ExtensionAPI, type ExtensionContext
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-type AgentName = "brain" | "coder" | "reviewer";
+// --- Imports from extracted workflow modules --------------------------------
 
-interface AgentPreset {
-	provider?: string;
-	model?: string;
-	thinkingLevel?: ThinkingLevel;
-	tools?: string[];
-	instructions?: string;
-	includeKarpathyGuidelines?: boolean;
-}
-
-interface ReviewerSwarmConfig {
-	enabled?: boolean;
-	maxConcurrency?: number;
-	targets?: string[];
-}
-
-interface WorkflowConfig {
-	autoApplyBrain?: boolean;
-	/** Built-in workflow profile id (e.g. "default" or "gonka-hybrid"). */
-	profile?: string;
-	agents?: Record<string, AgentPreset>;
-	reviewerSwarm?: ReviewerSwarmConfig;
-	/** Delegate display/transport mode. "headless" (default) runs child delegates as JSON subprocesses.
-	 *  "pane" launches them in a visible cmux surface. "auto" uses pane when cmux is available, otherwise headless. */
-	delegateDisplay?: "headless" | "pane" | "auto";
-	/** When pane mode is used, auto-close the cmux surface/tab when the sub-agent finishes.
-	 *  Default: true. Set to false to leave the surface open for inspection. */
-	delegatePaneAutoClose?: boolean;
-}
-
-interface LoadedWorkflowConfig {
-	config: WorkflowConfig;
-	globalPath: string;
-	projectPath: string | null;
-	projectSettingsPath: string | null;
-	projectSettings: Record<string, unknown> | undefined;
-	profileId: WorkflowProfileId;
-	profileSource: WorkflowProfileSource;
-}
-
-type WorkflowProfileId = "default" | "gonka-hybrid" | "premium-brain-gonka-workers";
-type WorkflowProfileSource = "default" | "global" | "project" | "cli";
-
-interface WorkflowProfile {
-	id: WorkflowProfileId;
-	label: string;
-	apply: Partial<WorkflowConfig>;
-}
-
-interface UsageStats {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-	cost: number;
-	contextTokens: number;
-	turns: number;
-}
-
-interface DelegateProgressItem {
-	at: number;
-	type: "status" | "tool_start" | "tool_update" | "tool_end" | "assistant" | "thinking" | "error";
-	text: string;
-}
-
-interface DelegateRunResult {
-	agent: string;
-	task: string;
-	cwd: string;
-	model?: string;
-	thinkingLevel?: ThinkingLevel;
-	exitCode: number;
-	messages: Message[];
-	stderr: string;
-	usage: UsageStats;
-	stopReason?: string;
-	errorMessage?: string;
-	aborted?: boolean;
-	status?: string;
-	activeTools?: Array<{ id: string; name: string }>;
-	progress?: DelegateProgressItem[];
-	finalOutput?: string;
-	thinkingChars?: number;
-	/** Display/transport mode used: "headless" or "pane". */
-	display?: string;
-	/** cmux surface id when pane mode was used. */
-	surface?: string;
-	/** Session JSONL file path when pane mode was used. */
-	sessionFile?: string;
-}
-
-interface ReviewerTargetResult {
-	target: string;
-	verdict: "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN";
-	status: "running" | "completed" | "failed" | "aborted";
-	result?: DelegateRunResult;
-}
-
-const DEFAULT_CONFIG: WorkflowConfig = {
-	autoApplyBrain: true,
-	delegateDisplay: "headless",
-	delegatePaneAutoClose: true,
-	reviewerSwarm: {
-		enabled: true,
-		maxConcurrency: 2,
-		targets: [
-			"Requirements and acceptance criteria coverage",
-			"Correctness and regression risks",
-			"Tests and validation quality",
-			"Security, performance, and maintainability",
-		],
-	},
-	agents: {
-		brain: {
-			provider: "openai-codex",
-			model: "gpt-5.5",
-			thinkingLevel: "xhigh",
-			instructions: `You are Brain in a three-agent Pi workflow: brain -> coder -> reviewer.
-
-Role:
-- Own task understanding, architecture, planning, decomposition, and final user-facing synthesis.
-- Delegate hands-on implementation to coder with delegate_to_coder.
-- Delegate independent verification to reviewer with delegate_to_reviewer.
-
-Default development cycle:
-1. Clarify the goal and inspect enough context yourself.
-2. Send coder a self-contained implementation task with relevant files, constraints, and expected checks.
-3. Send reviewer a self-contained review task after coder finishes. Prefer delegate_to_reviewer goals that map to acceptance criteria (one goal per target review).
-4. If reviewer requests changes, send focused fixes back to coder, then review again.
-5. Finish with a concise summary of changes, tests/checks, and remaining risks.
-
-Sprint task session flow (default for concrete sprint-tracked tasks):
-- For concrete tasks tracked under .sprints/, the project supports one dedicated Pi session per task via the sprint-system extension.
-- Only the /sprint task start <TASK-ID> --auto-run slash command performs the actual session switch (it is the only path that can call ctx.newSession). Invoke it directly when you can issue slash commands.
-- If you cannot issue a slash command, call the sprint_start_task_session tool to present the prepared /sprint task start <TASK-ID> --auto-run command to the user (it places the command in the editor and notifies the user), then stop and wait for the user to run it. The tool itself does NOT switch sessions; it only prepares/presents the command.
-- Do the slash command (or tool call to present it) before implementation when the current Pi session is not already pinned to the target task.
-- If the current session is already pinned to the target task, proceed normally without re-binding.
-- Use \`sprint_read_context\` to confirm the pinned task and \`sprint_get_session_binding\` if you need to inspect the binding.
-- Once bound, treat that session as scoped to a single task. Do not switch tasks mid-session; rely on sprint_update_task and sprint_log_progress to record progress for that task. \`sprint_update_task\` will refuse to update a taskId that does not match the bound task.
-
-Use delegation for non-trivial code changes. For tiny read-only or administrative tasks, you may handle them directly.
-
-Delegation guardrail: when delegate_to_coder fails, returns blockers/problems, or reviewer returns CHANGES_REQUESTED, do NOT take over code edits/fixes yourself with the premium model. Re-delegate a focused fix back to coder (or a room worker) and then re-review. You may do read-only diagnosis/planning/admin only. Direct edits are limited to tiny non-code/admin cases.
-
-Workflow rooms (async coordination between delegated sub-agents):
-- For multi-agent jobs (e.g. backend + frontend, or planner + implementer) call room_create({ roomId, title }) first to allocate a durable room under .pi/workflow-runs/<roomId>/.
-- Pass \`room: { roomId, agentId?, role? }\` on delegate_to_coder/delegate_to_reviewer so the sub-agent receives PI_WORKFLOW_ROOM_ID/AGENT_ID/AGENT_ROLE env vars and a room-communication block in its system prompt.
-- The room is a durable async queue (events.jsonl with monotonic seq) — there is no real-time interruption. Sub-agents will read queued messages at job_start/job_done checkpoints.
-- Use room_status to inspect the room and use room_send to publish assumptions/contracts/decisions for the sub-agents to read. The default room guard for the sub-agent is set on room_job_done (refuses if there are unread relevant messages).
-- If a sub-agent returns and reports issues, call room_send with the topic and then room_status to confirm before re-delegating.
-		`.trim(),
-		},
-		coder: {
-			provider: "openai-codex",
-			model: "gpt-5.3-codex",
-			thinkingLevel: "medium",
-			tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status"],
-			includeKarpathyGuidelines: true,
-			instructions: `You are Coder, the hands-on implementation agent in a Pi brain -> coder -> reviewer workflow.
-
-Responsibilities:
-- Make focused, correct code changes in the current working directory.
-- Follow project instructions and existing conventions.
-- Read before editing; prefer surgical edits for existing files.
-- Keep scope tight: do exactly what Brain asked, no unrelated cleanup.
-- Run relevant tests, type checks, linters, or targeted commands when practical.
-
-Return a concise handoff including: files changed, what changed, checks run and results, blockers/risks.`,
-		},
-		reviewer: {
-			provider: "openai-codex",
-			model: "gpt-5.5",
-			thinkingLevel: "high",
-			tools: ["read", "bash", "grep", "find", "ls", "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status"],
-			instructions: `You are Reviewer, the independent review agent in a Pi brain -> coder -> reviewer workflow.
-
-Responsibilities:
-- Review the implementation for correctness, regressions, edge cases, security, performance, and maintainability.
-- Treat the workspace as read-only: do not edit or write files.
-- Inspect diffs, relevant files, and test output. Run read-only commands/tests when useful.
-- Be specific and actionable.
-
-Return one of:
-- APPROVED: with brief rationale and any non-blocking notes.
-- CHANGES_REQUESTED: with prioritized issues, file paths/lines when possible, and concrete fixes.
-
-If Brain assigns a specific review goal/target, focus only on that goal and put APPROVED or CHANGES_REQUESTED as the first token in your response.`,
-		},
-	},
-};
-
-const KARPATHY_GUIDELINES_PROMPT = `# Karpathy Guidelines
-
-Behavioral guidelines to reduce common LLM coding mistakes, derived from [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
-
-## 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-\`\`\`
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-\`\`\`
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-`;
-
-// --- Gonka provider & opt-in workflow profile -------------------------------
-
-const GONKA_PROVIDER_NAME = "gonka";
-const GONKA_BROKER_URL_ENV = "GONKA_BROKER_URL";
-const GONKA_BROKER_API_KEY_ENV = "GONKA_BROKER_API_KEY";
-const GONKA_DEFAULT_BROKER_URL = "https://node.gonka.lat/v1";
-const GONKA_DOTENV_PATH = path.join(os.homedir(), ".pi", ".env");
-const GONKA_DOTENV_KEYS = [GONKA_BROKER_URL_ENV, GONKA_BROKER_API_KEY_ENV] as const;
-
-/**
- * Conservative vLLM/OpenAI-compatible broker compat for the current Gonka broker.
- * The broker serves the OpenAI Chat Completions shape but does not implement
- * OpenAI's `store`, `developer` role, `reasoning_effort`, strict tool mode,
- * usage-in-stream, or long cache retention features.
- */
-const GONKA_COMPAT = {
-	supportsStore: false,
-	supportsDeveloperRole: false,
-	supportsReasoningEffort: false,
-	supportsUsageInStreaming: false,
-	maxTokensField: "max_tokens" as const,
-	supportsStrictMode: false,
-	supportsLongCacheRetention: false,
-};
-
-const GONKA_MODEL_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-
-const GONKA_MODELS = [
-	{
-		id: "moonshotai/Kimi-K2.6",
-		name: "Kimi K2.6 (Gonka)",
-		reasoning: false,
-		input: ["text"] as ("text" | "image")[],
-		cost: GONKA_MODEL_COST,
-		contextWindow: 200000,
-		maxTokens: 16384,
-		compat: GONKA_COMPAT,
-	},
-	{
-		id: "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
-		name: "Qwen3 235B A22B Instruct 2507 (Gonka)",
-		reasoning: false,
-		input: ["text"] as ("text" | "image")[],
-		cost: GONKA_MODEL_COST,
-		contextWindow: 200000,
-		maxTokens: 16384,
-		compat: GONKA_COMPAT,
-	},
-	{
-		id: "MiniMaxAI/MiniMax-M2.7",
-		name: "MiniMax M2.7 (Gonka)",
-		reasoning: false,
-		input: ["text"] as ("text" | "image")[],
-		cost: GONKA_MODEL_COST,
-		contextWindow: 200000,
-		maxTokens: 16384,
-		compat: GONKA_COMPAT,
-	},
-];
-
-const GONKA_HYBRID_PROFILE_ID = "gonka-hybrid" as const;
-const GONKA_HYBRID_PROFILE_ALIAS = "premium-brain-gonka-workers" as const;
-
-const GONKA_HYBRID_PROFILE_APPLY: Partial<WorkflowConfig> = {
-	agents: {
-		coder: {
-			provider: GONKA_PROVIDER_NAME,
-			model: "moonshotai/Kimi-K2.6",
-			thinkingLevel: "off",
-		},
-		reviewer: {
-			provider: GONKA_PROVIDER_NAME,
-			model: "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
-			thinkingLevel: "off",
-		},
-	},
-};
-
-const WORKFLOW_PROFILES: Record<WorkflowProfileId, WorkflowProfile> = {
-	"default": { id: "default", label: "default (premium brain + premium coder/reviewer)", apply: {} },
-	[GONKA_HYBRID_PROFILE_ID]: {
-		id: GONKA_HYBRID_PROFILE_ID,
-		label: "Gonka hybrid (premium brain + Gonka coder/reviewer)",
-		apply: GONKA_HYBRID_PROFILE_APPLY,
-	},
-	[GONKA_HYBRID_PROFILE_ALIAS]: {
-		id: GONKA_HYBRID_PROFILE_ALIAS,
-		label: "Gonka hybrid (alias: premium-brain-gonka-workers)",
-		apply: GONKA_HYBRID_PROFILE_APPLY,
-	},
-};
+import {
+	DEFAULT_CONFIG,
+} from "./workflow/defaults";
+import {
+	GONKA_BROKER_API_KEY_ENV,
+	GONKA_BROKER_URL_ENV,
+	GONKA_DOTENV_KEYS,
+	GONKA_DOTENV_PATH,
+	GONKA_HYBRID_PROFILE_ALIAS,
+	GONKA_HYBRID_PROFILE_ID,
+	GONKA_MODELS,
+	GONKA_PROVIDER_NAME,
+	getGonkaBrokerUrl,
+	getGonkaEnvStatus,
+	WORKFLOW_PROFILES,
+} from "./workflow/profiles";
+import {
+	KARPATHY_GUIDELINES_PROMPT,
+} from "./workflow/prompts";
+import type {
+	AgentName,
+	AgentPreset,
+	DelegateProgressItem,
+	DelegateRunResult,
+	LoadedWorkflowConfig,
+	ReviewerSwarmConfig,
+	ReviewerTargetResult,
+	ThinkingLevel,
+	UsageStats,
+	WorkflowConfig,
+	WorkflowProfile,
+	WorkflowProfileId,
+	WorkflowProfileSource,
+} from "./workflow/types";
 
 function parseGonkaDotenvValue(rawValue: string): string {
 	let value = rawValue.trim();
@@ -449,17 +138,6 @@ function getWorkflowProfile(id: WorkflowProfileId): WorkflowProfile {
 
 function applyWorkflowProfile(config: WorkflowConfig, profileId: WorkflowProfileId): WorkflowConfig {
 	return deepMerge(config, getWorkflowProfile(profileId).apply);
-}
-
-function getGonkaBrokerUrl(): string {
-	return process.env[GONKA_BROKER_URL_ENV]?.trim() || GONKA_DEFAULT_BROKER_URL;
-}
-
-function getGonkaEnvStatus(): { url: "set" | "default"; apiKey: "set" | "unset" } {
-	return {
-		url: process.env[GONKA_BROKER_URL_ENV]?.trim() ? "set" : "default",
-		apiKey: process.env[GONKA_BROKER_API_KEY_ENV]?.trim() ? "set" : "unset",
-	};
 }
 
 const MAX_STDERR_BYTES = 64 * 1024;
