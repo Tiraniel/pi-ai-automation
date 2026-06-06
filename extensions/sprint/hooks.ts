@@ -12,8 +12,13 @@
 // DECLINED_CWDS is a per-process Set that remembers, for the lifetime of
 // this extension load, which working directories have been asked and the
 // user said "no" — we do not re-ask for those.
+//
+// When the effective task has Brain markers, they are parsed once per
+// prompt and appended to the injected text so Brain sees the
+// parallel/room/agent/contract hints.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readBrainMarkersForTaskFile } from "./markers";
 import { sessionBindingPromptText, sprintPointerText } from "./prompt";
 import {
 	createSprint,
@@ -37,8 +42,10 @@ export function registerSprintHooks(pi: ExtensionAPI): void {
 		const binding = readSessionBinding((ctx as any).sessionManager);
 		if (binding) {
 			try {
-				normalizeActiveSprintPath(ctx.cwd, binding.sprintPath, true);
-				return { systemPrompt: `${event.systemPrompt}\n\n${sessionBindingPromptText(binding)}` };
+				const normalizedSprint = normalizeActiveSprintPath(ctx.cwd, binding.sprintPath, true);
+				const normalizedTask = normalizeActiveTaskPath(ctx.cwd, binding.taskPath, normalizedSprint.absolutePath);
+				const markers = readBrainMarkersForTaskFile(normalizedTask.absolutePath);
+				return { systemPrompt: `${event.systemPrompt}\n\n${sessionBindingPromptText(binding, markers)}` };
 			} catch {
 				// fall through to global pointer handling
 			}
@@ -52,15 +59,18 @@ export function registerSprintHooks(pi: ExtensionAPI): void {
 					current.activeSprintPath = normalized.relativePath;
 					current.updatedAt = nowIso();
 				}
+				let taskPath: string | null = null;
 				if (current.activeTaskPath) {
 					const normalizedTask = normalizeActiveTaskPath(ctx.cwd, current.activeTaskPath, normalized.absolutePath);
 					if (normalizedTask.relativePath !== current.activeTaskPath) {
 						current.activeTaskPath = normalizedTask.relativePath;
 						current.updatedAt = nowIso();
 					}
+					taskPath = normalizedTask.absolutePath;
 				}
 				saveCurrent(ctx.cwd, current);
-				return { systemPrompt: `${event.systemPrompt}\n\n${sprintPointerText(current)}` };
+				const markers = taskPath ? readBrainMarkersForTaskFile(taskPath) : null;
+				return { systemPrompt: `${event.systemPrompt}\n\n${sprintPointerText(current, markers)}` };
 			} catch {
 				// Ignore invalid active sprint pointer.
 			}

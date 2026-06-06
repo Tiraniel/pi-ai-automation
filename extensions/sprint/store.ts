@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DEFAULT_BRAIN_MARKERS_BLOCK } from "./markers";
 import {
 	DEFAULT_CONFIG,
 	SPRINT_BINDING_CUSTOM_TYPE,
@@ -378,7 +379,7 @@ export function createTask(cwd: string, title: string, extra?: Record<string, un
 		createdAt: nowIso(),
 		...extra,
 	};
-	const body = `\n## Human Summary\n${extra?.humanSummary ?? ""}\n\n## AI Context\n${extra?.aiContext ?? ""}\n\n## Acceptance Criteria\n${extra?.acceptanceCriteria ?? ""}\n\n## Notes\n`;
+	const body = `\n## Human Summary\n${extra?.humanSummary ?? ""}\n\n## AI Context\n${extra?.aiContext ?? ""}\n\n## Brain Markers\n${DEFAULT_BRAIN_MARKERS_BLOCK}\n\n## Acceptance Criteria\n${extra?.acceptanceCriteria ?? ""}\n\n## Notes\n`;
 	writeTaskFile(filePath, fm, body);
 	const current = loadCurrent(cwd);
 	if (current) {

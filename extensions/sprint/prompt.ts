@@ -5,10 +5,20 @@
 // injects into the system prompt (or the user message, for auto-run kickoff).
 // Keeping them here means the hook body in ./hooks.ts is just branching +
 // orchestration, and the strings can be reviewed/edited in one place.
+//
+// Each builder accepts an optional `BrainMarkers` view; when present and
+// non-empty, the formatted marker block is appended so Brain sees the
+// task's parallel/room/agent/contract hints directly in the prompt.
 
+import { formatBrainMarkersForPrompt, type BrainMarkers } from "./markers";
 import type { SessionBinding, SprintCurrent } from "./types";
 
-export function sessionBindingPromptText(binding: SessionBinding): string {
+function markersBlock(markers: BrainMarkers | null | undefined): string {
+	if (!markers || !markers.hasMarkers) return "";
+	return `\n${formatBrainMarkersForPrompt(markers)}`;
+}
+
+export function sessionBindingPromptText(binding: SessionBinding, markers?: BrainMarkers | null): string {
 	return [
 		"Sprint task session bound.",
 		`Bound task: ${binding.taskId} - ${binding.title}`,
@@ -19,10 +29,11 @@ export function sessionBindingPromptText(binding: SessionBinding): string {
 		"Work this task using the brain -> coder -> reviewer workflow: delegate implementation to coder and verification to reviewer.",
 		"Guardrail: when delegate_to_coder fails or reviewer returns CHANGES_REQUESTED, do NOT take over code edits/fixes yourself with the premium model. Re-delegate a focused fix back to coder (or a room worker) and then re-review. You may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.",
 		"Keep the task file and PROGRESS.md updated with sprint_update_task and sprint_log_progress as you work.",
-	].join("\n");
+		markersBlock(markers),
+	].filter(Boolean).join("\n");
 }
 
-export function buildTaskSessionKickoff(binding: SessionBinding, autoRun: boolean): string {
+export function buildTaskSessionKickoff(binding: SessionBinding, autoRun: boolean, markers?: BrainMarkers | null): string {
 	if (!autoRun) return "";
 	return [
 		`This Pi session is bound to task ${binding.taskId}: ${binding.title}.`,
@@ -38,15 +49,19 @@ export function buildTaskSessionKickoff(binding: SessionBinding, autoRun: boolea
 		"",
 		"Guardrail: when delegate_to_coder fails or reviewer returns CHANGES_REQUESTED, do NOT take over code edits/fixes yourself with the premium model. Re-delegate a focused fix back to coder (or a room worker) and then re-review. You may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.",
 		"",
+		"Multi-agent execution: when the task splits into independent workstreams, Brain MUST create a workflow room (room_create) before delegating, and pass `room: { roomId, ... }` on delegate_to_coder / delegate_to_reviewer so workers receive the workflow-room context. Use room_send for cross-agent contracts and room_read at job boundaries.",
+		markersBlock(markers),
+		"",
 		"Do NOT switch to a different task or sprint in this session.",
-	].join("\n");
+	].filter(Boolean).join("\n");
 }
 
-export function sprintPointerText(current: SprintCurrent): string {
+export function sprintPointerText(current: SprintCurrent, markers?: BrainMarkers | null): string {
 	return [
 		"Sprint system active.",
 		`Active sprint path: ${current.activeSprintPath}`,
 		`Active task path: ${current.activeTaskPath ?? "(none)"}`,
 		"Before non-trivial implementation, read sprint/task context. Keep PROGRESS/task evidence updated.",
-	].join("\n");
+		markersBlock(markers),
+	].filter(Boolean).join("\n");
 }

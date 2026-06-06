@@ -330,6 +330,49 @@ Useful commands:
 
 `/workflow` shows effective resolved presets, reviewer swarm settings, the active workflow profile, and the `GONKA_BROKER_URL` / `GONKA_BROKER_API_KEY` env status (set/default/unset, no values).
 
+## Brain task markers
+
+Sprint task files (`.sprints/.../TASK-*.md`) can carry Brain-specific HTML-comment markers that surface a parallelization hint to Brain when it calls `sprint_read_context`. Markers are optional hints, not instructions to override Brain's own contract-first planning; unmarked/legacy tasks remain valid and Brain should treat them as "no explicit task hint".
+
+### Syntax
+
+All markers are HTML comments so they stay invisible in rendered Markdown:
+
+```markdown
+<!-- brain:parallel=auto|required|off -->
+<!-- brain:room=auto|<room-id> -->
+<!-- brain:agent id=backend role=backend job=backend-api owns=src/api/** -->
+<!-- brain:contract topic=api message="Agree request/response schema before editing." -->
+```
+
+### Semantics
+
+| Marker | Effect |
+| --- | --- |
+| `<!-- brain:parallel=auto -->` | **Default for new tasks.** Brain applies its own parallel-work assessment; when uncertain it must ask the user rather than guess. |
+| `<!-- brain:parallel=required -->` | The task is designed for parallel multi-agent execution. Brain should create/use a [workflow room](#workflow-rooms-v1) and delegate with `room: { roomId, agentId, role }` matching the markers. |
+| `<!-- brain:parallel=off -->` | Prefer serial execution. Brain should not spawn parallel agents unless the user explicitly overrides. |
+| `<!-- brain:room=auto -->` | (default) Brain picks a room id, e.g. derived from the task id (`TASK-019` → `task-019`). |
+| `<!-- brain:room=<room-id> -->` | Brain reuses the named room (creates it if it does not exist). |
+| `<!-- brain:agent id=... role=... job=... owns=... -->` | Declares one planned sub-agent. Multiple `brain:agent` lines list the expected workers. The `id` is the `agentId` Brain will use on `delegate_to_coder` and in the room. `owns` is advisory file ownership. |
+| `<!-- brain:contract topic=... message="..." -->` | Declares a contract Brain should broadcast via `room_send` before the workers start. |
+
+### Coordination flow
+
+When markers opt in (or Brain's own Parallel Work Assessment decides parallel is safe):
+
+1. Brain calls `room_create` (task-derived or marker-named room id).
+2. Brain broadcasts each `brain:contract` line as a `room_send` message so every worker reads the same schema.
+3. Brain delegates each `brain:agent` line with `room: { roomId, agentId, role }` matching the marker. `owns` is mirrored as the `owns` field on `room_job_start`.
+4. Sub-agents exchange questions/answers and assumptions via the room at `room_job_start` / `room_job_done` checkpoints; Brain reads the room between delegations.
+
+### Safety rules
+
+- Brain must **only** parallelize when workstreams have clear file-ownership boundaries and shared contracts (DTOs, ports, events, schemas) that are already agreed. Never invent contracts in flight.
+- If Brain is **uncertain** whether parallelization is safe, it must ask the user before launching parallel agents - it must not guess.
+- `parallel=off` is a hint, not a hard ban: the user can still override per task.
+- Unmarked/legacy tasks keep working unchanged: Brain falls back to its normal contract-first planning pipeline without a parallel hint, and the sprint subsystem treats missing markers as a no-op.
+
 ## Sprint system
 
 - Uses project-local `.sprints/` as AI navigation/execution context.

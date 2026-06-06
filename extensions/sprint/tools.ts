@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { EMPTY_BRAIN_MARKERS, readBrainMarkersForTaskFile } from "./markers";
 import {
 	appendProgress,
 	createEpic,
@@ -75,6 +76,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			}
 			const sprintReadme = sprintPath && fs.existsSync(path.join(sprintPath, "README.md")) ? fs.readFileSync(path.join(sprintPath, "README.md"), "utf8").slice(0, 400) : "";
 			const taskHead = taskPath && fs.existsSync(taskPath) ? fs.readFileSync(taskPath, "utf8").slice(0, 400) : "";
+			const brainMarkers = taskPath ? readBrainMarkersForTaskFile(taskPath) : { ...EMPTY_BRAIN_MARKERS };
 			return {
 				content: [{
 					type: "text",
@@ -87,6 +89,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 						taskPath: taskPath ? path.relative(cwd, taskPath) : null,
 						sprintReadme,
 						taskHead,
+						brainMarkers,
 					}),
 				}],
 			};

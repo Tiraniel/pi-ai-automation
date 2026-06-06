@@ -11,6 +11,7 @@
 
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readBrainMarkersForTaskFile } from "./markers";
 import { buildTaskSessionKickoff } from "./prompt";
 import {
 	activeSprintAbs,
@@ -110,7 +111,8 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					const title = String(taskInfo.frontmatter.title ?? taskId);
 					const binding: SessionBinding = { sprintPath: sprintRel, taskPath: taskRel, taskId, title, boundAt: nowIso() };
 					const sessionName = `Sprint: ${taskId} ${title}`.slice(0, 80);
-					const kickoff = buildTaskSessionKickoff(binding, autoRun);
+					const markers = readBrainMarkersForTaskFile(taskInfo.file);
+					const kickoff = buildTaskSessionKickoff(binding, autoRun, markers);
 					const parentSession = (ctx.sessionManager && typeof ctx.sessionManager.getSessionFile === "function")
 						? ctx.sessionManager.getSessionFile()
 						: undefined;

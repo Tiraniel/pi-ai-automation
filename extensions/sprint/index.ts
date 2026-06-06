@@ -57,6 +57,18 @@ export {
 	writeTaskFile,
 } from "./store";
 
+export {
+	DEFAULT_BRAIN_MARKERS_BLOCK,
+	EMPTY_BRAIN_MARKERS,
+	formatBrainMarkersForPrompt,
+	parseBrainMarkersFromText,
+	readBrainMarkersForTaskFile,
+	type BrainAgentMarker,
+	type BrainContractMarker,
+	type BrainMarkers,
+	type BrainParallelMode,
+} from "./markers";
+
 export { buildTaskSessionKickoff, sessionBindingPromptText, sprintPointerText } from "./prompt";
 
 export { registerSprintCommand } from "./command";
