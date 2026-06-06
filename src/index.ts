@@ -17,6 +17,7 @@ import { syncRepo } from "./index/sync";
 import { openDb, closeDb } from "./index/db";
 import { buildRuntime } from "./runtime";
 import { loadConfig } from "./config/loader";
+import { errorMessage } from "./util/errors";
 
 // Future integration stubs — imported to ensure they compile and are discoverable,
 // but not invoked during extension load.
@@ -86,8 +87,8 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 			} finally {
 				closeDb(handle);
 			}
-		} catch (err: any) {
-			syncError = err?.message ?? String(err);
+		} catch (err) {
+			syncError = errorMessage(err);
 			// Return degraded brief with error info
 			return {
 				message: {
@@ -196,10 +197,10 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 			// Lazy sync to mark status/hash/card/evidence stale after mutations
 			const { syncRepo: syncFn } = await import("./index/sync");
 			syncFn(rt.repoRoot, rt.repoKey, rt.cacheDbPath);
-		} catch (err: any) {
+		} catch (err) {
 			// Catch and log; never throw from hook
 			if (typeof console !== "undefined" && console.error) {
-				console.error("[pi-ai-automation-memory] tool_result sync error:", err?.message ?? String(err));
+				console.error("[pi-ai-automation-memory] tool_result sync error:", errorMessage(err));
 			}
 		}
 	});
@@ -229,9 +230,9 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 					modelPresetName: keeperPreset.name ?? "index_keeper",
 					modelPresetOverrides: cfg.modelPresets,
 				});
-			} catch (err: any) {
+			} catch (err) {
 				if (typeof console !== "undefined" && console.error) {
-					console.error("[pi-ai-automation-memory] keeper agent_end error:", err?.message ?? String(err));
+					console.error("[pi-ai-automation-memory] keeper agent_end error:", errorMessage(err));
 				}
 			}
 		}
@@ -251,9 +252,9 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 						appendEvidence: true,
 					});
 				}
-			} catch (err: any) {
+			} catch (err) {
 				if (typeof console !== "undefined" && console.error) {
-					console.error("[pi-ai-automation-memory] scout agent_end error:", err?.message ?? String(err));
+					console.error("[pi-ai-automation-memory] scout agent_end error:", errorMessage(err));
 				}
 			}
 		}

@@ -10,9 +10,8 @@
 import * as crypto from "node:crypto";
 import * as os from "node:os";
 import { redactText, redactStrings, redactMetadata } from "../security/redaction";
-import { openDb, closeDb } from "../index/db";
-
-type SqliteDb = { prepare(sql: string): any };
+import { openDb, closeDb, sqliteChanges, type SqliteDb } from "../index/db";
+import { parseJsonStringRecord } from "../util/json";
 
 export interface EvidenceRecord {
 	repoKey: string;
@@ -178,7 +177,7 @@ export function appendEvidence(
 			fileHashes,
 		);
 
-		const changes = result.changes ?? 0;
+		const changes = sqliteChanges(result);
 		const recorded = changes > 0;
 		const deduplicated = !recorded;
 
@@ -350,7 +349,7 @@ export function completeEvidenceBatch(
 	const params = [state, now, error ?? null, repoKey, ...ids];
 	if (leaseHolder) params.push(leaseHolder);
 	const result = stmt.run(...params);
-	const changes = result.changes ?? 0;
+	const changes = sqliteChanges(result);
 	return {
 		completed: success ? changes : 0,
 		errors: success ? 0 : changes,
@@ -398,7 +397,7 @@ export function markPossiblyStaleEvidence(
 			`UPDATE evidence SET is_stale = 1, stale_reason = COALESCE(stale_reason || '; ', '') || 'context_version mismatch: recorded ' || context_version || ' vs current ' || ?
 			 WHERE repo_key = ? AND context_version != ? AND is_stale = 0`
 		).run(currentContextVersion, repoKey, currentContextVersion);
-		updated += ctxResult.changes ?? 0;
+		updated += sqliteChanges(ctxResult);
 
 		// Check file hash snapshots for non-stale evidence
 		const rows = db.prepare(
@@ -408,11 +407,8 @@ export function markPossiblyStaleEvidence(
 		for (const row of rows) {
 			if (!row.file_hashes || row.file_hashes === "{}") continue;
 			let snapshot: Record<string, string>;
-			try {
-				snapshot = JSON.parse(row.file_hashes);
-			} catch {
-				continue;
-			}
+			snapshot = parseJsonStringRecord(row.file_hashes);
+			if (Object.keys(snapshot).length === 0) continue;
 			const mismatches: string[] = [];
 			for (const [relPath, storedHash] of Object.entries(snapshot)) {
 				const currentRow = db.prepare(

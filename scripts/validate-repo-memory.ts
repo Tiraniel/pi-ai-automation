@@ -24,6 +24,7 @@ import {
 	loadAllPrinciples,
 	persistPrinciples,
 } from "../src/integrity/consultant";
+import { parseJsonStringArray, parseJsonStringRecord } from "../src/util/json";
 
 let passed = 0;
 let failed = 0;
@@ -425,6 +426,19 @@ async function testG_healthReport() {
 }
 
 // ------------------------------------------------------------------
+// h) Safe JSON helpers for persisted DB strings
+// ------------------------------------------------------------------
+async function testH_safeJsonHelpers() {
+	assert(JSON.stringify(parseJsonStringArray('["a","b"]')) === '["a","b"]', "h: parses valid array");
+	assert(JSON.stringify(parseJsonStringArray('')) === '[]', "h: empty string returns fallback");
+	assert(JSON.stringify(parseJsonStringArray('not json')) === '[]', "h: bad json returns fallback");
+	assert(JSON.stringify(parseJsonStringArray('[1,2]')) === '[]', "h: non-string array returns fallback");
+	assert(JSON.stringify(parseJsonStringRecord('{"a":"1"}')) === '{"a":"1"}', "h: parses valid record");
+	assert(JSON.stringify(parseJsonStringRecord('not json')) === '{}', "h: bad json record returns fallback");
+	assert(JSON.stringify(parseJsonStringRecord('{"a":1}')) === '{}', "h: non-string values omitted from record");
+}
+
+// ------------------------------------------------------------------
 // Main
 // ------------------------------------------------------------------
 async function main() {
@@ -436,6 +450,7 @@ async function main() {
 	await testE_staleCard();
 	await testF_configPresets();
 	await testG_healthReport();
+	await testH_safeJsonHelpers();
 
 	console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
 	if (failed > 0) {

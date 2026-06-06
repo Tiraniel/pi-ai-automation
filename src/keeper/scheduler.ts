@@ -10,7 +10,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { openDb, closeDb } from "../index/db";
+import { openDb, closeDb, sqliteChanges, type SqliteDb } from "../index/db";
 import {
 	claimEvidenceBatch,
 	completeEvidenceBatch,
@@ -20,6 +20,8 @@ import {
 } from "../evidence/queue";
 import { redactText } from "../security/redaction";
 import { resolvePreset, type ModelPreset } from "../models/presets";
+import { parseJsonStringArray } from "../util/json";
+import { errorMessage } from "../util/errors";
 
 const PROCESS_ID = `${os.hostname()}-${process.pid}-${Date.now()}`;
 
@@ -152,7 +154,7 @@ export function acquireLease(
 		);
 		const result = upsert.run(repoKey, leaseHolder, now, expiresAt, now);
 
-		if ((result.changes ?? 0) === 0) {
+		if (sqliteChanges(result) === 0) {
 			return null;
 		}
 
@@ -203,21 +205,14 @@ function estimateTokens(text: string): number {
 
 function parseRefsFromEvidence(row: EvidenceBatchRow): string[] {
 	const paths: string[] = [];
-	try {
-		const refs: string[] = JSON.parse(row.evidence_refs ?? "[]");
-		for (const r of refs) {
-			// Strip line refs like path:Lx-Ly
-			const m = r.match(/^([^:]+)/);
-			if (m) paths.push(m[1]);
-		}
-	} catch { /* ignore */ }
-	try {
-		const changed: string[] = JSON.parse(row.changed_files ?? "[]");
-		for (const c of changed) {
-			const m = c.match(/^([^:]+)/);
-			if (m) paths.push(m[1]);
-		}
-	} catch { /* ignore */ }
+	for (const r of parseJsonStringArray(row.evidence_refs)) {
+		const m = r.match(/^([^:]+)/);
+		if (m) paths.push(m[1]);
+	}
+	for (const c of parseJsonStringArray(row.changed_files)) {
+		const m = c.match(/^([^:]+)/);
+		if (m) paths.push(m[1]);
+	}
 	return [...new Set(paths)];
 }
 
@@ -226,20 +221,14 @@ function parseOriginalRefsForFile(
 	targetFile: string,
 ): string[] {
 	const refs: string[] = [];
-	try {
-		const evidenceRefs: string[] = JSON.parse(row.evidence_refs ?? "[]");
-		for (const r of evidenceRefs) {
-			if (r === targetFile || r.startsWith(targetFile + ":")) {
-				refs.push(r);
-			}
+	for (const r of parseJsonStringArray(row.evidence_refs)) {
+		if (r === targetFile || r.startsWith(targetFile + ":")) {
+			refs.push(r);
 		}
-	} catch { /* ignore */ }
-	try {
-		const changed: string[] = JSON.parse(row.changed_files ?? "[]");
-		for (const c of changed) {
-			if (c && !refs.includes(c)) refs.push(c);
-		}
-	} catch { /* ignore */ }
+	}
+	for (const c of parseJsonStringArray(row.changed_files)) {
+		if (c && !refs.includes(c)) refs.push(c);
+	}
 	return refs;
 }
 
@@ -349,7 +338,7 @@ function generateDeterministicCard(
 }
 
 function selectFilesToCard(
-	db: { prepare(sql: string): any },
+	db: SqliteDb,
 	repoKey: string,
 	evidenceRows: EvidenceBatchRow[],
 	batchSize: number,
@@ -407,7 +396,7 @@ function selectFilesToCard(
 }
 
 function writeCardsAndEvidence(
-	db: { prepare(sql: string): any },
+	db: SqliteDb,
 	repoKey: string,
 	cards: GeneratedCard[],
 	evidenceIds: number[],
@@ -451,7 +440,7 @@ function writeCardsAndEvidence(
 			repoKey,
 			card.fileId,
 		);
-		cardsWritten += result.changes ?? 0;
+		cardsWritten += sqliteChanges(result);
 	}
 
 	if (evidenceIds.length > 0) {
@@ -604,10 +593,10 @@ export async function runKeeperUnit(options: KeeperRunOptions): Promise<KeeperRu
 			tokensUsed: options.maxTokensPerRun - tokenBudgetRemaining,
 			elapsedMs: elapsed,
 		};
-	} catch (err: any) {
+	} catch (err) {
 		return {
 			didWork: false,
-			message: `Keeper error: ${err?.message ?? String(err)}`,
+			message: `Keeper error: ${errorMessage(err)}`,
 			cardsGenerated: 0,
 			evidenceProcessed: 0,
 			tokensUsed: 0,

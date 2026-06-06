@@ -11,6 +11,7 @@ import { syncRepo } from "../index/sync";
 import { openDb, closeDb } from "../index/db";
 import { loadConfig } from "../config/loader";
 import { resolvePreset } from "../models/presets";
+import { errorMessage } from "../util/errors";
 
 export interface ScoutFinding {
 	claim: string;
@@ -289,7 +290,7 @@ export async function runScoutUnit(options: ScoutRunOptions): Promise<ScoutRunRe
 	let files: Array<{ relativePath: string; absolutePath: string; content: string }>;
 	try {
 		files = getIndexedFilesFromDb(options.repoKey, options.repoRoot, effectiveMaxFiles);
-	} catch (dbErr: any) {
+	} catch (dbErr) {
 		return {
 			didWork: false,
 			status: "error",
@@ -298,7 +299,7 @@ export async function runScoutUnit(options: ScoutRunOptions): Promise<ScoutRunRe
 			tokensUsed: 0,
 			elapsedMs: Date.now() - startTime,
 			filesScanned: 0,
-			message: `Scout DB error: ${dbErr?.message ?? String(dbErr)}`,
+			message: `Scout DB error: ${errorMessage(dbErr)}`,
 		};
 	}
 
@@ -379,10 +380,10 @@ export async function runScoutUnit(options: ScoutRunOptions): Promise<ScoutRunRe
 						cfg.evidenceQueue.dedupeWindowHours,
 					);
 				}
-			} catch (evErr: any) {
+			} catch (evErr) {
 				// Evidence append failure is non-fatal for scout
 				if (typeof console !== "undefined" && console.error) {
-					console.error("[pi-ai-automation-memory] scout evidence append error:", evErr?.message ?? String(evErr));
+					console.error("[pi-ai-automation-memory] scout evidence append error:", errorMessage(evErr));
 				}
 			}
 		}
@@ -397,7 +398,7 @@ export async function runScoutUnit(options: ScoutRunOptions): Promise<ScoutRunRe
 			filesScanned,
 			message: `Scout ran: ${validation.trusted.length} trusted, ${validation.rejected.length} rejected, ${filesScanned} files scanned.`,
 		};
-	} catch (err: any) {
+	} catch (err) {
 		return {
 			didWork: false,
 			status: "error",
@@ -406,7 +407,7 @@ export async function runScoutUnit(options: ScoutRunOptions): Promise<ScoutRunRe
 			tokensUsed: 0,
 			elapsedMs: Date.now() - startTime,
 			filesScanned: 0,
-			message: `Scout error: ${err?.message ?? String(err)}`,
+			message: `Scout error: ${errorMessage(err)}`,
 		};
 	}
 }

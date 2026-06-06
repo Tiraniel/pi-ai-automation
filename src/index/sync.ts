@@ -14,6 +14,7 @@ import { scanRepo, type ScannedFile, readAndHash } from "./scanner";
 import { resolveRepoRoot } from "../runtime";
 import { listGitIgnored, classifyExclusion } from "../security/exclusions";
 import { markPossiblyStaleEvidence } from "../evidence/queue";
+import { errorCode } from "../util/errors";
 
 export interface SyncResult {
 	repoKey: string;
@@ -97,8 +98,8 @@ function computeContentFingerprint(
 		try {
 			const { contentHash } = readAndHash(absPath);
 			hash = contentHash;
-		} catch (err: any) {
-			if (err?.code === "ENOENT") {
+		} catch (err) {
+			if (errorCode(err) === "ENOENT") {
 				hash = "DELETED";
 			} else {
 				hash = fileHashes?.get(p) ?? `UNREADABLE:${status}:${p}`;

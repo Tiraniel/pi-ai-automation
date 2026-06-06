@@ -10,6 +10,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadConfig } from "../config/loader";
 import type { RepoMemoryConfig } from "../config/loader";
+import type { SqliteDb } from "../index/db";
+import { parseJsonStringArray } from "../util/json";
 
 export interface Principle {
 	category: string | null;
@@ -169,7 +171,7 @@ export function loadAllPrinciples(repoRoot: string): Principle[] {
  * Persist principles to the integrity_principles table.
  */
 export function persistPrinciples(
-	db: { prepare(sql: string): any },
+	db: SqliteDb,
 	repoKey: string,
 	principles: Principle[],
 ): void {
@@ -188,7 +190,7 @@ export function persistPrinciples(
  * Read principles from DB.
  */
 export function readPrinciplesFromDb(
-	db: { prepare(sql: string): any },
+	db: SqliteDb,
 	repoKey: string,
 ): Principle[] {
 	try {
@@ -211,7 +213,7 @@ export function readPrinciplesFromDb(
  * Check whether findings need regeneration.
  */
 export function findingsNeedRefresh(
-	db: { prepare(sql: string): any },
+	db: SqliteDb,
 	repoKey: string,
 	contextVersion: string,
 	maxAgeMs: number,
@@ -232,15 +234,20 @@ export function findingsNeedRefresh(
 }
 
 /**
- * Scan a single file for smell patterns. Bounded.
+ * A single smell match from scanFileSmells.
  */
-function scanFileSmells(absPath: string, _relPath: string): Array<{
+type SmellMatch = {
 	line: number;
 	label: string;
 	category: string;
 	severity: "warning" | "info";
 	lineText: string;
-}> {
+};
+
+/**
+ * Scan a single file for smell patterns. Bounded.
+ */
+function scanFileSmells(absPath: string, _relPath: string): Array<SmellMatch> {
 	const results: ReturnType<typeof scanFileSmells> = [];
 	let content: string;
 	try {
@@ -277,7 +284,7 @@ function scanFileSmells(absPath: string, _relPath: string): Array<{
  * Generate deterministic findings from DB state and bounded file scans.
  */
 export function generateFindings(
-	db: { prepare(sql: string): any },
+	db: SqliteDb,
 	repoKey: string,
 	repoRoot: string,
 	contextVersion: string,
@@ -441,7 +448,7 @@ export function generateFindings(
 		 LIMIT ?`
 	).all(repoKey, MAX_SCAN_FILES) as Array<{ relative_path: string; absolute_path: string; language: string; size_bytes: number }>;
 
-	const smellMap = new Map<string, Array<{ line: number; label: string; lineText: string }>>();
+	const smellMap = new Map<string, Array<SmellMatch>>();
 	for (const file of scanCandidates) {
 		const smells = scanFileSmells(file.absolute_path, file.relative_path);
 		if (smells.length > 0) {
@@ -598,7 +605,7 @@ export function rankFindings(findings: Finding[], params: ConsultantParams): Fin
  * Persist findings to health_findings table.
  */
 export function persistFindings(
-	db: { prepare(sql: string): any },
+	db: SqliteDb,
 	repoKey: string,
 	contextVersion: string,
 	findings: Finding[],
@@ -643,7 +650,7 @@ export function persistFindings(
  * Read findings from DB, filtering by params.
  */
 export function readFindingsFromDb(
-	db: { prepare(sql: string): any },
+	db: SqliteDb,
 	repoKey: string,
 	params: ConsultantParams,
 ): Finding[] {
@@ -674,18 +681,8 @@ export function readFindingsFromDb(
 
 	const findings: Finding[] = [];
 	for (const r of rows) {
-		let evidenceRefs: string[] = [];
-		let fileRefs: string[] = [];
-		try {
-			evidenceRefs = JSON.parse(r.evidence_refs) as string[];
-		} catch {
-			evidenceRefs = [];
-		}
-		try {
-			fileRefs = JSON.parse(r.file_refs) as string[];
-		} catch {
-			fileRefs = [];
-		}
+		const evidenceRefs = parseJsonStringArray(r.evidence_refs);
+		const fileRefs = parseJsonStringArray(r.file_refs);
 		const f: Finding = {
 			id: r.id,
 			severity: r.severity as Finding["severity"],

@@ -7,6 +7,7 @@ import { buildRuntime } from "./runtime";
 import { syncRepo } from "./index/sync";
 import { BUILT_IN_PRESETS } from "./models/presets";
 import { loadConfig } from "./config/loader";
+import { errorMessage } from "./util/errors";
 
 export function registerDiagnostics(pi: ExtensionAPI) {
 	pi.registerCommand("repo-memory-status", {
@@ -41,10 +42,10 @@ export function registerDiagnostics(pi: ExtensionAPI) {
 					`- generated_excluded: ${status.generatedExcludedCount}`,
 					`- cache_db: ${status.cacheDbPath}`,
 				];
-			} catch (err: any) {
+			} catch (err) {
 				indexLines = [
 					"## Index Status",
-					`- error: ${err?.message ?? String(err)}`,
+					`- error: ${errorMessage(err)}`,
 				];
 			}
 

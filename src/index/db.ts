@@ -22,6 +22,29 @@ export interface DatabaseHandle {
 	close(): void;
 }
 
+/** Minimal contract for a prepared SQLite statement. */
+export interface SqliteStatement {
+	run(...params: unknown[]): SqliteRunResult;
+	get(...params: unknown[]): unknown;
+	all(...params: unknown[]): unknown[];
+}
+
+/** Minimal contract for SQLite run() result. */
+export interface SqliteRunResult {
+	changes?: number | bigint;
+}
+
+/** Convert SQLite run result changes to a safe number. */
+export function sqliteChanges(result: SqliteRunResult): number {
+	return Number(result.changes ?? 0);
+}
+
+/** Minimal contract for a SQLite database handle used by repo-memory modules. */
+export interface SqliteDb {
+	prepare(sql: string): SqliteStatement;
+	exec(sql: string): void;
+}
+
 function ensureColumn(
 	db: InstanceType<ReturnType<typeof getSqlite>["DatabaseSync"]>,
 	table: string,

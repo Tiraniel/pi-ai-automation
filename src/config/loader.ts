@@ -17,6 +17,7 @@ import {
 	DEFAULT_SCOUT,
 } from "./defaults";
 import type { ModelPreset } from "../models/presets";
+import { errorMessage } from "../util/errors";
 
 export interface RepoMemoryConfig {
 	enabled: boolean;
@@ -85,8 +86,8 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 			const content = fs.readFileSync(configPath, "utf-8");
 			raw = JSON.parse(content);
 		}
-	} catch (err: any) {
-		warnings.push(`Config read/parse error: ${err?.message ?? String(err)}`);
+	} catch (err) {
+		warnings.push(`Config read/parse error: ${errorMessage(err)}`);
 	}
 
 	const src = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
