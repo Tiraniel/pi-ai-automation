@@ -1,0 +1,89 @@
+{
+  "enabled": true,
+  "cache": {
+    "maxSizeMb": 512,
+    "pruneAgeDays": 90
+  },
+  "indexing": {
+    "respectGitignore": true,
+    "additionalExclusions": [
+      "*.log",
+      "tmp/",
+      ".cache/"
+    ],
+    "maxFileSizeBytes": 1048576,
+    "includeLockfiles": false
+  },
+  "memory": {
+    "maxCardsPerRepo": 5000,
+    "maxEvidencePerRepo": 2500,
+    "cardRetentionDays": 90,
+    "evidenceRetentionDays": 180
+  },
+  "autoBrief": {
+    "enabled": true,
+    "maxTokens": 4000,
+    "minIntervalMs": 30000,
+    "includeCards": true,
+    "includeEvidence": false
+  },
+  "tools": {
+    "repo_context": {
+      "maxFiles": 30,
+      "maxTokens": 8000
+    },
+    "repo_health_report": {
+      "maxFindings": 20,
+      "includeGanttDefault": false,
+      "forceRefreshDefault": false
+    }
+  },
+  "evidenceQueue": {
+    "enabled": true,
+    "maxClaimLength": 500,
+    "maxMetadataSizeBytes": 4096,
+    "dedupeWindowHours": 168
+  },
+  "keeper": {
+    "enabled": true,
+    "leaseDurationMs": 300000,
+    "maxRunTimeMs": 30000,
+    "maxTokensPerRun": 50000,
+    "batchSize": 10,
+    "runOnAgentEnd": true,
+    "fileCardPriority": ["missing", "stale", "fresh"]
+  },
+  "integrity": {
+    "enabled": true,
+    "maxAgeMs": 3600000,
+    "principles": [],
+    "defaultCategories": [
+      "test_coverage",
+      "type_safety",
+      "doc_freshness",
+      "dependency_risk",
+      "architectural_drift",
+      "security"
+    ]
+  },
+  "modelPresets": {},
+  "scouts": {
+    "enabled": false,
+    "runOnAgentEnd": false,
+    "maxFilesPerRun": 50,
+    "maxFindingsPerRun": 20,
+    "maxTokensPerRun": 32000,
+    "presets": ["scout_broad"]
+  },
+  "security": {
+    "redactionEnabled": true,
+    "redactionPatterns": [],
+    "secretExclusions": [],
+    "allowSecretFilesInIndex": false
+  },
+  "output": {
+    "defaultTruncationLimitBytes": 51200,
+    "defaultTruncationLimitLines": 2000,
+    "includeHashInOutput": false
+  }
+}

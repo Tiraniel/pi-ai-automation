@@ -4,7 +4,7 @@ Global Pi extension that provides AI-facing repo context, evidence checkpointing
 
 ## Status
 
-**Current:** TASK-009 implemented. Model presets with user overrides, optional disabled-by-default scout workers with strict structured-output validation, and keeper preset budget integration are operational. Hybrid keeper scheduler with single-writer lease, evidence batch claiming with crash recovery, deterministic file card generation, adaptive scheduling, and stale-card trust safeguards remain operational. Append-only evidence queue, `repo_checkpoint` persistence, and pending evidence counts remain operational. SQLite-backed index, git/non-git discovery, exclusions, dirty overlay, basic status, `repo_context`, auto-brief injection, and context deduplication remain operational.
+**Current:** TASK-010 implemented. Public OSS docs, examples, and validation suite are complete. Integrity consultant + health report, mutation hardening, model presets/scouts, and all prior features are operational. The extension is ready for public use with deterministic/local-only fallback; external LLM provider integration for keeper/scouts is not yet wired.
 
 | Component | Status | Task |
 |-----------|--------|------|
@@ -13,10 +13,10 @@ Global Pi extension that provides AI-facing repo context, evidence checkpointing
 | `repo_context` + auto-brief | ✅ Implemented | TASK-004 |
 | `repo_checkpoint` evidence queue | ✅ Implemented | TASK-005 |
 | Keeper scheduler + file cards | ✅ Implemented | TASK-006 |
-| Integrity consultant + health report | ⏳ Pending | TASK-007 |
+| Integrity consultant + health report | ✅ Implemented | TASK-007 |
 | Parallel/git hardening | ✅ Implemented | TASK-008 |
 | Model presets + scouts | ✅ Implemented | TASK-009 |
-| OSS docs + tests | ⏳ Pending | TASK-010 |
+| OSS docs + tests | ✅ Implemented | TASK-010 |
 
 ## Install
 
@@ -40,7 +40,7 @@ After install, the extension auto-registers when Pi starts in any repo.
 |------|---------|------------------|
 | `repo_context` | Bounded repo summary for agent planning | Implemented: syncs index, ranks files by query/importance/dirty state, returns file metadata, excerpts, and optional evidence with token/byte/line caps. Stale cards labeled `DO NOT TRUST`. |
 | `repo_checkpoint` | Append evidence to the evidence queue | Implemented: persists redacted evidence to SQLite, records agent/task/context refs, dedupes repeated claims, marks stale context/file-hash drift, and returns queue counts. |
-| `repo_health_report` | Ranked integrity/consultant report | Scaffold: returns empty findings with a status message. No LLM calls yet. Deterministic index is available via `repo_index_status`. |
+| `repo_health_report` | Ranked integrity/consultant report | Implemented: generates evidence-bound findings from deterministic scans, ranks by severity/task relevance/confidence, and optionally includes a Mermaid Gantt chart. No external LLM calls; all findings are local and deterministic. |
 | `repo_index_status` | Quick diagnostic of the deterministic index | Core implemented: syncs on demand, shows file counts, dirty/untracked state, exclusion counts, language breakdown, keeper lease, and evidence queue stats (pending/processing/stale). |
 
 ## Diagnostic Commands
@@ -97,7 +97,7 @@ Built-in defaults remain unchanged when not overridden. For built-in presets, th
 The keeper runs asynchronously between agent turns (triggered by `agent_end` when `keeper.runOnAgentEnd` is true):
 - **File card keeper**: refreshes stale/missing cards in batches. Cards are generated deterministically (no LLM/provider yet). Each card stores source hash, context version, refs, excerpts, confidence, worker ID, and model preset metadata.
 - **Scout runner**: runs broad/deep scans when enabled. Uses deterministic local scanning and strict structured-output validation; disabled by default.
-- **Integrity consultant**: regenerates health findings when stale (scaffold — TASK-007).
+- **Integrity consultant**: regenerates health findings when stale (implemented; deterministic/local — TASK-007).
 
 A single-writer SQLite lease prevents concurrent keeper writes across multiple Pi sessions. Evidence batches are claimed with short-term leases; expired leases are automatically reclaimed on the next run.
 
@@ -119,13 +119,11 @@ This fallback ensures the infrastructure is testable and useful even without an 
 
 ## Limitations
 
-- `repo_checkpoint` persists evidence with deduplication and stale marking (TASK-005).
-- `repo_health_report` does not invoke LLMs or generate findings (TASK-007).
-- `before_agent_start` auto-brief is implemented (TASK-004).
-- Keeper scheduling adapts to active-agent count and queue pressure; health report/integrity remains pending (TASK-007).
 - Keeper card generation is deterministic/local only; no LLM provider integration yet.
 - Scout runner uses deterministic local scanning and strict structured-output validation; no LLM provider integration yet.
-- Integrity consultant is a scaffold (TASK-007).
+- Integrity consultant generates evidence-bound findings deterministically; no external LLM provider integration yet.
+- No built-in dashboard; data is plain SQLite and JSONL.
+- `repo_health_report` Gantt chart is simple Markdown/Mermaid and optional (`includeGantt: true`).
 
 ## Security Defaults
 

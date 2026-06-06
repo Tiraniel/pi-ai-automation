@@ -1,0 +1,60 @@
+{
+  "agents": {
+    "brain": {
+      "provider": "openai-codex",
+      "model": "gpt-5.5",
+      "thinkingLevel": "xhigh"
+    },
+    "coder": {
+      "provider": "openai-codex",
+      "model": "gpt-5.3-codex",
+      "thinkingLevel": "medium",
+      "tools": [
+        "read",
+        "bash",
+        "edit",
+        "write",
+        "grep",
+        "find",
+        "ls",
+        "room_create",
+        "room_job_start",
+        "room_send",
+        "room_read",
+        "room_job_done",
+        "room_status",
+        "repo_context",
+        "repo_checkpoint",
+        "repo_health_report",
+        "repo_index_status"
+      ],
+      "includeKarpathyGuidelines": true
+    },
+    "reviewer": {
+      "provider": "openai-codex",
+      "model": "gpt-5.5",
+      "thinkingLevel": "high",
+      "tools": [
+        "read",
+        "bash",
+        "grep",
+        "find",
+        "ls",
+        "room_create",
+        "room_job_start",
+        "room_send",
+        "room_read",
+        "room_job_done",
+        "room_status",
+        "repo_context",
+        "repo_checkpoint",
+        "repo_health_report",
+        "repo_index_status"
+      ]
+    }
+  },
+  "reviewerSwarm": {
+    "enabled": true,
+    "targets": ["security", "performance", "correctness"]
+  }
+}

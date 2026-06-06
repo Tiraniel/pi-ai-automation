@@ -382,16 +382,86 @@ This package also includes a global repo-memory extension that gives every Brain
 
 The extension is bundled with this package — no separate install needed. It auto-registers when Pi starts.
 
+### Quickstart
+
+No configuration is required. The extension works out of the box with safe defaults:
+- Default cache path: `~/.pi/agent/repo-memory/` (outside the repo)
+- Default exclusions: secrets, generated artifacts, large binaries, IDE files, lockfiles
+- Secret redaction enabled before hashing or storage
+- No telemetry, no network syncing, no external dashboard
+
+Optional per-project config at `.pi/repo-memory.json`:
+```bash
+mkdir -p .pi
+cp examples/repo-memory.generic.json .pi/repo-memory.json
+```
+
 ### AI tools
 
-- `repo_context` — Bounded repo summary for agent planning.
-- `repo_checkpoint` — Append-only evidence queue for claims, test refs, and confidence.
-- `repo_health_report` — Ranked integrity/consultant findings (optional Gantt).
-- `repo_index_status` — Quick diagnostic of index state and keeper lease.
+| Tool | Purpose | Typical caller |
+|------|---------|---------------|
+| `repo_context` | Bounded repo summary for agent planning | Brain, Coder |
+| `repo_checkpoint` | Append-only evidence queue for claims, test refs, and confidence | Brain, Coder, Reviewer |
+| `repo_health_report` | Ranked integrity/consultant findings (optional Mermaid Gantt) | Reviewer, Brain |
+| `repo_index_status` | Quick diagnostic of index state and keeper lease | Any agent |
 
-### Current status
+### Default exclusions
 
-**MVP scaffold (TASK-002).** The extension loads without errors and registers all four tools, but no repository scanning, SQLite indexing, LLM calls, or keeper scheduling is implemented yet. Each tool returns a clear scaffold status message. Real functionality will land in TASK-003 through TASK-007.
+Secrets (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `credentials*`, etc.), generated artifacts (`node_modules/`, `dist/`, `build/`, `*.min.js`, `*.map`), binaries (`*.png`, `*.zip`, `*.pdf`), lockfiles, IDE directories (`.vscode/`, `.idea/`), and OS files (`.DS_Store`).
+
+These are built-in and cannot be removed; use `indexing.additionalExclusions` to extend them.
+
+### Model presets and scouts
+
+The extension ships provider-agnostic model presets:
+- `index_keeper` (enabled): generate/refresh file cards
+- `integrity_keeper` (enabled): generate health findings
+- `scout_broad` (disabled): cross-file pattern scans
+- `scout_deep` (disabled): deep architectural analysis
+
+Override in `.pi/repo-memory.json` under `modelPresets`. Scouts are disabled by default and run deterministically without an external LLM provider.
+
+### Exposing memory tools to delegated agents
+
+If your `.pi/workflow.json` restricts `agents.coder.tools` or `agents.reviewer.tools`, add the four memory tools so sub-agents can use them:
+
+```json
+{
+  "agents": {
+    "coder": {
+      "tools": [
+        "read", "bash", "edit", "write", "grep", "find", "ls",
+        "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status",
+        "repo_context", "repo_checkpoint", "repo_health_report", "repo_index_status"
+      ]
+    },
+    "reviewer": {
+      "tools": [
+        "read", "bash", "grep", "find", "ls",
+        "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status",
+        "repo_context", "repo_checkpoint", "repo_health_report", "repo_index_status"
+      ]
+    }
+  }
+}
+```
+
+See [`examples/workflow.with-memory-tools.json`](./examples/workflow.with-memory-tools.json) for a full example.
+
+### Validation
+
+Run the local validation suite to verify core behavior:
+
+```bash
+npx jiti scripts/validate-repo-memory.ts
+```
+
+### Limitations
+
+- Keeper card generation and scout scanning are deterministic/local only; no external LLM provider integration yet.
+- Health report findings are evidence-bound and ranked, but the consultant does not call external LLMs.
+- No built-in dashboard; data is plain SQLite and JSONL.
+- Rooms and workflow tools are separate from repo-memory; they coordinate but do not share storage.
 
 ### No-load-scan guarantee
 
@@ -399,7 +469,7 @@ The extension does **not** scan the repo, open SQLite, run `git status`, or walk
 
 ### Diagnostic command
 
-- `/repo-memory-status` — Show extension status, registered tools, and model preset list.
+- `/repo-memory-status` — Show extension status, registered tools, model preset list, scout status, and no-load-scan guarantee.
 
 ### Intended usage
 
