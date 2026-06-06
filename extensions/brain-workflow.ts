@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import { getAgentDir, getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
@@ -16,15 +16,11 @@ import {
 import {
 	GONKA_BROKER_API_KEY_ENV,
 	GONKA_BROKER_URL_ENV,
-	GONKA_DOTENV_KEYS,
-	GONKA_DOTENV_PATH,
-	GONKA_HYBRID_PROFILE_ALIAS,
 	GONKA_HYBRID_PROFILE_ID,
 	GONKA_MODELS,
 	GONKA_PROVIDER_NAME,
 	getGonkaBrokerUrl,
 	getGonkaEnvStatus,
-	WORKFLOW_PROFILES,
 } from "./workflow/profiles";
 import {
 	KARPATHY_GUIDELINES_PROMPT,
@@ -34,15 +30,10 @@ import type {
 	AgentPreset,
 	DelegateProgressItem,
 	DelegateRunResult,
-	LoadedWorkflowConfig,
 	ReviewerSwarmConfig,
 	ReviewerTargetResult,
-	ThinkingLevel,
 	UsageStats,
 	WorkflowConfig,
-	WorkflowProfile,
-	WorkflowProfileId,
-	WorkflowProfileSource,
 } from "./workflow/types";
 import {
 	appendAgentIdSuffix,
@@ -59,102 +50,17 @@ import {
 	sanitizeRole,
 	type ResolvedRoomContext,
 } from "./workflow/rooms";
-
-function parseGonkaDotenvValue(rawValue: string): string {
-	let value = rawValue.trim();
-	if (!value) return "";
-
-	const quote = value[0];
-	if ((quote === '"' || quote === "'") && value.length > 1) {
-		const end = value.lastIndexOf(quote);
-		value = end > 0 ? value.slice(1, end) : value.slice(1);
-		if (quote === '"') {
-			value = value
-				.replace(/\\n/g, "\n")
-				.replace(/\\r/g, "\r")
-				.replace(/\\t/g, "\t")
-				.replace(/\\"/g, '"')
-				.replace(/\\\\/g, "\\");
-		}
-		return value;
-	}
-
-	const commentStart = value.search(/\s#/);
-	if (commentStart >= 0) value = value.slice(0, commentStart).trim();
-	return value;
-}
-
-function loadGonkaEnvFromDefaultDotenv(): void {
-	let text: string;
-	try {
-		text = fs.readFileSync(GONKA_DOTENV_PATH, "utf8");
-	} catch {
-		return;
-	}
-
-	for (const rawLine of text.split(/\r?\n/)) {
-		let line = rawLine.trim();
-		if (!line || line.startsWith("#")) continue;
-		if (line.startsWith("export ")) line = line.slice("export ".length).trim();
-
-		const separator = line.indexOf("=");
-		if (separator <= 0) continue;
-
-		const key = line.slice(0, separator).trim();
-		if (!GONKA_DOTENV_KEYS.includes(key as (typeof GONKA_DOTENV_KEYS)[number])) continue;
-		if (process.env[key]?.trim()) continue;
-
-		const value = parseGonkaDotenvValue(line.slice(separator + 1));
-		if (value.trim()) process.env[key] = value;
-	}
-}
-
-function readWorkflowProfileFlagFromArgv(): string | undefined {
-	const argv = process.argv.slice(2);
-	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
-		if (arg === "--workflow-profile" && i + 1 < argv.length) {
-			const value = argv[i + 1].trim();
-			return value || undefined;
-		}
-		if (arg.startsWith("--workflow-profile=")) {
-			const value = arg.slice("--workflow-profile=".length).trim();
-			return value || undefined;
-		}
-	}
-	return undefined;
-}
-
-function normalizeWorkflowProfileId(value: string | undefined | null): WorkflowProfileId {
-	const candidate = typeof value === "string" ? value.trim().toLowerCase() : "";
-	if (candidate && candidate in WORKFLOW_PROFILES) {
-		return candidate as WorkflowProfileId;
-	}
-	return "default";
-}
-
-function hasWorkflowProfileValue(value: string | undefined | null): value is string {
-	return typeof value === "string" && value.trim().length > 0;
-}
-
-function resolveWorkflowProfileSelection(
-	cliProfile: string | undefined,
-	globalConfig: WorkflowConfig,
-	projectConfig: WorkflowConfig,
-): { id: WorkflowProfileId; source: WorkflowProfileSource } {
-	if (hasWorkflowProfileValue(cliProfile)) return { id: normalizeWorkflowProfileId(cliProfile), source: "cli" };
-	if (hasWorkflowProfileValue(projectConfig.profile)) return { id: normalizeWorkflowProfileId(projectConfig.profile), source: "project" };
-	if (hasWorkflowProfileValue(globalConfig.profile)) return { id: normalizeWorkflowProfileId(globalConfig.profile), source: "global" };
-	return { id: "default", source: "default" };
-}
-
-function getWorkflowProfile(id: WorkflowProfileId): WorkflowProfile {
-	return WORKFLOW_PROFILES[id] ?? WORKFLOW_PROFILES["default"];
-}
-
-function applyWorkflowProfile(config: WorkflowConfig, profileId: WorkflowProfileId): WorkflowConfig {
-	return deepMerge(config, getWorkflowProfile(profileId).apply);
-}
+import {
+	applyBrainPreset,
+	deepMerge,
+	formatPreset,
+	getAgentPreset,
+	getWorkflowProfile,
+	loadGonkaEnvFromDefaultDotenv,
+	loadWorkflowConfig,
+	resolveModelArg,
+	resolveModelLabel,
+} from "./workflow/runtime/config";
 
 const MAX_STDERR_BYTES = 64 * 1024;
 const MAX_PROGRESS_ITEMS = 80;
@@ -171,107 +77,11 @@ const DELEGATE_DONE_ENV_VAR = "PI_WORKFLOW_DELEGATE_DONE_FILE";
 const DELEGATE_PANE_POLL_MS = 600;
 const DELEGATE_PANE_MAX_WAIT_MS = 600000;
 
+// Local plain-object guard used by cmux JSON parsing and tool-update
+// extraction. The deepMerge/findNearestFile/loadWorkflowConfig helpers in
+// ./workflow/runtime/config have their own private copy.
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function deepMerge<T>(base: T, override: unknown): T {
-	if (override === undefined) return base;
-	if (Array.isArray(base) || Array.isArray(override)) return override as T;
-	if (!isPlainObject(base) || !isPlainObject(override)) return override as T;
-
-	const result: Record<string, unknown> = { ...base };
-	for (const [key, value] of Object.entries(override)) {
-		result[key] = key in result ? deepMerge(result[key], value) : value;
-	}
-	return result as T;
-}
-
-function readJsonFile<T = Record<string, unknown>>(filePath: string): T | undefined {
-	try {
-		if (!fs.existsSync(filePath)) return undefined;
-		return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
-	} catch (error) {
-		console.error(`[brain-workflow] Failed to read ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-		return undefined;
-	}
-}
-
-function findNearestFile(cwd: string, relativePath: string): string | null {
-	let current = path.resolve(cwd);
-	while (true) {
-		const candidate = path.join(current, relativePath);
-		if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
-		const parent = path.dirname(current);
-		if (parent === current) return null;
-		current = parent;
-	}
-}
-
-function loadWorkflowConfig(cwd: string, options?: { cliProfile?: string }): LoadedWorkflowConfig {
-	const globalPath = path.join(getAgentDir(), "workflow.json");
-	const projectPath = findNearestFile(cwd, path.join(".pi", "workflow.json"));
-	const projectSettingsPath = findNearestFile(cwd, path.join(".pi", "settings.json"));
-
-	const globalConfig = readJsonFile<WorkflowConfig>(globalPath) ?? {};
-	const projectConfig = projectPath ? (readJsonFile<WorkflowConfig>(projectPath) ?? {}) : {};
-	const projectSettings = projectSettingsPath ? readJsonFile<Record<string, unknown>>(projectSettingsPath) : undefined;
-
-	const cliProfile = options?.cliProfile ?? readWorkflowProfileFlagFromArgv();
-	const profileSelection = resolveWorkflowProfileSelection(cliProfile, globalConfig, projectConfig);
-	const { id: profileId, source: profileSource } = profileSelection;
-
-	// Merge profiles at their source layer:
-	// - global profile: DEFAULT -> PROFILE -> GLOBAL -> PROJECT
-	// - project profile: DEFAULT -> GLOBAL -> PROFILE -> PROJECT
-	// - CLI profile: DEFAULT -> GLOBAL -> PROJECT -> PROFILE
-	// This lets profile: "gonka-hybrid" override older lower-precedence configs,
-	// while fields in the same config file still win over the profile.
-	let config = DEFAULT_CONFIG;
-	if (profileSource === "global") config = applyWorkflowProfile(config, profileId);
-	config = deepMerge(config, globalConfig);
-	if (profileSource === "project") config = applyWorkflowProfile(config, profileId);
-	config = deepMerge(config, projectConfig);
-	if (profileSource === "cli") config = applyWorkflowProfile(config, profileId);
-
-	return {
-		config,
-		globalPath,
-		projectPath,
-		projectSettingsPath,
-		projectSettings,
-		profileId,
-		profileSource,
-	};
-}
-
-function hasCliFlag(flagNames: string[]): boolean {
-	const argv = process.argv.slice(2);
-	return argv.some((arg) => flagNames.some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
-}
-
-function projectSettingHas(projectSettings: Record<string, unknown> | undefined, keys: string[]): boolean {
-	return Boolean(projectSettings && keys.some((key) => Object.prototype.hasOwnProperty.call(projectSettings, key)));
-}
-
-function resolveModelArg(preset: AgentPreset): string | undefined {
-	if (!preset.model) return undefined;
-	if (!preset.provider) return preset.model;
-	const providerPrefix = `${preset.provider}/`;
-	if (preset.model.toLowerCase().startsWith(providerPrefix.toLowerCase())) return preset.model;
-	// Always prefer provider/model so OpenAI-compatible broker model ids that
-	// already contain a slash (e.g. gonka/moonshotai/Kimi-K2.6) still resolve
-	// to the right provider when launched as a child delegate.
-	return `${preset.provider}/${preset.model}`;
-}
-
-function resolveModelLabel(preset: AgentPreset): string {
-	const model = resolveModelArg(preset) ?? "default";
-	return preset.thinkingLevel ? `${model}:${preset.thinkingLevel}` : model;
-}
-
-function getAgentPreset(config: WorkflowConfig, agent: AgentName): AgentPreset {
-	return config.agents?.[agent] ?? DEFAULT_CONFIG.agents![agent];
 }
 
 function getFinalAssistantText(messages: Message[]): string {
@@ -1775,41 +1585,9 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 	});
 }
 
-async function applyBrainPreset(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-	if (process.env.PI_WORKFLOW_CHILD === "1") return;
-	const cliProfile = pi.getFlag("workflow-profile") as string | undefined;
-	const loaded = loadWorkflowConfig(ctx.cwd, { cliProfile });
-	if (loaded.config.autoApplyBrain === false) return;
-
-	const brain = getAgentPreset(loaded.config, "brain");
-	const projectOverridesWorkflow = Boolean(loaded.projectPath);
-	const explicitModel = hasCliFlag(["--model", "--provider"]);
-	const explicitThinking = hasCliFlag(["--thinking"]);
-	const projectSettingsHasModel = projectSettingHas(loaded.projectSettings, ["defaultProvider", "defaultModel"]);
-	const projectSettingsHasThinking = projectSettingHas(loaded.projectSettings, ["defaultThinkingLevel"]);
-
-	if (!explicitModel && (projectOverridesWorkflow || !projectSettingsHasModel) && brain.provider && brain.model) {
-		const model = ctx.modelRegistry.find(brain.provider, brain.model);
-		if (model) {
-			const ok = await pi.setModel(model);
-			if (!ok) ctx.ui.notify(`Brain workflow: no auth for ${brain.provider}/${brain.model}`, "warning");
-		} else {
-			ctx.ui.notify(`Brain workflow: model not found: ${brain.provider}/${brain.model}`, "warning");
-		}
-	}
-
-	if (!explicitThinking && (projectOverridesWorkflow || !projectSettingsHasThinking) && brain.thinkingLevel) {
-		pi.setThinkingLevel(brain.thinkingLevel);
-	}
-
-	ctx.ui.setStatus("workflow", ctx.ui.theme.fg("accent", "brain→coder→reviewer"));
-}
-
-function formatPreset(agent: AgentName, preset: AgentPreset): string {
-	return `${agent}: ${resolveModelLabel(preset)}${preset.tools ? ` tools=${preset.tools.join(",")}` : ""}`;
-}
-
 // --- Workflow Rooms extracted to ./workflow/rooms (TASK-018 Slice 1) --------
+// --- Workflow runtime config/profile/preset helpers extracted to ------------
+//     ./workflow/runtime/config (TASK-018 Slice 2) ----------------------------
 
 export default function brainWorkflow(pi: ExtensionAPI) {
 	loadGonkaEnvFromDefaultDotenv();
