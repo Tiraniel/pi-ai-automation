@@ -136,6 +136,19 @@ const MIGRATIONS = [
 		leased_at INTEGER,
 		expires_at INTEGER
 	)`,
+	`CREATE TABLE IF NOT EXISTS integrity_principles (
+		repo_key TEXT NOT NULL,
+		category TEXT,
+		principle TEXT NOT NULL,
+		source TEXT NOT NULL,
+		confidence REAL NOT NULL DEFAULT 0.5,
+		config_ref TEXT,
+		inferred INTEGER DEFAULT 0,
+		updated_at INTEGER,
+		PRIMARY KEY (repo_key, principle)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_integrity_principles_repo ON integrity_principles(repo_key)`,
+	`CREATE INDEX IF NOT EXISTS idx_integrity_principles_source ON integrity_principles(repo_key, source)`,
 ];
 
 function isRetryableOpenError(err: unknown): boolean {
@@ -202,6 +215,16 @@ export function openDb(repoKey: string, repoRoot: string): DatabaseHandle {
 			ensureColumn(db, "files", "card_worker_id", "TEXT");
 			ensureColumn(db, "files", "card_metadata", "TEXT");
 			ensureColumn(db, "files", "card_stale_reason", "TEXT");
+
+			// TASK-007: health_findings compatibility columns
+			ensureColumn(db, "health_findings", "confidence", "REAL");
+			ensureColumn(db, "health_findings", "recommendation", "TEXT");
+			ensureColumn(db, "health_findings", "principle_source", "TEXT");
+			ensureColumn(db, "health_findings", "scope", "TEXT");
+			ensureColumn(db, "health_findings", "task_relevance", "REAL");
+			ensureColumn(db, "health_findings", "trusted", "INTEGER DEFAULT 1");
+			ensureColumn(db, "integrity_principles", "inferred", "INTEGER DEFAULT 0");
+			ensureColumn(db, "integrity_principles", "updated_at", "INTEGER");
 
 			return {
 				db,

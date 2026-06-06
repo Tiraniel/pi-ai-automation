@@ -23,6 +23,11 @@ export interface RepoMemoryConfig {
 			maxFiles: number;
 			maxTokens: number;
 		};
+		repo_health_report: {
+			maxFindings: number;
+			includeGanttDefault: boolean;
+			forceRefreshDefault: boolean;
+		};
 	};
 	autoBrief: {
 		enabled: boolean;
@@ -33,6 +38,9 @@ export interface RepoMemoryConfig {
 	};
 	integrity: {
 		principles: string[];
+		enabled: boolean;
+		maxAgeMs: number;
+		defaultCategories: string[];
 	};
 	output: {
 		defaultTruncationLimitBytes: number;
@@ -90,6 +98,7 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 
 	const toolsSrc = (src.tools ?? {}) as Record<string, unknown>;
 	const repoContextSrc = (toolsSrc.repo_context ?? {}) as Record<string, unknown>;
+	const repoHealthSrc = (toolsSrc.repo_health_report ?? {}) as Record<string, unknown>;
 
 	const autoBriefSrc = (src.autoBrief ?? {}) as Record<string, unknown>;
 
@@ -106,6 +115,11 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 				maxFiles: num(repoContextSrc.maxFiles, DEFAULT_TOOLS.repo_context.maxFiles, 1, 100),
 				maxTokens: num(repoContextSrc.maxTokens, DEFAULT_TOOLS.repo_context.maxTokens, 100, 100000),
 			},
+			repo_health_report: {
+				maxFindings: num(repoHealthSrc.maxFindings, DEFAULT_TOOLS.repo_health_report.maxFindings, 1, 1000),
+				includeGanttDefault: bool(repoHealthSrc.includeGanttDefault, DEFAULT_TOOLS.repo_health_report.includeGanttDefault),
+				forceRefreshDefault: bool(repoHealthSrc.forceRefreshDefault, DEFAULT_TOOLS.repo_health_report.forceRefreshDefault),
+			},
 		},
 		autoBrief: {
 			enabled: bool(autoBriefSrc.enabled, DEFAULT_AUTO_BRIEF_ENABLED),
@@ -118,6 +132,11 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 			principles: arrStr(integritySrc.principles).length > 0
 				? arrStr(integritySrc.principles)
 				: DEFAULT_INTEGRITY.principles,
+			enabled: bool(integritySrc.enabled, DEFAULT_INTEGRITY.enabled),
+			maxAgeMs: num(integritySrc.maxAgeMs, DEFAULT_INTEGRITY.maxAgeMs, 0, 86400000),
+			defaultCategories: arrStr(integritySrc.defaultCategories).length > 0
+				? arrStr(integritySrc.defaultCategories)
+				: DEFAULT_INTEGRITY.defaultCategories,
 		},
 		output: {
 			defaultTruncationLimitBytes: num(
