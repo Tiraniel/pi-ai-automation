@@ -1,0 +1,107 @@
+// Sprint subsystem — `before_agent_start` hook registration.
+// Extracted from extensions/sprint-system.ts as part of TASK-018 Slice 4.
+//
+// `registerSprintHooks(pi)` wires the single v1 hook:
+//   - on `before_agent_start`, if the session is bound to a sprint task,
+//     inject the binding prompt; otherwise validate/normalize the global
+//     current.json pointer and inject a pointer prompt when valid; when
+//     there is no active sprint and the prompt looks non-trivial, ask the
+//     user (or auto-create, depending on ~/.pi/agent/sprints.json) and
+//     inject the pointer prompt for the freshly created sprint.
+//
+// DECLINED_CWDS is a per-process Set that remembers, for the lifetime of
+// this extension load, which working directories have been asked and the
+// user said "no" — we do not re-ask for those.
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { sessionBindingPromptText, sprintPointerText } from "./prompt";
+import {
+	createSprint,
+	deriveSprintName,
+	getGlobalAutoCreate,
+	isNonTrivialPrompt,
+	loadCurrent,
+	normalizeActiveSprintPath,
+	normalizeActiveTaskPath,
+	nowIso,
+	readSessionBinding,
+	saveCurrent,
+	askUi,
+	askUiInput,
+} from "./store";
+
+const DECLINED_CWDS = new Set<string>();
+
+export function registerSprintHooks(pi: ExtensionAPI): void {
+	pi.on("before_agent_start", async (event, ctx) => {
+		const binding = readSessionBinding((ctx as any).sessionManager);
+		if (binding) {
+			try {
+				normalizeActiveSprintPath(ctx.cwd, binding.sprintPath, true);
+				return { systemPrompt: `${event.systemPrompt}\n\n${sessionBindingPromptText(binding)}` };
+			} catch {
+				// fall through to global pointer handling
+			}
+		}
+
+		const current = loadCurrent(ctx.cwd);
+		if (current?.activeSprintPath) {
+			try {
+				const normalized = normalizeActiveSprintPath(ctx.cwd, current.activeSprintPath);
+				if (normalized.relativePath !== current.activeSprintPath) {
+					current.activeSprintPath = normalized.relativePath;
+					current.updatedAt = nowIso();
+				}
+				if (current.activeTaskPath) {
+					const normalizedTask = normalizeActiveTaskPath(ctx.cwd, current.activeTaskPath, normalized.absolutePath);
+					if (normalizedTask.relativePath !== current.activeTaskPath) {
+						current.activeTaskPath = normalizedTask.relativePath;
+						current.updatedAt = nowIso();
+					}
+				}
+				saveCurrent(ctx.cwd, current);
+				return { systemPrompt: `${event.systemPrompt}\n\n${sprintPointerText(current)}` };
+			} catch {
+				// Ignore invalid active sprint pointer.
+			}
+		}
+
+		if (process.env.PI_WORKFLOW_CHILD === "1") return;
+		if (DECLINED_CWDS.has(ctx.cwd)) return;
+		const prompt = String((event as any)?.prompt ?? "");
+		if (!isNonTrivialPrompt(prompt)) return;
+		const mode = getGlobalAutoCreate();
+		if (mode === "never") return;
+		if (mode === "always") {
+			const created = createSprint(ctx.cwd, deriveSprintName(prompt));
+			ctx.ui.notify(`Auto-created sprint ${created.sprintId}`, "info");
+			const createdCurrent = loadCurrent(ctx.cwd);
+			if (createdCurrent?.activeSprintPath) {
+				try {
+					normalizeActiveSprintPath(ctx.cwd, createdCurrent.activeSprintPath);
+					return { systemPrompt: `${event.systemPrompt}\n\n${sprintPointerText(createdCurrent)}` };
+				} catch {
+					return;
+				}
+			}
+			return;
+		}
+		const accepted = await askUi((ctx as any).ui, "Sprint bootstrap", "No active sprint found. Create one now?");
+		if (!accepted) {
+			DECLINED_CWDS.add(ctx.cwd);
+			return;
+		}
+		const inputName = (await askUiInput((ctx as any).ui, "Sprint name", "Optional: short sprint title")).trim();
+		const created = createSprint(ctx.cwd, inputName || deriveSprintName(prompt));
+		ctx.ui.notify(`Created sprint ${created.sprintId}`, "info");
+		const createdCurrent = loadCurrent(ctx.cwd);
+		if (createdCurrent?.activeSprintPath) {
+			try {
+				normalizeActiveSprintPath(ctx.cwd, createdCurrent.activeSprintPath);
+				return { systemPrompt: `${event.systemPrompt}\n\n${sprintPointerText(createdCurrent)}` };
+			} catch {
+				return;
+			}
+		}
+	});
+}

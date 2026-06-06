@@ -1,0 +1,297 @@
+// Sprint subsystem — AI-facing `sprint_*` tool registration.
+// Extracted from extensions/sprint-system.ts as part of TASK-018 Slice 4.
+//
+// `registerSprintTools(pi)` registers nine AI-facing tools the agent uses
+// to read/write the .sprints substrate:
+//   - sprint_read_context: read config/current/binding/effective pointer
+//   - sprint_create: init + create + activate a sprint
+//   - sprint_create_task: append a TASK file under the active sprint
+//   - sprint_create_epic: append an EPIC dir under .sprints/epics
+//   - sprint_set_active: mutate .sprints/current.json (sprint and/or task)
+//   - sprint_update_task: change task status; refuses cross-task edits when bound
+//   - sprint_log_progress: append a line to active sprint PROGRESS.md
+//   - sprint_start_task_session: prepare the /sprint task start command
+//   - sprint_get_session_binding: read the current session's binding
+// All tool bodies delegate fs/pointer work to helpers in ./store.
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { Type } from "typebox";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	appendProgress,
+	createEpic,
+	createSprint,
+	createTask,
+	loadCurrent,
+	normalizeActiveSprintPath,
+	normalizeActiveTaskPath,
+	nowIso,
+	readJson,
+	readSessionBinding,
+	rootPaths,
+	saveCurrent,
+	setActiveTask,
+	updateTaskStatus,
+} from "./store";
+import type { SprintConfig, SprintCurrent } from "./types";
+
+export function registerSprintTools(pi: ExtensionAPI): void {
+	pi.registerTool({
+		name: "sprint_read_context",
+		label: "Sprint: Read Context",
+		description: "Read active sprint config/current/task pointers with brief snippets. If this session is bound to a sprint task, the binding is reported as the effective context.",
+		promptSnippet: "Read sprint context before planning or coding.",
+		promptGuidelines: ["Use sprint_read_context first when sprint pointers exist or sprint state is unclear."],
+		parameters: Type.Object({}),
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const cwd = ctx.cwd;
+			const paths = rootPaths(cwd);
+			const config = readJson<SprintConfig>(paths.configPath);
+			const current = readJson<SprintCurrent>(paths.currentPath);
+			const binding = readSessionBinding((ctx as any).sessionManager);
+			let sprintPath: string | null = null;
+			let taskPath: string | null = null;
+			let source: "sessionBinding" | "current.json" | "none" = "none";
+			if (binding?.sprintPath && binding?.taskPath) {
+				try {
+					sprintPath = normalizeActiveSprintPath(cwd, binding.sprintPath, true).absolutePath;
+					taskPath = normalizeActiveTaskPath(cwd, binding.taskPath, sprintPath).absolutePath;
+					source = "sessionBinding";
+				} catch {
+					sprintPath = null;
+					taskPath = null;
+				}
+			}
+			if (!sprintPath && current?.activeSprintPath) {
+				try {
+					sprintPath = normalizeActiveSprintPath(cwd, current.activeSprintPath).absolutePath;
+					if (current.activeTaskPath) taskPath = normalizeActiveTaskPath(cwd, current.activeTaskPath, sprintPath).absolutePath;
+					source = "current.json";
+				} catch {
+					sprintPath = null;
+					taskPath = null;
+				}
+			}
+			const sprintReadme = sprintPath && fs.existsSync(path.join(sprintPath, "README.md")) ? fs.readFileSync(path.join(sprintPath, "README.md"), "utf8").slice(0, 400) : "";
+			const taskHead = taskPath && fs.existsSync(taskPath) ? fs.readFileSync(taskPath, "utf8").slice(0, 400) : "";
+			return {
+				content: [{
+					type: "text",
+					text: JSON.stringify({
+						config,
+						current,
+						sessionBinding: binding,
+						effectiveSource: source,
+						sprintPath: sprintPath ? path.relative(cwd, sprintPath) : null,
+						taskPath: taskPath ? path.relative(cwd, taskPath) : null,
+						sprintReadme,
+						taskHead,
+					}),
+				}],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_create",
+		label: "Sprint: Create Sprint",
+		description: "Initialize sprint system if needed and create+activate a sprint.",
+		promptSnippet: "Create a sprint when non-trivial work starts without one.",
+		promptGuidelines: ["Use sprint_create when there is no active sprint and work should be tracked in .sprints."],
+		parameters: Type.Object({ name: Type.String() }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const cwd = ctx.cwd;
+			const name = String((params as any).name || "").trim();
+			if (!name) return { isError: true, content: [{ type: "text", text: "Missing name" }] };
+			const created = createSprint(cwd, name);
+			return { content: [{ type: "text", text: `Created ${path.relative(cwd, created.sprintPath)}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_create_task",
+		label: "Sprint: Create Task",
+		description: "Create task in active sprint.",
+		promptSnippet: "Create a task for concrete implementation work.",
+		promptGuidelines: ["Use sprint_create_task for scoped units of work inside the active sprint."],
+		parameters: Type.Object({
+			title: Type.String(),
+			humanSummary: Type.Optional(Type.String()),
+			aiContext: Type.Optional(Type.String()),
+			acceptanceCriteria: Type.Optional(Type.String()),
+			epic: Type.Optional(Type.String()),
+			priority: Type.Optional(Type.String()),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const p = params as any;
+			const title = String(p.title || "").trim();
+			if (!title) return { isError: true, content: [{ type: "text", text: "Missing title" }] };
+			const created = createTask(ctx.cwd, title, {
+				humanSummary: p.humanSummary,
+				aiContext: p.aiContext,
+				acceptanceCriteria: p.acceptanceCriteria,
+				epic: p.epic,
+				priority: p.priority,
+			});
+			return { content: [{ type: "text", text: `Created task ${created.id}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_create_epic",
+		label: "Sprint: Create Epic",
+		description: "Create an epic under .sprints/epics.",
+		promptSnippet: "Create an epic for larger multi-task initiative context.",
+		promptGuidelines: ["Use sprint_create_epic when work spans multiple tasks and needs durable shared context."],
+		parameters: Type.Object({
+			title: Type.String(),
+			humanSummary: Type.Optional(Type.String()),
+			aiContext: Type.Optional(Type.String()),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const p = params as any;
+			const title = String(p.title || "").trim();
+			if (!title) return { isError: true, content: [{ type: "text", text: "Missing title" }] };
+			const epic = createEpic(ctx.cwd, title, { humanSummary: p.humanSummary, aiContext: p.aiContext });
+			return { content: [{ type: "text", text: `Created epic ${epic.epicId} at ${path.relative(ctx.cwd, epic.epicPath)}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_set_active",
+		label: "Sprint: Set Active",
+		description: "Set active sprint/task pointer.",
+		promptSnippet: "Update active sprint/task pointers.",
+		promptGuidelines: ["Use sprint_set_active to update pointers; if both sprintPath and taskId are provided, switch sprint first, then resolve task in that sprint."],
+		parameters: Type.Object({ sprintPath: Type.Optional(Type.String()), taskId: Type.Optional(Type.String()) }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const cwd = ctx.cwd;
+			const p = params as any;
+			let sprintPathText: string | null = null;
+			let taskPathText: string | null = null;
+			if (p.sprintPath) {
+				const current = loadCurrent(cwd) ?? { activeSprintPath: null, activeTaskPath: null, updatedAt: nowIso() };
+				const normalized = normalizeActiveSprintPath(cwd, String(p.sprintPath));
+				current.activeSprintPath = normalized.relativePath;
+				if (!p.taskId) current.activeTaskPath = null;
+				current.updatedAt = nowIso();
+				saveCurrent(cwd, current);
+				sprintPathText = current.activeSprintPath;
+			}
+			if (p.taskId) {
+				const taskFile = setActiveTask(cwd, String(p.taskId));
+				taskPathText = path.relative(cwd, taskFile);
+			}
+			const latest = loadCurrent(cwd);
+			return {
+				content: [
+					{ type: "text", text: `Active pointers updated (sprint=${latest?.activeSprintPath ?? sprintPathText ?? "(unchanged)"}, task=${latest?.activeTaskPath ?? taskPathText ?? "(unchanged)"})` },
+				],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_update_task",
+		label: "Sprint: Update Task",
+		description: "Update task status and append task notes/evidence. Operates on the session-bound sprint/task when this session is pinned to a task, otherwise on the global active sprint. When bound, refuses to update a taskId that does not match the bound task.",
+		promptSnippet: "Update task status during implementation progress.",
+		promptGuidelines: [
+			"Use sprint_update_task to move task state and attach concise evidence notes.",
+			"This tool will refuse to update a taskId that does not match the session-bound task. Sessions pinned to a single task cannot accidentally write to a different task.",
+		],
+		parameters: Type.Object({ taskId: Type.String(), status: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const p = params as any;
+			const taskId = String(p.taskId || "").trim();
+			if (!taskId) return { isError: true, content: [{ type: "text", text: "Missing taskId" }] };
+			const status = p.status ? String(p.status) : "in_progress";
+			const sessionManager = (ctx as any).sessionManager;
+			const binding = readSessionBinding(sessionManager);
+			if (binding && binding.taskId !== taskId) {
+				return {
+					isError: true,
+					content: [{
+						type: "text",
+						text: `Session is bound to ${binding.taskId}; refusing to update ${taskId}. This session is dedicated to a single sprint task.`,
+					}],
+				};
+			}
+			const file = updateTaskStatus(ctx.cwd, taskId, status, p.note ? String(p.note) : undefined, sessionManager, binding?.taskPath);
+			return { content: [{ type: "text", text: `Updated ${path.basename(file)}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_log_progress",
+		label: "Sprint: Log Progress",
+		description: "Append message to active sprint PROGRESS.md. Uses the session-bound sprint when this session is pinned to a task.",
+		promptSnippet: "Log notable sprint progress milestones.",
+		promptGuidelines: ["Use sprint_log_progress after meaningful changes, checks, or decisions."],
+		parameters: Type.Object({ message: Type.String() }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const msg = String((params as any).message || "").trim();
+			if (!msg) return { isError: true, content: [{ type: "text", text: "Missing message" }] };
+			appendProgress(ctx.cwd, msg, (ctx as any).sessionManager);
+			return { content: [{ type: "text", text: "Logged" }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_start_task_session",
+		label: "Sprint: Prepare Task Session Command",
+		description: "Prepare the /sprint task start <TASK-ID> --auto-run command for the user to run. This tool does NOT switch sessions: only the /sprint task start command (invoked by the user) performs the actual session switch. Use as a fallback when the agent cannot issue slash commands directly.",
+		promptSnippet: "Prepare a /sprint task start command for the user to run.",
+		promptGuidelines: [
+			"Prefer running the /sprint task start <TASK-ID> --auto-run slash command directly when the agent can issue slash commands. The command performs the actual session switch.",
+			"Use sprint_start_task_session only as a fallback to present the command to the user (via the editor and a notification) when no slash command can be issued. It does not switch sessions itself.",
+			"Do not call this when the current session is already pinned to the same task.",
+			"After calling, stop and wait: the user must run the command to actually create the task session.",
+		],
+		parameters: Type.Object({ taskId: Type.String({ description: "TASK-ID (e.g. TASK-001) to bind the new session to" }) }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const taskId = String((params as any).taskId || "").trim();
+			if (!taskId) return { isError: true, content: [{ type: "text", text: "Missing taskId" }] };
+			const command = `/sprint task start ${taskId} --auto-run`;
+			const ui = (ctx as any).ui;
+			let placedInEditor = false;
+			if (ctx.hasUI && ui && typeof ui.setEditorText === "function") {
+				try {
+					ui.setEditorText(command);
+					placedInEditor = true;
+				} catch {
+					// ignore; fall back to notification only
+				}
+			}
+			if (ui && typeof ui.notify === "function") {
+				const where = placedInEditor ? "Editor now contains" : "Run";
+				ui.notify(
+					`${where} ${command} to switch to a dedicated session for ${taskId}. sprint_start_task_session does not switch sessions itself; the /sprint task start command does.`,
+					"info",
+				);
+			}
+			return {
+				content: [{
+					type: "text",
+					text: `Prepared command: ${command}. The user must run it to switch sessions. This tool did not switch sessions.`,
+				}],
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_get_session_binding",
+		label: "Sprint: Get Session Binding",
+		description: "Read the session-pinned sprint/task binding for the current Pi session, if any. Returns null binding when this session is not bound to a specific task.",
+		promptSnippet: "Check whether the current session is pinned to a sprint task.",
+		promptGuidelines: [
+			"Use sprint_get_session_binding to confirm which task this session is dedicated to before doing task-scoped work.",
+		],
+		parameters: Type.Object({}),
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			const binding = readSessionBinding((ctx as any).sessionManager);
+			return { content: [{ type: "text", text: JSON.stringify({ binding }) }] };
+		},
+	});
+}
