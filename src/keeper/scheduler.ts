@@ -5,62 +5,46 @@
  * Evidence batches claimed with short-term leases; expired leases are reclaimable.
  * Card generation is deterministic (no LLM/provider yet — TASK-009).
  * Budgeted by maxRunTimeMs and maxTokensPerRun.
+ *
+ * This file is the public entry point. It composes the helper modules:
+ *   - ./types    — public interfaces (KeeperLease, KeeperRunOptions, etc.)
+ *   - ./leases   — process/lease/time helpers (acquire/release/refresh/now)
+ *   - ./cards    — card/evidence helper logic (generate/select/write)
+ *
+ * All public symbols and the import surface (`./keeper/scheduler`) are
+ * preserved for downstream consumers (src/index.ts).
  */
 
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import { openDb, closeDb, sqliteChanges, type SqliteDb } from "../index/db";
+import { openDb, closeDb } from "../index/db";
 import {
 	claimEvidenceBatch,
-	completeEvidenceBatch,
 	getPendingEvidenceCount,
 	getProcessingEvidenceCount,
-	type EvidenceBatchRow,
 } from "../evidence/queue";
-import { redactText } from "../security/redaction";
-import { resolvePreset, type ModelPreset } from "../models/presets";
-import { parseJsonStringArray } from "../util/json";
+import { resolvePreset } from "../models/presets";
 import { errorMessage } from "../util/errors";
+import type {
+	GeneratedCard,
+	KeeperPlan,
+	KeeperPlanInput,
+	KeeperRunOptions,
+	KeeperRunResult,
+} from "./types";
+import { acquireLease, makeLeaseHolder, nowMs, releaseLease } from "./leases";
+import {
+	generateDeterministicCard,
+	selectFilesToCard,
+	writeCardsAndEvidence,
+} from "./cards";
 
-const PROCESS_ID = `${os.hostname()}-${process.pid}-${Date.now()}`;
-
-export interface KeeperLease {
-	repoKey: string;
-	leaseHolder: string;
-	leasedAt: number;
-	expiresAt: number;
-}
-
-export interface KeeperRunOptions {
-	repoKey: string;
-	repoRoot: string;
-	maxRunTimeMs: number;
-	maxTokensPerRun: number;
-	batchSize: number;
-	leaseDurationMs: number;
-	contextVersion: string;
-	activeAgentCount?: number;
-	modelPresetName?: string;
-	modelPresetOverrides?: Record<string, Partial<ModelPreset>>;
-}
-
-export interface KeeperRunResult {
-	didWork: boolean;
-	message: string;
-	cardsGenerated: number;
-	evidenceProcessed: number;
-	tokensUsed: number;
-	elapsedMs: number;
-}
-
-function makeLeaseHolder(): string {
-	return PROCESS_ID;
-}
-
-function nowMs(): number {
-	return Date.now();
-}
+export type {
+	KeeperLease,
+	KeeperRunOptions,
+	KeeperRunResult,
+	KeeperPlanInput,
+	KeeperPlan,
+} from "./types";
+export { isLeaseHeld, acquireLease, releaseLease } from "./leases";
 
 function getActiveAgentCount(options: KeeperRunOptions): number {
 	if (typeof options.activeAgentCount === "number" && Number.isFinite(options.activeAgentCount)) {
@@ -70,22 +54,6 @@ function getActiveAgentCount(options: KeeperRunOptions): number {
 		process.env.PI_WORKFLOW_ACTIVE_AGENT_COUNT ?? process.env.PI_ACTIVE_AGENT_COUNT ?? 1,
 	);
 	return Math.max(1, Math.min(10, Number.isFinite(env) ? Math.floor(env) : 1));
-}
-
-export interface KeeperPlanInput {
-	activeAgentCount: number;
-	pendingEvidenceCount: number;
-	processingEvidenceCount: number;
-	cardBacklogCount: number;
-	batchSize: number;
-	maxRunTimeMs: number;
-}
-
-export interface KeeperPlan {
-	run: boolean;
-	pressure: "idle" | "normal" | "high";
-	effectiveBatchSize: number;
-	effectiveMaxRunTimeMs: number;
 }
 
 export function planKeeperRun(input: KeeperPlanInput): KeeperPlan {
@@ -116,342 +84,6 @@ export function planKeeperRun(input: KeeperPlanInput): KeeperPlan {
 		effectiveBatchSize: input.batchSize,
 		effectiveMaxRunTimeMs: input.maxRunTimeMs,
 	};
-}
-
-/**
- * Check if a keeper lease is currently held and not expired.
- */
-export function isLeaseHeld(lease: KeeperLease | null | undefined): boolean {
-	if (!lease) return false;
-	return lease.expiresAt > nowMs();
-}
-
-/**
- * Acquire a keeper lease for a repo.
- * Returns null if another process holds a non-expired lease.
- */
-export function acquireLease(
-	repoKey: string,
-	repoRoot: string,
-	leaseDurationMs: number,
-): KeeperLease | null {
-	const handle = openDb(repoKey, repoRoot);
-	const db = handle.db;
-	try {
-		const now = nowMs();
-		const expiresAt = now + leaseDurationMs;
-		const leaseHolder = makeLeaseHolder();
-
-		// Upsert: if no row or expired, take it
-		const upsert = db.prepare(
-			`INSERT INTO keeper_leases (repo_key, lease_holder, leased_at, expires_at)
-			 VALUES (?, ?, ?, ?)
-			 ON CONFLICT(repo_key) DO UPDATE SET
-				 lease_holder = excluded.lease_holder,
-				 leased_at = excluded.leased_at,
-				 expires_at = excluded.expires_at
-			 WHERE keeper_leases.expires_at < ? OR keeper_leases.lease_holder IS NULL`
-		);
-		const result = upsert.run(repoKey, leaseHolder, now, expiresAt, now);
-
-		if (sqliteChanges(result) === 0) {
-			return null;
-		}
-
-		return { repoKey, leaseHolder, leasedAt: now, expiresAt };
-	} finally {
-		closeDb(handle);
-	}
-}
-
-/**
- * Release a keeper lease.
- */
-export function releaseLease(lease: KeeperLease): void {
-	const handle = openDb(lease.repoKey, "");
-	const db = handle.db;
-	try {
-		db.prepare(
-			`UPDATE keeper_leases SET lease_holder = NULL, leased_at = NULL, expires_at = NULL
-			 WHERE repo_key = ? AND lease_holder = ?`
-		).run(lease.repoKey, lease.leaseHolder);
-	} finally {
-		closeDb(handle);
-	}
-}
-
-/**
- * Refresh an existing lease to extend its TTL.
- */
-function refreshLease(lease: KeeperLease, leaseDurationMs: number): KeeperLease {
-	const handle = openDb(lease.repoKey, "");
-	const db = handle.db;
-	try {
-		const now = nowMs();
-		const expiresAt = now + leaseDurationMs;
-		db.prepare(
-			`UPDATE keeper_leases SET expires_at = ? WHERE repo_key = ? AND lease_holder = ?`
-		).run(expiresAt, lease.repoKey, lease.leaseHolder);
-		return { ...lease, expiresAt };
-	} finally {
-		closeDb(handle);
-	}
-}
-
-// Rough token estimator: ~4 chars per token for code
-function estimateTokens(text: string): number {
-	return Math.ceil(text.length / 4);
-}
-
-function parseRefsFromEvidence(row: EvidenceBatchRow): string[] {
-	const paths: string[] = [];
-	for (const r of parseJsonStringArray(row.evidence_refs)) {
-		const m = r.match(/^([^:]+)/);
-		if (m) paths.push(m[1]);
-	}
-	for (const c of parseJsonStringArray(row.changed_files)) {
-		const m = c.match(/^([^:]+)/);
-		if (m) paths.push(m[1]);
-	}
-	return [...new Set(paths)];
-}
-
-function parseOriginalRefsForFile(
-	row: EvidenceBatchRow,
-	targetFile: string,
-): string[] {
-	const refs: string[] = [];
-	for (const r of parseJsonStringArray(row.evidence_refs)) {
-		if (r === targetFile || r.startsWith(targetFile + ":")) {
-			refs.push(r);
-		}
-	}
-	for (const c of parseJsonStringArray(row.changed_files)) {
-		if (c && !refs.includes(c)) refs.push(c);
-	}
-	return refs;
-}
-
-interface FileToCard {
-	id: number;
-	relative_path: string;
-	absolute_path: string;
-	content_hash: string;
-	card_freshness: string | null;
-	language: string | null;
-	imports_hash: string | null;
-}
-
-interface GeneratedCard {
-	fileId: number;
-	relativePath: string;
-	content: string;
-	sourceHash: string;
-	contextVersion: string;
-	refs: string[];
-	excerpts: string[];
-	confidence: number;
-	workerId: string;
-	modelPreset: string;
-	tokenBudget: number;
-	staleReason: string | null;
-}
-
-function readFileExcerpt(absPath: string, maxLines: number): string[] {
-	try {
-		const stats = fs.statSync(absPath);
-		if (!stats.isFile() || stats.size > 256 * 1024) return [];
-		const content = fs.readFileSync(absPath, "utf-8");
-		const lines = content.split(/\r?\n/);
-		return lines.slice(0, maxLines);
-	} catch {
-		return [];
-	}
-}
-
-function generateDeterministicCard(
-	file: FileToCard,
-	evidenceRows: EvidenceBatchRow[],
-	repoRoot: string,
-	contextVersion: string,
-	workerId: string,
-	modelPreset: string,
-	tokenBudget: number,
-): GeneratedCard {
-	const absPath = path.join(repoRoot, file.relative_path);
-	const excerptLines = readFileExcerpt(absPath, 12);
-	const redactedExcerpt = excerptLines.map((l) => redactText(l).text);
-
-	// Collect related evidence claims and original refs for this file
-	const relatedClaims: string[] = [];
-	const allRefs: string[] = [];
-	for (const ev of evidenceRows) {
-		const refs = parseRefsFromEvidence(ev);
-		if (refs.includes(file.relative_path)) {
-			relatedClaims.push(`- ${ev.agent_id}: ${ev.claim.slice(0, 120)}`);
-			const originalRefs = parseOriginalRefsForFile(ev, file.relative_path);
-			for (const r of originalRefs) {
-				if (!allRefs.includes(r)) allRefs.push(r);
-			}
-		}
-	}
-	// Bound refs to avoid oversized cards
-	const boundedRefs = allRefs.slice(0, 20);
-
-	const lines: string[] = [];
-	lines.push(`## File: ${file.relative_path}`);
-	lines.push(`- language: ${file.language ?? "unknown"}`);
-	lines.push(`- content_hash: ${file.content_hash.slice(0, 12)}`);
-	if (file.imports_hash) {
-		lines.push(`- imports_hash: ${file.imports_hash.slice(0, 12)}`);
-	}
-	if (relatedClaims.length > 0) {
-		lines.push("- related_evidence:");
-		for (const c of relatedClaims.slice(0, 5)) lines.push(`  ${c}`);
-	}
-	if (boundedRefs.length > 0) {
-		lines.push("- related_refs:");
-		for (const r of boundedRefs) lines.push(`  - ${r}`);
-	}
-	lines.push("- excerpt:");
-	lines.push("  ```");
-	for (const l of redactedExcerpt.slice(0, 10)) lines.push(`  ${l}`);
-	if (redactedExcerpt.length > 10) lines.push("  …");
-	lines.push("  ```");
-
-	const content = lines.join("\n");
-
-	return {
-		fileId: file.id,
-		relativePath: file.relative_path,
-		content,
-		sourceHash: file.content_hash,
-		contextVersion,
-		refs: boundedRefs.length > 0 ? boundedRefs : [],
-		excerpts: redactedExcerpt.slice(0, 20),
-		confidence: 0.75,
-		workerId,
-		modelPreset,
-		tokenBudget: estimateTokens(content),
-		staleReason: null,
-	};
-}
-
-function selectFilesToCard(
-	db: SqliteDb,
-	repoKey: string,
-	evidenceRows: EvidenceBatchRow[],
-	batchSize: number,
-): FileToCard[] {
-	// First: files referenced by evidence
-	const evidencePaths = new Set<string>();
-	for (const ev of evidenceRows) {
-		for (const p of parseRefsFromEvidence(ev)) {
-			evidencePaths.add(p);
-		}
-	}
-
-	const files: FileToCard[] = [];
-	const seen = new Set<number>();
-
-	if (evidencePaths.size > 0) {
-		const placeholders = Array.from(evidencePaths).map(() => "?").join(",");
-		const rows = db.prepare(
-			`SELECT id, relative_path, absolute_path, content_hash, card_freshness, language, imports_hash
-			 FROM files
-			 WHERE repo_key = ? AND relative_path IN (${placeholders})
-				 AND is_deleted = 0 AND is_secret = 0 AND is_generated = 0
-			 ORDER BY CASE card_freshness WHEN 'missing' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END`
-		).all(repoKey, ...Array.from(evidencePaths)) as FileToCard[];
-		for (const r of rows) {
-			if (!seen.has(r.id)) {
-				files.push(r);
-				seen.add(r.id);
-			}
-		}
-	}
-
-	// Fill remaining budget with missing/stale cards
-	const remaining = Math.max(0, batchSize - files.length);
-	if (remaining > 0) {
-		const extra = db.prepare(
-			`SELECT id, relative_path, absolute_path, content_hash, card_freshness, language, imports_hash
-			 FROM files
-			 WHERE repo_key = ? AND is_deleted = 0 AND is_secret = 0 AND is_generated = 0
-				 AND (card_freshness = 'missing' OR card_freshness = 'stale' OR card_freshness IS NULL)
-				 AND id NOT IN (${seen.size > 0 ? Array.from(seen).map(() => "?").join(",") : "NULL"})
-			 ORDER BY CASE card_freshness WHEN 'missing' THEN 0 WHEN 'stale' THEN 1 ELSE 2 END,
-				 last_indexed_at DESC
-			 LIMIT ?`
-		).all(repoKey, ...Array.from(seen), remaining) as FileToCard[];
-		for (const r of extra) {
-			if (!seen.has(r.id)) {
-				files.push(r);
-				seen.add(r.id);
-			}
-		}
-	}
-
-	return files;
-}
-
-function writeCardsAndEvidence(
-	db: SqliteDb,
-	repoKey: string,
-	cards: GeneratedCard[],
-	evidenceIds: number[],
-	lease: KeeperLease,
-	leaseDurationMs: number,
-	evidenceLeaseHolder?: string,
-): { cardsWritten: number; evidenceProcessed: number } {
-	let cardsWritten = 0;
-	let evidenceProcessed = 0;
-
-	for (const card of cards) {
-		const stmt = db.prepare(
-			`UPDATE files SET
-				card_freshness = 'fresh',
-				card_content = ?,
-				card_generated_at = ?,
-				card_model_preset = ?,
-				card_token_budget = ?,
-				card_source_hash = ?,
-				card_context_version = ?,
-				card_refs = ?,
-				card_excerpts = ?,
-				card_confidence = ?,
-				card_worker_id = ?,
-				card_metadata = ?,
-				card_stale_reason = NULL
-			 WHERE repo_key = ? AND id = ?`
-		);
-		const result = stmt.run(
-			card.content,
-			Date.now(),
-			card.modelPreset,
-			card.tokenBudget,
-			card.sourceHash,
-			card.contextVersion,
-			JSON.stringify(card.refs),
-			JSON.stringify(card.excerpts),
-			card.confidence,
-			card.workerId,
-			JSON.stringify({ generatedBy: "keeper", version: "TASK-006" }),
-			repoKey,
-			card.fileId,
-		);
-		cardsWritten += sqliteChanges(result);
-	}
-
-	if (evidenceIds.length > 0) {
-		const evResult = completeEvidenceBatch(db, repoKey, evidenceIds, true, undefined, evidenceLeaseHolder);
-		evidenceProcessed = evResult.completed;
-	}
-
-	// Refresh lease after writes
-	refreshLease(lease, leaseDurationMs);
-
-	return { cardsWritten, evidenceProcessed };
 }
 
 /**
