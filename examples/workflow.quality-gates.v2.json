@@ -1,0 +1,38 @@
+{
+	"_comment_purpose": "Quality gate catalog. A gate is a named check or reviewer goal that an agent identity must satisfy. Reviewer-swarm goals reference this catalog via id; reviewer identities compose the same gates via `qualityGates`. Three gate kinds are supported: `checks` (CI-style command), `review-goal` (specialized reviewer focus), and `command` (manual command).",
+	"version": 2,
+	"gates": [
+		{
+			"id": "gate-typescript-strict",
+			"description": "Run the project's TypeScript type check (tsc --noEmit or equivalent) before marking work complete.",
+			"kind": "checks",
+			"command": "npx --no-install tsc --noEmit"
+		},
+		{
+			"id": "gate-git-diff-check",
+			"description": "Run `git diff --check` on the working tree to catch whitespace/conflict-marker errors.",
+			"kind": "checks",
+			"command": "git diff --check"
+		},
+		{
+			"id": "review-goal-architecture",
+			"description": "Architecture Boundaries Reviewer: block god-file growth, mixed concerns, unclear module ownership, duplicated config/prompt/model definitions, leaky abstractions, and refactors that do not improve dependency direction.",
+			"kind": "review-goal"
+		},
+		{
+			"id": "review-goal-correctness",
+			"description": "TypeScript Correctness Reviewer: block unsafe any/type assertions at boundaries, weak parameter parsing, uncaught runtime shape errors, broken imports, and logic that is not locally verifiable.",
+			"kind": "review-goal"
+		},
+		{
+			"id": "review-goal-tests",
+			"description": "Validation and Evidence Reviewer: block missing or weak checks, vague handoffs, unverified behavior-preserving refactors, and changes without concrete command output or manual inspection evidence.",
+			"kind": "review-goal"
+		},
+		{
+			"id": "review-goal-security",
+			"description": "Security and Concurrency Reviewer: block secret/env leakage, unsafe subprocess/file handling, swallowed errors that hide data loss, lock/race regressions, and unsafe filesystem mutations.",
+			"kind": "review-goal"
+		}
+	]
+}

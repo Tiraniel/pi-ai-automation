@@ -1,5 +1,55 @@
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+/** Closed set of v1 thinking levels. Mirrors `ThinkingLevel`; exported as a
+ *  readonly tuple so v2 normalizers can check membership without repeating
+ *  the union. Kept in sync with `ThinkingLevel` above. */
+export const THINKING_LEVELS: readonly ThinkingLevel[] = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+] as const;
 export type AgentName = "brain" | "coder" | "reviewer";
+/** v2 alias for `AgentName`. The two are structurally identical; v2 code
+ *  uses `AgentRole` for clarity while v1 callers keep using `AgentName`. */
+export type AgentRole = AgentName;
+/** Closed set of agent roles (brain / coder / reviewer). Mirrors
+ *  `AgentName`/`AgentRole`; exported as a readonly tuple for v2 normalizers. */
+export const AGENT_ROLES: readonly AgentRole[] = [
+	"brain",
+	"coder",
+	"reviewer",
+] as const;
+/** Closed set of delegate display/transport modes used by v1
+ *  `WorkflowConfig.delegateDisplay`. v2 code reuses this type so the v1
+ *  field shape stays compatible with v2 catalog entries. */
+export type DelegateDisplayMode = "headless" | "pane" | "auto";
+export const DELEGATE_DISPLAY_MODES: readonly DelegateDisplayMode[] = [
+	"headless",
+	"pane",
+	"auto",
+] as const;
+/** v2 flow direction. The v2 workflow file carries a `direction` field;
+ *  v1 has no equivalent (the v1 loader always runs sequentially). */
+export type FlowDirection = "sequential" | "iterative" | "free";
+export const FLOW_DIRECTIONS: readonly FlowDirection[] = [
+	"sequential",
+	"iterative",
+	"free",
+] as const;
+/** Quality-gate kinds. `review-goal` gates compose the v2 reviewer-swarm
+ *  identity; `checks` and `command` gates are non-swarm checks. */
+export type QualityGateKind = "checks" | "review-goal" | "command";
+export const QUALITY_GATE_KINDS: readonly QualityGateKind[] = [
+	"checks",
+	"review-goal",
+	"command",
+] as const;
+/** Stable v2 config-format version. v1 files do not carry a version field;
+ *  v2 files MUST set `version: 2` and the v2 normalizer rejects anything
+ *  else. */
+export const WORKFLOW_CONFIG_VERSION = 2 as const;
 
 export interface AgentPreset {
 	provider?: string;
@@ -24,11 +74,18 @@ export interface WorkflowConfig {
 	reviewerSwarm?: ReviewerSwarmConfig;
 	/** Delegate display/transport mode. "headless" (default) runs child delegates as JSON subprocesses.
 	 *  "pane" launches them in a visible cmux surface. "auto" uses pane when cmux is available, otherwise headless. */
-	delegateDisplay?: "headless" | "pane" | "auto";
+	delegateDisplay?: DelegateDisplayMode;
 	/** When pane mode is used, auto-close the cmux surface/tab when the sub-agent finishes.
 	 *  Default: true. Set to false to leave the surface open for inspection. */
 	delegatePaneAutoClose?: boolean;
 }
+
+/** v1 aliases used by the v2 normalizer. The v1 shape is intentionally
+ *  identical to the unprefixed types above, so the v1 -> v2 migration can
+ *  pass v1 values to v2 helpers without structural conversion. */
+export type V1AgentPreset = AgentPreset;
+export type V1ReviewerSwarmConfig = ReviewerSwarmConfig;
+export type V1WorkflowConfig = WorkflowConfig;
 
 export interface LoadedWorkflowConfig {
 	config: WorkflowConfig;
@@ -96,4 +153,246 @@ export interface ReviewerTargetResult {
 	verdict: "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN";
 	status: "running" | "completed" | "failed" | "aborted";
 	result?: DelegateRunResult;
+}
+
+// ---------- v2 catalog shapes (Slice 1, see docs/workflow-config-v2.md) ----------
+
+export interface V2ModelPreset {
+	id: string;
+	provider: string;
+	model: string;
+	thinkingLevel?: ThinkingLevel;
+}
+
+export interface V2ModelPresetsCatalog {
+	version: typeof WORKFLOW_CONFIG_VERSION;
+	presets: V2ModelPreset[];
+}
+
+export interface V2ToolProfile {
+	id: string;
+	tools: string[];
+	includeKarpathyGuidelines?: boolean;
+}
+
+export interface V2ToolProfilesCatalog {
+	version: typeof WORKFLOW_CONFIG_VERSION;
+	profiles: V2ToolProfile[];
+}
+
+export interface V2PromptPackRefEntry {
+	id: string;
+	/** Optional filesystem path relative to the catalog. Loading is a loader
+	 *  concern; slice 1 does not load it. */
+	path?: string;
+	/** Optional inline snippet, primarily for short transportable prompts. */
+	inline?: string;
+	description?: string;
+}
+
+export interface V2PromptPacksCatalog {
+	version: typeof WORKFLOW_CONFIG_VERSION;
+	packs: V2PromptPackRefEntry[];
+}
+
+export interface V2QualityGate {
+	id: string;
+	description?: string;
+	kind?: QualityGateKind;
+	command?: string;
+}
+
+export interface V2QualityGatesCatalog {
+	version: typeof WORKFLOW_CONFIG_VERSION;
+	gates: V2QualityGate[];
+}
+
+/**
+ * One logical agent identity. The agent composes a model preset, a tool
+ * profile, prompt packs, and quality gates by reference. The `overrides`
+ * block is a small escape hatch for callers that need to inline a one-off
+ * value without registering a new catalog entry. The v1 -> v2 migration
+ * populates `overrides` from the legacy v1 `agents.<role>` fields, so the
+ * conversion is lossless.
+ */
+export interface V2AgentCatalogEntry {
+	id: string;
+	role: AgentRole;
+	modelPreset?: string;
+	toolProfile?: string;
+	promptPacks?: string[];
+	qualityGates?: string[];
+	overrides?: {
+		provider?: string;
+		model?: string;
+		thinkingLevel?: ThinkingLevel;
+		tools?: string[];
+		instructions?: string;
+		includeKarpathyGuidelines?: boolean;
+	};
+}
+
+export interface V2AgentCatalog {
+	version: typeof WORKFLOW_CONFIG_VERSION;
+	agents: V2AgentCatalogEntry[];
+}
+
+// ---------- v2 workflow shape ----------
+
+export interface V2FlowStep {
+	role: AgentRole;
+	/** Optional step id; required only if multiple steps reference the same role. */
+	id?: string;
+}
+
+export interface V2RoleBinding {
+	role: AgentRole;
+	/** Catalog agent id this role resolves to. */
+	agent: string;
+}
+
+export interface V2WorkflowReferences {
+	agentCatalog?: string;
+	modelPresets?: string;
+	toolProfiles?: string;
+	promptPacks?: string;
+	qualityGates?: string;
+}
+
+export interface V2WorkflowMeta {
+	name?: string;
+	description?: string;
+	/**
+	 * Roles Brain is allowed to orchestrate in this flow. Defaults to
+	 * `[...AGENT_ROLES]` when omitted. A flow step that references a role
+	 * outside this set is reported as a diagnostic by the resolver;
+	 * enforcement at delegation time is a follow-up slice.
+	 */
+	activeAgents?: AgentRole[];
+}
+
+export interface V2Workflow {
+	version: typeof WORKFLOW_CONFIG_VERSION;
+	meta?: V2WorkflowMeta;
+	direction?: FlowDirection;
+	flow: V2FlowStep[];
+	roles: V2RoleBinding[];
+	references?: V2WorkflowReferences;
+}
+
+// ---------- resolved result shapes ----------
+
+export type ResolutionSource =
+	| "preset"
+	| "profile"
+	| "pack"
+	| "catalog"
+	| "override"
+	| "fallback"
+	| "missing";
+
+export interface V2ResolvedModel {
+	preset?: V2ModelPreset;
+	/**
+	 * Provider id. Absent when no provider could be resolved (no preset,
+	 * no override, or a malformed override). Callers MUST check
+	 * `provider`/`model` presence before use; `source` indicates the
+	 * resolution outcome.
+	 */
+	provider?: string;
+	/** Model id. See `provider` for absence semantics. */
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	source: ResolutionSource;
+}
+
+export interface V2ResolvedTools {
+	profile?: V2ToolProfile;
+	tools: string[];
+	includeKarpathyGuidelines?: boolean;
+	source: ResolutionSource;
+}
+
+export interface V2ResolvedPrompt {
+	pack?: V2PromptPackRefEntry;
+	/** Resolved text when an inline snippet or override is present. */
+	text?: string;
+	source: ResolutionSource;
+}
+
+export interface V2ResolvedQualityGate {
+	gate?: V2QualityGate;
+	source: ResolutionSource;
+}
+
+export interface V2ResolvedRoleIdentity {
+	role: AgentRole;
+	binding: V2RoleBinding;
+	agent: V2AgentCatalogEntry;
+	model: V2ResolvedModel;
+	tools: V2ResolvedTools;
+	prompts: V2ResolvedPrompt[];
+	qualityGates: V2ResolvedQualityGate[];
+}
+
+/**
+ * Derived reviewer-swarm identity. The reviewer swarm has no runtime
+ * settings on the v2 workflow; the workflow file is purely high-level
+ * orchestration. Goals are derived from the resolved reviewer role
+ * identity: every resolved quality gate whose catalog gate has
+ * `kind === "review-goal"` becomes a reviewer-swarm sub-identity.
+ *
+ * `goalIds` is the catalog-id projection of `goals`, exposed for callers
+ * that need the string form (e.g. logging, delegation target names).
+ */
+export interface V2ReviewerSwarmResolved {
+	goals: V2ResolvedQualityGate[];
+	goalIds: string[];
+}
+
+export interface V2Diagnostic {
+	severity: "info" | "warning" | "error";
+	code: string;
+	message: string;
+	ref?: {
+		type:
+			| "workflow"
+			| "agent"
+			| "role-binding"
+			| "flow-step"
+			| "model-preset"
+			| "tool-profile"
+			| "prompt-pack"
+			| "quality-gate"
+			| "reviewer-goal"
+			| "active-agents";
+		id?: string;
+		role?: AgentRole;
+	};
+}
+
+export interface V2ResolvedWorkflow {
+	workflow: V2Workflow;
+	activeAgents: AgentRole[];
+	direction: FlowDirection;
+	flow: V2FlowStep[];
+	roles: V2ResolvedRoleIdentity[];
+	reviewerSwarm: V2ReviewerSwarmResolved;
+	diagnostics: V2Diagnostic[];
+}
+
+// ---------- catalog input bundle (slice 1: in-memory) ----------
+
+/**
+ * In-memory bundle of catalogs passed to the resolver. Slice 1 deliberately
+ * does NOT define a file loader. Follow-up slices can add a thin loader that
+ * reads JSON from disk, runs it through the v2 normalizers, and feeds the
+ * result into `resolveWorkflow`.
+ */
+export interface V2CatalogBundle {
+	agentCatalog?: V2AgentCatalog;
+	modelPresets?: V2ModelPresetsCatalog;
+	toolProfiles?: V2ToolProfilesCatalog;
+	promptPacks?: V2PromptPacksCatalog;
+	qualityGates?: V2QualityGatesCatalog;
 }

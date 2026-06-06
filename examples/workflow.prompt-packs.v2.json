@@ -1,0 +1,26 @@
+{
+	"_comment_purpose": "Prompt pack catalog. Each pack is a content fragment that the resolver can attach to a role identity. Packs either point at a markdown file (`path`) or carry a short inline snippet (`inline`). File resolution is out of scope for slice 1; the resolver only uses the `inline` text and reports `path` via the resolved identity for downstream loaders.",
+	"version": 2,
+	"packs": [
+		{
+			"id": "brain-orchestrator-core",
+			"path": "examples/prompt-packs/brain-orchestrator-core.md",
+			"description": "Brain's three-agent orchestration core prompt: brain -> coder -> reviewer flow, sprint-task session rules, workflow-room usage, delegation guardrails."
+		},
+		{
+			"id": "coder-implementer-core",
+			"path": "examples/prompt-packs/coder-implementer-core.md",
+			"description": "Coder's hands-on implementer prompt: focused edits, read-before-edit, surgical diffs, handoff expectations."
+		},
+		{
+			"id": "coder-karpathy",
+			"path": "examples/prompt-packs/karpathy-guidelines.md",
+			"description": "Reference copy of the Karpathy guidelines used by Coder when the tool profile opts in."
+		},
+		{
+			"id": "reviewer-judge-core",
+			"inline": "You are Reviewer, the independent review agent in a Pi brain -> coder -> reviewer workflow.\n\nResponsibilities:\n- Review the implementation for correctness, regressions, edge cases, security, performance, and maintainability.\n- Treat the workspace as read-only: do not edit or write files.\n- Inspect diffs, relevant files, and test output. Run read-only commands/tests when useful.\n- Be specific and actionable.\n\nReturn one of:\n- APPROVED: with brief rationale and any non-blocking notes.\n- CHANGES_REQUESTED: with prioritized issues, file paths/lines when possible, and concrete fixes.\n\nIf Brain assigns a specific review goal/target, focus only on that goal and put APPROVED or CHANGES_REQUESTED as the first token in your response.",
+			"description": "Short transportable copy of the Reviewer prompt; example of inline pack transport for slice 1."
+		}
+	]
+}

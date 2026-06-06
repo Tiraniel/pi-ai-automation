@@ -1,0 +1,24 @@
+{
+	"_comment_purpose": "Model preset catalog. Each preset pins (provider, model, optional thinking level) and is referenced by id from the agent catalog. v1's `provider`/`model`/`thinkingLevel` triple maps 1:1 to a single preset; v1's `agents.<role>` is migrated to an override block on the matching agent entry, so the resolved model is identical.",
+	"version": 2,
+	"presets": [
+		{
+			"id": "premium-brain",
+			"provider": "openai-codex",
+			"model": "gpt-5.5",
+			"thinkingLevel": "xhigh"
+		},
+		{
+			"id": "premium-coder",
+			"provider": "openai-codex",
+			"model": "gpt-5.3-codex",
+			"thinkingLevel": "medium"
+		},
+		{
+			"id": "premium-reviewer",
+			"provider": "openai-codex",
+			"model": "gpt-5.5",
+			"thinkingLevel": "high"
+		}
+	]
+}

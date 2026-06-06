@@ -1,0 +1,57 @@
+{
+	"_comment_purpose": "Tool profile catalog. A profile groups the tool allowlist (and optional Karpathy-guidelines opt-in) that a role receives. v1's `agents.<role>.tools` and `includeKarpathyGuidelines` map to an override block on the agent; profiles cover the common case where the same tool list is shared across roles or profiles.",
+	"version": 2,
+	"profiles": [
+		{
+			"id": "brain-room-only",
+			"tools": [
+				"read",
+				"bash",
+				"grep",
+				"find",
+				"ls",
+				"room_create",
+				"room_job_start",
+				"room_send",
+				"room_read",
+				"room_job_done",
+				"room_status"
+			]
+		},
+		{
+			"id": "coder-room-and-edit",
+			"tools": [
+				"read",
+				"bash",
+				"edit",
+				"write",
+				"grep",
+				"find",
+				"ls",
+				"room_create",
+				"room_job_start",
+				"room_send",
+				"room_read",
+				"room_job_done",
+				"room_status"
+			],
+			"includeKarpathyGuidelines": true
+		},
+		{
+			"id": "reviewer-readonly",
+			"tools": [
+				"read",
+				"bash",
+				"grep",
+				"find",
+				"ls",
+				"room_create",
+				"room_job_start",
+				"room_send",
+				"room_read",
+				"room_job_done",
+				"room_status"
+			]
+		}
+	]
+}

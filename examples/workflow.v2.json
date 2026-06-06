@@ -1,0 +1,29 @@
+{
+	"_comment_purpose": "High-level v2 workflow definition. This file intentionally does NOT contain model ids, tool names, prompt text, or reviewer-swarm configuration. It only references catalog entries by id. Brain orchestration is constrained to meta.activeAgents.",
+	"_comment_catalog_files": "All concrete model ids, tool lists, prompt packs, and quality gates live in the catalog files. Slice 1 ships example files alongside this one; production deployments can split or combine them freely.",
+	"_comment_reviewer_swarm": "Reviewer-swarm goals live in the quality-gates catalog and are attached to the reviewer agent via `agentCatalog.agents[reviewer-default].qualityGates`; the resolver derives the swarm identity from resolved reviewer quality gates whose catalog gate has `kind: review-goal`.",
+	"version": 2,
+	"meta": {
+		"name": "default-pi-workflow",
+		"description": "Default three-agent flow: brain orchestrates, coder implements, reviewer reviews with a goal-aligned reviewer swarm.",
+		"activeAgents": ["brain", "coder", "reviewer"]
+	},
+	"direction": "sequential",
+	"flow": [
+		{ "role": "brain" },
+		{ "role": "coder" },
+		{ "role": "reviewer" }
+	],
+	"roles": [
+		{ "role": "brain", "agent": "brain-default" },
+		{ "role": "coder", "agent": "coder-default" },
+		{ "role": "reviewer", "agent": "reviewer-default" }
+	],
+	"references": {
+		"agentCatalog": "workflow.agent-catalog.v2.json",
+		"modelPresets": "workflow.model-presets.v2.json",
+		"toolProfiles": "workflow.tool-profiles.v2.json",
+		"promptPacks": "workflow.prompt-packs.v2.json",
+		"qualityGates": "workflow.quality-gates.v2.json"
+	}
+}

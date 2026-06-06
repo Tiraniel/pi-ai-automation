@@ -1,0 +1,34 @@
+{
+	"_comment_purpose": "Agent catalog. Each entry binds a logical agent identity (id + role) to the model presets, tool profiles, prompt packs, and quality gates it composes. Overrides are an escape hatch for one-off values that do not warrant a catalog entry. v1 -> v2 migration populates `overrides` from the legacy agents.<role> block, so the conversion is lossless.",
+	"version": 2,
+	"agents": [
+		{
+			"id": "brain-default",
+			"role": "brain",
+			"modelPreset": "premium-brain",
+			"toolProfile": "brain-room-only",
+			"promptPacks": ["brain-orchestrator-core"]
+		},
+		{
+			"id": "coder-default",
+			"role": "coder",
+			"modelPreset": "premium-coder",
+			"toolProfile": "coder-room-and-edit",
+			"promptPacks": ["coder-implementer-core", "coder-karpathy"],
+			"qualityGates": ["gate-typescript-strict", "gate-git-diff-check"]
+		},
+		{
+			"id": "reviewer-default",
+			"role": "reviewer",
+			"modelPreset": "premium-reviewer",
+			"toolProfile": "reviewer-readonly",
+			"promptPacks": ["reviewer-judge-core"],
+			"qualityGates": [
+				"review-goal-architecture",
+				"review-goal-correctness",
+				"review-goal-tests",
+				"review-goal-security"
+			]
+		}
+	]
+}
