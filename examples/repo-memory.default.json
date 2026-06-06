@@ -148,6 +148,14 @@
       "fallbackBehavior": "skip"
     }
   },
+  "scouts": {
+    "enabled": false,
+    "runOnAgentEnd": false,
+    "maxFilesPerRun": 50,
+    "maxFindingsPerRun": 20,
+    "maxTokensPerRun": 32000,
+    "presets": ["scout_broad"]
+  },
   "security": {
     "redactionEnabled": true,
     "redactionPatterns": [],

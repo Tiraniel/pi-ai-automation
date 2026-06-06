@@ -14,7 +14,9 @@ import {
 	DEFAULT_OUTPUT_TRUNCATION_LIMIT_LINES,
 	DEFAULT_EVIDENCE_QUEUE,
 	DEFAULT_KEEPER,
+	DEFAULT_SCOUT,
 } from "./defaults";
+import type { ModelPreset } from "../models/presets";
 
 export interface RepoMemoryConfig {
 	enabled: boolean;
@@ -62,6 +64,15 @@ export interface RepoMemoryConfig {
 		runOnAgentEnd: boolean;
 		fileCardPriority: string[];
 	};
+	modelPresets: Record<string, Partial<ModelPreset>>;
+	scouts: {
+		enabled: boolean;
+		runOnAgentEnd: boolean;
+		maxFilesPerRun: number;
+		maxFindingsPerRun: number;
+		maxTokensPerRun: number;
+		presets: string[];
+	};
 }
 
 export function loadConfig(repoRoot: string): RepoMemoryConfig {
@@ -107,6 +118,31 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 	const outputSrc = (src.output ?? {}) as Record<string, unknown>;
 	const evidenceQueueSrc = (src.evidenceQueue ?? {}) as Record<string, unknown>;
 	const keeperSrc = (src.keeper ?? {}) as Record<string, unknown>;
+	const modelPresetsSrc = (src.modelPresets ?? {}) as Record<string, unknown>;
+	const scoutsSrc = (src.scouts ?? {}) as Record<string, unknown>;
+
+	function parsePresetOverrides(raw: Record<string, unknown>): Record<string, Partial<ModelPreset>> {
+		const out: Record<string, Partial<ModelPreset>> = {};
+		for (const [key, val] of Object.entries(raw)) {
+			if (val && typeof val === "object") {
+				const v = val as Record<string, unknown>;
+				const preset: Partial<ModelPreset> = { name: key };
+				if (typeof v.description === "string") preset.description = v.description;
+				if (typeof v.providerHint === "string") preset.providerHint = v.providerHint;
+				if (typeof v.modelHint === "string") preset.modelHint = v.modelHint;
+				if (typeof v.temperature === "number") preset.temperature = v.temperature;
+				if (typeof v.maxTokens === "number") preset.maxTokens = v.maxTokens;
+				if (typeof v.thinkingLevel === "string") preset.thinkingLevel = v.thinkingLevel as ModelPreset["thinkingLevel"];
+				if (typeof v.systemPrompt === "string") preset.systemPrompt = v.systemPrompt;
+				if (typeof v.enabled === "boolean") preset.enabled = v.enabled;
+				if (typeof v.budgetMs === "number") preset.budgetMs = v.budgetMs;
+				if (typeof v.budgetTokens === "number") preset.budgetTokens = v.budgetTokens;
+				if (typeof v.fallbackBehavior === "string") preset.fallbackBehavior = v.fallbackBehavior as ModelPreset["fallbackBehavior"];
+				out[key] = preset;
+			}
+		}
+		return out;
+	}
 
 	return {
 		enabled: bool(src.enabled, true),
@@ -168,6 +204,15 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 			fileCardPriority: arrStr(keeperSrc.fileCardPriority).length > 0
 				? arrStr(keeperSrc.fileCardPriority)
 				: DEFAULT_KEEPER.fileCardPriority,
+		},
+		modelPresets: parsePresetOverrides(modelPresetsSrc),
+		scouts: {
+			enabled: bool(scoutsSrc.enabled, DEFAULT_SCOUT.enabled),
+			runOnAgentEnd: bool(scoutsSrc.runOnAgentEnd, DEFAULT_SCOUT.runOnAgentEnd),
+			maxFilesPerRun: num(scoutsSrc.maxFilesPerRun, DEFAULT_SCOUT.maxFilesPerRun, 1, 1000),
+			maxFindingsPerRun: num(scoutsSrc.maxFindingsPerRun, DEFAULT_SCOUT.maxFindingsPerRun, 1, 1000),
+			maxTokensPerRun: num(scoutsSrc.maxTokensPerRun, DEFAULT_SCOUT.maxTokensPerRun, 1000, 500000),
+			presets: arrStr(scoutsSrc.presets).length > 0 ? arrStr(scoutsSrc.presets) : DEFAULT_SCOUT.presets,
 		},
 		warnings,
 	};

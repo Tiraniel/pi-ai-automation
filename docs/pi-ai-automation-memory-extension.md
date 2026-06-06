@@ -4,7 +4,7 @@ Global Pi extension that provides AI-facing repo context, evidence checkpointing
 
 ## Status
 
-**Current:** TASK-006 implemented. Hybrid keeper scheduler with single-writer lease, evidence batch claiming with crash recovery, deterministic file card generation, adaptive scheduling, and stale-card trust safeguards are operational. Append-only evidence queue, `repo_checkpoint` persistence, and pending evidence counts remain operational. SQLite-backed index, git/non-git discovery, exclusions, dirty overlay, basic status, `repo_context`, auto-brief injection, and context deduplication remain operational.
+**Current:** TASK-009 implemented. Model presets with user overrides, optional disabled-by-default scout workers with strict structured-output validation, and keeper preset budget integration are operational. Hybrid keeper scheduler with single-writer lease, evidence batch claiming with crash recovery, deterministic file card generation, adaptive scheduling, and stale-card trust safeguards remain operational. Append-only evidence queue, `repo_checkpoint` persistence, and pending evidence counts remain operational. SQLite-backed index, git/non-git discovery, exclusions, dirty overlay, basic status, `repo_context`, auto-brief injection, and context deduplication remain operational.
 
 | Component | Status | Task |
 |-----------|--------|------|
@@ -15,7 +15,7 @@ Global Pi extension that provides AI-facing repo context, evidence checkpointing
 | Keeper scheduler + file cards | ✅ Implemented | TASK-006 |
 | Integrity consultant + health report | ⏳ Pending | TASK-007 |
 | Parallel/git hardening | ✅ Implemented | TASK-008 |
-| Model presets + scouts | ⏳ Pending | TASK-009 |
+| Model presets + scouts | ✅ Implemented | TASK-009 |
 | OSS docs + tests | ⏳ Pending | TASK-010 |
 
 ## Install
@@ -45,7 +45,7 @@ After install, the extension auto-registers when Pi starts in any repo.
 
 ## Diagnostic Commands
 
-- `/repo-memory-status` — Show extension status, registered tools, model preset list, and no-load-scan guarantee.
+- `/repo-memory-status` — Show extension status, registered tools, model preset list, scout status, and no-load-scan guarantee.
 
 ## No-Load-Scan Guarantee
 
@@ -66,7 +66,7 @@ The extension **does not** scan the repository, open SQLite, run `git status`, o
 - Call `repo_health_report` to surface integrity findings before or after review.
 - Call `repo_context` to inspect files relevant to the review scope.
 
-## Model Presets (Future TASK-009)
+## Model Presets (TASK-009)
 
 The extension defines provider-agnostic model presets:
 
@@ -79,24 +79,35 @@ The extension defines provider-agnostic model presets:
 
 Presets are not hard-coded to any provider. Pi's `ModelRegistry` resolves `providerHint`/`modelHint` patterns at runtime.
 
+User overrides can be placed in `.pi/repo-memory.json` under `modelPresets`:
+
+```json
+{
+  "modelPresets": {
+    "scout_broad": { "enabled": true, "budgetTokens": 50000 },
+    "my_custom": { "name": "my_custom", "enabled": true, "budgetMs": 10000 }
+  }
+}
+```
+
+Built-in defaults remain unchanged when not overridden. For built-in presets, the object key is used as the preset name, so partial overrides are valid. Unknown preset names must define `name` explicitly.
+
 ## Keeper Workers (TASK-006)
 
 The keeper runs asynchronously between agent turns (triggered by `agent_end` when `keeper.runOnAgentEnd` is true):
-- **File card keeper**: refreshes stale/missing cards in batches. Cards are generated deterministically (no LLM/provider yet — TASK-009). Each card stores source hash, context version, refs, excerpts, confidence, worker ID, and model preset metadata.
-- **Scout runner**: runs broad/deep scans when enabled (scaffold — TASK-009).
+- **File card keeper**: refreshes stale/missing cards in batches. Cards are generated deterministically (no LLM/provider yet). Each card stores source hash, context version, refs, excerpts, confidence, worker ID, and model preset metadata.
+- **Scout runner**: runs broad/deep scans when enabled. Uses deterministic local scanning and strict structured-output validation; disabled by default.
 - **Integrity consultant**: regenerates health findings when stale (scaffold — TASK-007).
 
 A single-writer SQLite lease prevents concurrent keeper writes across multiple Pi sessions. Evidence batches are claimed with short-term leases; expired leases are automatically reclaimed on the next run.
 
 ### Deterministic / No-Provider Fallback
 
-Until TASK-009 implements model-preset LLM integration, the keeper generates cards using deterministic local rules:
-- Reads the first ~12 lines of each target file (redacted).
-- Collects related evidence claims referencing the file.
-- Produces a structured markdown card with metadata.
-- Cards are bounded by `keeper.maxTokensPerRun` and `keeper.maxRunTimeMs`.
+Until an LLM provider is wired, the keeper and scout use deterministic local rules:
+- **Keeper**: reads the first ~12 lines of each target file (redacted), collects related evidence claims, and produces a structured markdown card with metadata. Cards are bounded by the `index_keeper` preset budgets (min with keeper config).
+- **Scout**: scans files for markers such as `TODO`, `FIXME`, `DEPRECATED`, `XXX`, `HACK`. Findings are validated for strict structure (non-empty claim, line evidence refs, confidence in `[0,1]`, `unknowns` array). Prose output is rejected.
 
-This fallback ensures the keeper infrastructure is testable and useful even without an LLM provider configured.
+This fallback ensures the infrastructure is testable and useful even without an LLM provider configured.
 
 ## Mutation Tracking & Stale Context (TASK-008)
 
@@ -112,8 +123,9 @@ This fallback ensures the keeper infrastructure is testable and useful even with
 - `repo_health_report` does not invoke LLMs or generate findings (TASK-007).
 - `before_agent_start` auto-brief is implemented (TASK-004).
 - Keeper scheduling adapts to active-agent count and queue pressure; health report/integrity remains pending (TASK-007).
-- Keeper card generation is deterministic/local only; no LLM provider integration yet (TASK-009).
-- Scout runner and integrity consultant are scaffolds (TASK-007, TASK-009).
+- Keeper card generation is deterministic/local only; no LLM provider integration yet.
+- Scout runner uses deterministic local scanning and strict structured-output validation; no LLM provider integration yet.
+- Integrity consultant is a scaffold (TASK-007).
 
 ## Security Defaults
 

@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildRuntime } from "./runtime";
 import { syncRepo } from "./index/sync";
 import { BUILT_IN_PRESETS } from "./models/presets";
+import { loadConfig } from "./config/loader";
 
 export function registerDiagnostics(pi: ExtensionAPI) {
 	pi.registerCommand("repo-memory-status", {
@@ -47,6 +48,7 @@ export function registerDiagnostics(pi: ExtensionAPI) {
 				];
 			}
 
+			const cfg = loadConfig(rt.repoRoot);
 			const lines = [
 				"# pi-ai-automation-memory",
 				"",
@@ -64,6 +66,11 @@ export function registerDiagnostics(pi: ExtensionAPI) {
 				"",
 				"## Model Presets",
 				...presetNames.map((n) => `  - ${n}: ${BUILT_IN_PRESETS[n]?.enabled ? "enabled" : "disabled"}`),
+				"",
+				"## Scouts",
+				`- status: ${cfg.scouts.enabled ? "enabled" : "disabled"}`,
+				`- runOnAgentEnd: ${cfg.scouts.runOnAgentEnd ? "yes" : "no"}`,
+				`- presets: ${cfg.scouts.presets.join(", ") || "(none)"}`,
 				"",
 				"## No-Load-Scan Guarantee",
 				"The extension does not scan the repo, open SQLite, or run git on load.",

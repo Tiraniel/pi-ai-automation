@@ -22,6 +22,7 @@ import { loadConfig } from "./config/loader";
 // but not invoked during extension load.
 import { resolvePreset } from "./models/presets";
 import { runKeeperUnit } from "./keeper/scheduler";
+import { runScoutUnit } from "./scout/runner";
 
 // In-memory cooldown for auto-brief: repoKey + contextVersion -> lastBriefAt
 const lastBriefTimestamps = new Map<string, number>();
@@ -36,11 +37,13 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 	// Register diagnostic slash command
 	registerDiagnostics(pi);
 
-	// Future integration stubs: ensure preset/keeper modules are reachable at runtime
+	// Future integration stubs: ensure preset/keeper/scout modules are reachable at runtime
 	const _presets = resolvePreset("index_keeper");
 	const _keeperStub = runKeeperUnit;
+	const _scoutStub = runScoutUnit;
 	void _presets;
 	void _keeperStub;
+	void _scoutStub;
 
 	// Auto-brief injection before agent starts
 	pi.on("before_agent_start", async (_event, ctx) => {
@@ -204,28 +207,54 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 	pi.on("agent_end", async (_event, ctx) => {
 		const rt = buildRuntime(ctx);
 		const cfg = loadConfig(rt.repoRoot);
-		if (!cfg.enabled || !cfg.keeper.enabled || !cfg.keeper.runOnAgentEnd) {
-			return;
-		}
+		if (!cfg.enabled) return;
+
 		// Fire-and-forget keeper run; do not block agent_end
-		try {
-			const { syncRepo: syncFn } = await import("./index/sync");
-			const { runKeeperUnit } = await import("./keeper/scheduler");
-			const sync = syncFn(rt.repoRoot, rt.repoKey, rt.cacheDbPath);
-			await runKeeperUnit({
-				repoKey: rt.repoKey,
-				repoRoot: rt.repoRoot,
-				maxRunTimeMs: cfg.keeper.maxRunTimeMs,
-				maxTokensPerRun: cfg.keeper.maxTokensPerRun,
-				batchSize: cfg.keeper.batchSize,
-				leaseDurationMs: cfg.keeper.leaseDurationMs,
-				contextVersion: sync.contextVersion,
-			});
-		} catch (err: any) {
-			// Silently catch; keeper failures must not break agent flow
-			// eslint-disable-next-line no-console
-			if (typeof console !== "undefined" && console.error) {
-				console.error("[pi-ai-automation-memory] keeper agent_end error:", err?.message ?? String(err));
+		const keeperPreset = cfg.keeper.enabled && cfg.keeper.runOnAgentEnd
+			? resolvePreset("index_keeper", cfg.modelPresets)
+			: undefined;
+		if (keeperPreset && keeperPreset.enabled === true) {
+			try {
+				const { syncRepo: syncFn } = await import("./index/sync");
+				const { runKeeperUnit } = await import("./keeper/scheduler");
+				const sync = syncFn(rt.repoRoot, rt.repoKey, rt.cacheDbPath);
+				await runKeeperUnit({
+					repoKey: rt.repoKey,
+					repoRoot: rt.repoRoot,
+					maxRunTimeMs: Math.min(cfg.keeper.maxRunTimeMs, keeperPreset.budgetMs ?? cfg.keeper.maxRunTimeMs),
+					maxTokensPerRun: Math.min(cfg.keeper.maxTokensPerRun, keeperPreset.budgetTokens ?? cfg.keeper.maxTokensPerRun),
+					batchSize: cfg.keeper.batchSize,
+					leaseDurationMs: cfg.keeper.leaseDurationMs,
+					contextVersion: sync.contextVersion,
+					modelPresetName: keeperPreset.name ?? "index_keeper",
+					modelPresetOverrides: cfg.modelPresets,
+				});
+			} catch (err: any) {
+				if (typeof console !== "undefined" && console.error) {
+					console.error("[pi-ai-automation-memory] keeper agent_end error:", err?.message ?? String(err));
+				}
+			}
+		}
+
+		// Fire-and-forget scout run; do not block agent_end
+		if (cfg.scouts.enabled && cfg.scouts.runOnAgentEnd) {
+			try {
+				const { runScoutUnit } = await import("./scout/runner");
+				for (const presetName of cfg.scouts.presets) {
+					await runScoutUnit({
+						repoKey: rt.repoKey,
+						repoRoot: rt.repoRoot,
+						presetName,
+						maxFilesPerRun: cfg.scouts.maxFilesPerRun,
+						maxFindingsPerRun: cfg.scouts.maxFindingsPerRun,
+						maxTokensPerRun: cfg.scouts.maxTokensPerRun,
+						appendEvidence: true,
+					});
+				}
+			} catch (err: any) {
+				if (typeof console !== "undefined" && console.error) {
+					console.error("[pi-ai-automation-memory] scout agent_end error:", err?.message ?? String(err));
+				}
 			}
 		}
 	});

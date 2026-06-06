@@ -350,7 +350,7 @@
     },
     "modelPresets": {
       "type": "object",
-      "description": "Provider-agnostic model presets for memory tasks.",
+      "description": "Provider-agnostic model presets for memory tasks. Built-in presets can be overridden by key. Unknown keys are accepted if they define at least a name.",
       "additionalProperties": {
         "type": "object",
         "properties": {
@@ -416,7 +416,7 @@
             "default": "skip"
           }
         },
-        "required": ["name"],
+        "required": [],
         "additionalProperties": false
       },
       "default": {
@@ -465,6 +465,47 @@
           "fallbackBehavior": "skip"
         }
       }
+    },
+    "scouts": {
+      "type": "object",
+      "description": "Optional scout workers that run bounded read-only scans. Disabled by default.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch for scout workers.",
+          "default": false
+        },
+        "runOnAgentEnd": {
+          "type": "boolean",
+          "description": "Trigger scouts after each agent turn completes.",
+          "default": false
+        },
+        "maxFilesPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum files to scan in one scout run.",
+          "default": 50
+        },
+        "maxFindingsPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum findings to accept in one scout run.",
+          "default": 20
+        },
+        "maxTokensPerRun": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Maximum token budget for one scout run.",
+          "default": 32000
+        },
+        "presets": {
+          "type": "array",
+          "description": "Preset names to run on agent_end.",
+          "items": { "type": "string" },
+          "default": ["scout_broad"]
+        }
+      },
+      "additionalProperties": false
     },
     "security": {
       "type": "object",

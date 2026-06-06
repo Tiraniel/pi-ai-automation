@@ -19,6 +19,7 @@ import {
 	type EvidenceBatchRow,
 } from "../evidence/queue";
 import { redactText } from "../security/redaction";
+import { resolvePreset, type ModelPreset } from "../models/presets";
 
 const PROCESS_ID = `${os.hostname()}-${process.pid}-${Date.now()}`;
 
@@ -38,6 +39,8 @@ export interface KeeperRunOptions {
 	leaseDurationMs: number;
 	contextVersion: string;
 	activeAgentCount?: number;
+	modelPresetName?: string;
+	modelPresetOverrides?: Record<string, Partial<ModelPreset>>;
 }
 
 export interface KeeperRunResult {
@@ -470,7 +473,21 @@ function writeCardsAndEvidence(
  */
 export async function runKeeperUnit(options: KeeperRunOptions): Promise<KeeperRunResult> {
 	const startTime = nowMs();
-	let tokenBudgetRemaining = options.maxTokensPerRun;
+	const presetName = options.modelPresetName ?? "index_keeper";
+	const preset = resolvePreset(presetName, options.modelPresetOverrides);
+	if (preset && !preset.enabled) {
+		return {
+			didWork: false,
+			message: `Keeper preset '${presetName}' is disabled; skipped.`,
+			cardsGenerated: 0,
+			evidenceProcessed: 0,
+			tokensUsed: 0,
+			elapsedMs: nowMs() - startTime,
+		};
+	}
+	const budgetMs = Math.min(options.maxRunTimeMs, preset?.budgetMs ?? options.maxRunTimeMs);
+	const budgetTokens = Math.min(options.maxTokensPerRun, preset?.budgetTokens ?? options.maxTokensPerRun);
+	let tokenBudgetRemaining = budgetTokens;
 
 	// 1. Acquire lease
 	const lease = acquireLease(options.repoKey, options.repoRoot, options.leaseDurationMs);
@@ -506,7 +523,7 @@ export async function runKeeperUnit(options: KeeperRunOptions): Promise<KeeperRu
 			processingEvidenceCount: processingCount,
 			cardBacklogCount,
 			batchSize: options.batchSize,
-			maxRunTimeMs: options.maxRunTimeMs,
+			maxRunTimeMs: budgetMs,
 		});
 
 		if (!plan.run) {
@@ -540,7 +557,7 @@ export async function runKeeperUnit(options: KeeperRunOptions): Promise<KeeperRu
 		// 7. Generate cards deterministically (no LLM / no DB lock)
 		const cards: GeneratedCard[] = [];
 		const workerId = makeLeaseHolder();
-		const modelPreset = "index_keeper";
+		const modelPreset = presetName;
 
 		for (const file of fileDataForCards) {
 			if (nowMs() > deadline) break;

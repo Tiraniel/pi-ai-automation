@@ -53,3 +53,12 @@ export const DEFAULT_SECURITY = {
 	secretExclusions: [] as string[],
 	allowSecretFilesInIndex: false,
 } as const;
+
+export const DEFAULT_SCOUT = {
+	enabled: false,
+	runOnAgentEnd: false,
+	maxFilesPerRun: 50,
+	maxFindingsPerRun: 20,
+	maxTokensPerRun: 32000,
+	presets: ["scout_broad"] as string[],
+} as const;
