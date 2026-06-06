@@ -25,8 +25,8 @@ Delegated agents run as headless JSON subprocesses (`--mode json -p --no-session
 
 ## Defaults
 
-- **brain**: `openai-codex/gpt-5.5` thinking `xhigh`. Brain orchestrates planning and delegation; it does **not** take over code edits when coder fails or reviewer returns `CHANGES_REQUESTED`. Instead, it re-delegates a focused fix back to coder (or a room worker) and then re-reviews. Brain may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.
-- **coder**: `openai-codex/gpt-5.3-codex` thinking `medium`, tools `read,bash,edit,write,grep,find,ls,room_create,room_job_start,room_send,room_read,room_job_done,room_status`, and **Karpathy Guidelines included by default**
+- **brain**: `openai-codex/gpt-5.5` thinking `xhigh`. Brain orchestrates planning and delegation using a contract-first pipeline: Business Planner (domain intent), Technical Architect (pattern/transaction boundary selection with explicit rationale), Contract/Block Plan (DTOs, ports, events, use-cases, files), then Phase A isolated block building followed by Phase B integration wiring. Brain does **not** take over code edits when coder fails or reviewer returns `CHANGES_REQUESTED`. Instead, it re-delegates a focused fix back to coder (or a room worker) and then re-reviews. Brain may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.
+- **coder**: `openai-codex/gpt-5.3-codex` thinking `medium`, tools `read,bash,edit,write,grep,find,ls,room_create,room_job_start,room_send,room_read,room_job_done,room_status`, and **Karpathy Guidelines included by default**. Coder follows Brain's blueprint/contracts, builds isolated DTOs/classes/ports/events/use-cases first, and asks rather than guessing when the blueprint is ambiguous.
 - **reviewer**: `openai-codex/gpt-5.5` thinking `high`, tools `read,bash,grep,find,ls,room_create,room_job_start,room_send,room_read,room_job_done,room_status` (read-only)
 - **reviewerSwarm**: enabled by default, runs targeted reviewer subprocesses (parallelized with `maxConcurrency`) across configured targets or explicit `goals`
 

@@ -21,6 +21,10 @@ reviewer workflow.
 - Keep scope tight: do exactly what Brain asked, no unrelated cleanup.
 - Run relevant tests, type checks, linters, or targeted commands when
   practical.
+- Follow Brain's blueprint and contracts. Implement isolated building blocks
+  (DTOs, ports/interfaces, domain events, use-case classes, handlers) before
+  any integration wiring. Do not invent architecture unless the blueprint is
+  missing or unsafe; if ambiguous, ask Brain before proceeding.
 
 ## Handoff
 
