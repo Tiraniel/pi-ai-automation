@@ -4,51 +4,31 @@
  * - Loads principles from config, project docs, and built-in defaults.
  * - Generates evidence-bound findings from indexed files + evidence queue.
  * - No network/LLM calls. All findings are deterministic and local.
+ *
+ * This file is the public entry point. It composes the helper modules:
+ *   - ./types      — shared interfaces (Principle, Finding, ConsultantParams)
+ *   - ./principles — principle loading, persistence, refresh check
+ *   - ./smells     — code-smell scan and test-file detection
+ *
+ * All public symbols and the import surface (`../integrity/consultant`) are
+ * preserved for downstream consumers (repo_health_report, validate-repo-memory).
  */
 
-import * as fs from "node:fs";
 import * as path from "node:path";
-import { loadConfig } from "../config/loader";
-import type { RepoMemoryConfig } from "../config/loader";
 import type { SqliteDb } from "../index/db";
 import { parseJsonStringArray } from "../util/json";
+import type { ConsultantParams, Finding, Principle } from "./types";
+import { MAX_SCAN_FILES, TEST_FILE_PATTERNS, scanFileSmells, type SmellMatch } from "./smells";
 
-export interface Principle {
-	category: string | null;
-	text: string;
-	source: string;
-	confidence: number;
-	configRef: string | null;
-}
-
-export interface Finding {
-	id?: number;
-	severity: "critical" | "warning" | "info" | "ok";
-	category: string;
-	finding: string;
-	evidenceRefs: string[];
-	fileRefs: string[];
-	confidence: number;
-	principleSource: string;
-	recommendation: string;
-	generatedAt: number;
-	contextVersion: string;
-	rank: number;
-	trusted: boolean;
-	scope: "global" | "task";
-	taskRelevance: number;
-}
-
-export interface ConsultantParams {
-	maxFindings: number;
-	categories: string[] | null;
-	minSeverity: "critical" | "warning" | "info" | "ok";
-	forceRefresh: boolean;
-	taskId: string | null;
-	taskFiles: string[] | null;
-	taskQuery: string | null;
-	includeGantt: boolean;
-}
+export type { Principle, Finding, ConsultantParams } from "./types";
+export type { SmellMatch } from "./smells";
+export { scanFileSmells, TEST_FILE_PATTERNS, MAX_SCAN_FILES } from "./smells";
+export {
+	loadAllPrinciples,
+	persistPrinciples,
+	readPrinciplesFromDb,
+	findingsNeedRefresh,
+} from "./principles";
 
 const SEVERITY_ORDER: Record<string, number> = {
 	critical: 0,
@@ -57,227 +37,12 @@ const SEVERITY_ORDER: Record<string, number> = {
 	ok: 3,
 };
 
-const BUILTIN_PRINCIPLES: Principle[] = [
-	{ category: "test_coverage", text: "Code should have automated tests", source: "builtin", confidence: 0.3, configRef: null },
-	{ category: "type_safety", text: "Typed projects should have type-checking configuration", source: "builtin", confidence: 0.3, configRef: null },
-	{ category: "doc_freshness", text: "README and key docs should exist and be current", source: "builtin", confidence: 0.3, configRef: null },
-	{ category: "dependency_risk", text: "Lockfiles should be present and not stale", source: "builtin", confidence: 0.3, configRef: null },
-	{ category: "architectural_drift", text: "Project structure should follow declared conventions", source: "builtin", confidence: 0.3, configRef: null },
-	{ category: "security", text: "Secrets should not be committed", source: "builtin", confidence: 0.5, configRef: null },
-];
-
-const SMELL_PATTERNS = [
-	{ regex: /\bTODO\b/gi, category: "architectural_drift", severity: "info" as const, label: "TODO" },
-	{ regex: /\bFIXME\b/gi, category: "architectural_drift", severity: "warning" as const, label: "FIXME" },
-	{ regex: /\bHACK\b/gi, category: "architectural_drift", severity: "warning" as const, label: "HACK" },
-	{ regex: /\bXXX\b/gi, category: "architectural_drift", severity: "info" as const, label: "XXX" },
-	{ regex: /\bBUG\b/gi, category: "architectural_drift", severity: "warning" as const, label: "BUG" },
-	{ regex: /\bDEPRECATED\b/gi, category: "architectural_drift", severity: "warning" as const, label: "DEPRECATED" },
-	{ regex: /\bLEGACY\b/gi, category: "architectural_drift", severity: "info" as const, label: "LEGACY" },
-	{ regex: /\bSMELL\b/gi, category: "architectural_drift", severity: "warning" as const, label: "SMELL" },
-];
-
-const TEST_FILE_PATTERNS = [
-	/\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|kt|rb|php|cs)$/i,
-	/__tests__/i,
-	/test_/i,
-];
-
-const MAX_SCAN_BYTES = 100_000;
-const MAX_SCAN_FILES = 200;
-const MAX_MATCHES_PER_FILE = 20;
-
 function severityValue(s: string): number {
 	return SEVERITY_ORDER[s] ?? 99;
 }
 
 function isSeverityAtLeast(severity: string, min: string): boolean {
 	return severityValue(severity) <= severityValue(min);
-}
-
-/**
- * Load explicit principles from .pi/repo-memory.json integrity.principles.
- */
-function loadExplicitPrinciples(cfg: RepoMemoryConfig): Principle[] {
-	const principles: Principle[] = [];
-	for (const text of cfg.integrity.principles) {
-		principles.push({
-			category: null,
-			text,
-			source: "config",
-			confidence: 1.0,
-			configRef: ".pi/repo-memory.json",
-		});
-	}
-	return principles;
-}
-
-/**
- * Infer principles from AGENTS.md / Agents.md / CLAUDE.md / README.md.
- * Cheap heuristic: look for principle-like bullet lines.
- */
-function inferPrinciplesFromDocs(repoRoot: string): Principle[] {
-	const candidates = ["AGENTS.md", "Agents.md", "CLAUDE.md", "README.md", "ARCHITECTURE.md", "architecture.md"];
-	const principles: Principle[] = [];
-	for (const name of candidates) {
-		const absPath = path.join(repoRoot, name);
-		if (!fs.existsSync(absPath)) continue;
-		try {
-			const content = fs.readFileSync(absPath, "utf-8");
-			const lines = content.split(/\r?\n/);
-			for (const line of lines) {
-				const trimmed = line.trim();
-				// Match bullet lines that look like principles
-				if (/^[-*]\s*(principle|rule|convention|guideline|must|should|avoid|prefer)\b/i.test(trimmed)) {
-					const text = trimmed.replace(/^[-*]\s*/, "").slice(0, 500);
-					if (text.length > 10) {
-						principles.push({
-							category: null,
-							text,
-							source: `inferred:${name}`,
-							confidence: 0.5,
-							configRef: name,
-						});
-					}
-				}
-			}
-		} catch {
-			// ignore read errors
-		}
-	}
-	return principles;
-}
-
-/**
- * Load all principles: explicit config + inferred docs + built-in defaults.
- */
-export function loadAllPrinciples(repoRoot: string): Principle[] {
-	const cfg = loadConfig(repoRoot);
-	const explicit = loadExplicitPrinciples(cfg);
-	const inferred = inferPrinciplesFromDocs(repoRoot);
-	// Deduplicate by text (case-insensitive)
-	const seen = new Set<string>();
-	const out: Principle[] = [];
-	for (const p of [...explicit, ...inferred, ...BUILTIN_PRINCIPLES]) {
-		const key = p.text.toLowerCase().trim();
-		if (seen.has(key)) continue;
-		seen.add(key);
-		out.push(p);
-	}
-	return out;
-}
-
-/**
- * Persist principles to the integrity_principles table.
- */
-export function persistPrinciples(
-	db: SqliteDb,
-	repoKey: string,
-	principles: Principle[],
-): void {
-	const now = Date.now();
-	const insertStmt = db.prepare(
-		`INSERT OR REPLACE INTO integrity_principles
-		 (repo_key, category, principle, source, confidence, config_ref, inferred, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	);
-	for (const p of principles) {
-		insertStmt.run(repoKey, p.category, p.text, p.source, p.confidence, p.configRef, p.source.startsWith("inferred:") ? 1 : 0, now);
-	}
-}
-
-/**
- * Read principles from DB.
- */
-export function readPrinciplesFromDb(
-	db: SqliteDb,
-	repoKey: string,
-): Principle[] {
-	try {
-		const rows = db.prepare(
-			"SELECT category, principle, source, confidence, config_ref FROM integrity_principles WHERE repo_key = ?"
-		).all(repoKey) as Array<{ category: string | null; principle: string; source: string; confidence: number; config_ref: string | null }>;
-		return rows.map((r) => ({
-			category: r.category,
-			text: r.principle,
-			source: r.source,
-			confidence: r.confidence,
-			configRef: r.config_ref,
-		}));
-	} catch {
-		return [];
-	}
-}
-
-/**
- * Check whether findings need regeneration.
- */
-export function findingsNeedRefresh(
-	db: SqliteDb,
-	repoKey: string,
-	contextVersion: string,
-	maxAgeMs: number,
-	forceRefresh: boolean,
-): boolean {
-	if (forceRefresh) return true;
-	try {
-		const row = db.prepare(
-			"SELECT MAX(generated_at) as max_at, MAX(context_version) as max_cv FROM health_findings WHERE repo_key = ?"
-		).get(repoKey) as { max_at: number | null; max_cv: string | null } | undefined;
-		if (!row || row.max_at === null) return true;
-		if (row.max_cv !== contextVersion) return true;
-		if (Date.now() - row.max_at > maxAgeMs) return true;
-		return false;
-	} catch {
-		return true;
-	}
-}
-
-/**
- * A single smell match from scanFileSmells.
- */
-type SmellMatch = {
-	line: number;
-	label: string;
-	category: string;
-	severity: "warning" | "info";
-	lineText: string;
-};
-
-/**
- * Scan a single file for smell patterns. Bounded.
- */
-function scanFileSmells(absPath: string, _relPath: string): Array<SmellMatch> {
-	const results: ReturnType<typeof scanFileSmells> = [];
-	let content: string;
-	try {
-		const stat = fs.statSync(absPath);
-		if (!stat.isFile() || stat.size > MAX_SCAN_BYTES) return results;
-		content = fs.readFileSync(absPath, "utf-8");
-	} catch {
-		return results;
-	}
-	const lines = content.split(/\r?\n/);
-	let totalMatches = 0;
-	for (let i = 0; i < lines.length; i++) {
-		if (totalMatches >= MAX_MATCHES_PER_FILE) break;
-		const lineText = lines[i];
-		for (const pat of SMELL_PATTERNS) {
-			pat.regex.lastIndex = 0;
-			if (pat.regex.test(lineText)) {
-				results.push({
-					line: i + 1,
-					label: pat.label,
-					category: pat.category,
-					severity: pat.severity,
-					lineText: lineText.trim().slice(0, 200),
-				});
-				totalMatches++;
-				break; // one match per line max
-			}
-		}
-	}
-	return results;
 }
 
 /**
