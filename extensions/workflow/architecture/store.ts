@@ -426,6 +426,13 @@ export function buildArchitectureContext(plan: WorkflowArchitecturePlan, options
 	if (plan.taskId) lines.push(`Task: ${plan.taskId}`);
 	lines.push(`Status: ${plan.status}`);
 	lines.push(`Current phase statuses: A=${plan.phases.phaseA.status}, B=${plan.phases.phaseB.status}`);
+	if (options.forAgent === "reviewer") {
+		lines.push("Reviewer context:");
+		lines.push("- Architecture plans are context for intended behavior and implementation scope only, not approval criteria.");
+		lines.push("- Review changed code, validation evidence, and behavior against this scope context.");
+		lines.push("- `review_approved` means implementation review passed for this phase, not that the Brain plan text was approved.");
+		lines.push("");
+	}
 	lines.push("");
 
 	if (!gate.ok) {

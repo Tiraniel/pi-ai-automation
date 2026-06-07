@@ -14,6 +14,13 @@ const WORKFLOW_PROMPT_PACKS_FILE = `${MANAGED_FILE_PREFIX}.prompt-packs.json`;
 const WORKFLOW_QUALITY_GATES_FILE = `${MANAGED_FILE_PREFIX}.quality-gates.json`;
 
 const DEFAULT_REVIEW_TARGETS = [
+	"Changed-code acceptance behavior",
+	"Implementation correctness and regressions",
+	"Test and validation evidence for implementation",
+	"Security, performance, and maintainability of changed code",
+];
+
+const LEGACY_REVIEW_TARGETS = [
 	"Requirements and acceptance criteria coverage",
 	"Correctness and regression risks",
 	"Tests and validation quality",
@@ -43,6 +50,11 @@ type JsonObject = Record<string, unknown>;
 
 function isPlainObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isLegacyDefaultReviewerTargets(value: unknown): value is string[] {
+	if (!Array.isArray(value)) return false;
+	return arraysEqual(value, DEFAULT_REVIEW_TARGETS) || arraysEqual(value, LEGACY_REVIEW_TARGETS);
 }
 
 function readJson(filePath: string): JsonObject | null {
@@ -144,7 +156,7 @@ function isLegacyDefaultV1Config(value: unknown): boolean {
 	if (!isPlainObject(reviewerSwarm)) return false;
 	if (reviewerSwarm.enabled !== true) return false;
 	if (reviewerSwarm.maxConcurrency !== 2) return false;
-	if (!arraysEqual(reviewerSwarm.targets, DEFAULT_REVIEW_TARGETS)) return false;
+	if (!isLegacyDefaultReviewerTargets(reviewerSwarm.targets)) return false;
 	if (coder.includeKarpathyGuidelines !== true) return false;
 	return true;
 }
@@ -264,10 +276,10 @@ function managedQualityGates(): JsonObject {
 		gates: [
 			{ id: "gate-typescript-strict", kind: "checks", command: "npx --no-install tsc --noEmit", description: "Run TypeScript type checks before considering work complete." },
 			{ id: "gate-git-diff-check", kind: "checks", command: "git diff --check", description: "Run git diff --check to avoid formatting and conflict-marker issues." },
-			{ id: "review-goal-architecture", kind: "review-goal", description: "Architecture and coupling review goal." },
-			{ id: "review-goal-correctness", kind: "review-goal", description: "Functional correctness and regression risk review goal." },
-			{ id: "review-goal-tests", kind: "review-goal", description: "Validation and evidence completeness review goal." },
-			{ id: "review-goal-security", kind: "review-goal", description: "Security, safety, and concurrency review goal." },
+			{ id: "review-goal-architecture", kind: "review-goal", description: "Code-review goal: inspect changed modules for coupling, ownership, and architecture-boundary regressions." },
+			{ id: "review-goal-correctness", kind: "review-goal", description: "Code-review goal: validate implementation correctness and regression risk in changed behavior." },
+			{ id: "review-goal-tests", kind: "review-goal", description: "Code-review goal: verify test/check evidence for implemented changes." },
+			{ id: "review-goal-security", kind: "review-goal", description: "Code-review goal: review security, safety, and concurrency risks in changed implementation." },
 		],
 	};
 }

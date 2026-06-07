@@ -54,7 +54,7 @@ export function resolveReviewerSwarmConfig(config: WorkflowConfig): Required<Rev
 }
 
 export function buildReviewerGoalTask(task: string, goal: string): string {
-	return `${task}\n\nAssigned review goal:\n- ${goal}\n\nFocus strictly on this goal. Start your response with APPROVED or CHANGES_REQUESTED.`;
+	return `${task}\n\nAssigned review goal (code-only):\n- ${goal}\n\nReviewer checks should focus on implementation diffs, behavior, and validation evidence only.\nThe architecture/phase plan is context for intended behavior and scope, not a plan-quality rubric.\nDo not validate or critique Brain-owned plan quality.\nStart your response with APPROVED or CHANGES_REQUESTED.`;
 }
 
 export async function runReviewerSwarm(

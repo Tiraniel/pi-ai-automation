@@ -21,10 +21,12 @@ its catalog files for delegation.
    `["brain", "coder", "reviewer"]`.
 5. Make coder / reviewer / reviewer-swarm identities composable from the
    same catalog building blocks, so a quality-gate catalog entry is the
-   same object whether it is a CI check or a reviewer-swarm goal. The
-   reviewer swarm has no runtime settings on the v2 workflow; its goals
-   are owned by the quality-gate catalog and attached to the reviewer
-   agent identity through `agentCatalog.agents[].qualityGates`.
+   same object whether it is a CI check or a reviewer-swarm goal. Reviewer
+   goals are code-review goals derived from the reviewer identity and are not
+   a plan-quality approval mechanism. The reviewer swarm has no runtime
+   settings on the v2 workflow; its goals are owned by the quality-gate
+   catalog and attached to the reviewer agent identity through
+   `agentCatalog.agents[].qualityGates`.
 6. Fail loudly on malformed required workflow entries. `normalizeV2Workflow`
    returns `undefined` when `flow` or `roles` is absent, empty, or
    contains any malformed entry; malformed entries are not silently
@@ -164,6 +166,8 @@ agent.overrides
 The resolved `reviewerSwarm` is derived from the resolved reviewer role
 identity (filtering `qualityGates` to entries whose catalog gate has
 `kind === "review-goal"`) — it is not a separate precedence step.
+These reviewer goals are implementation-focused checks over changed code,
+not approval of architecture-plan text.
 
 ## V1 migration path
 

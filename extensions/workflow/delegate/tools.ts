@@ -197,7 +197,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 		promptGuidelines: [
 			`Use ${toolName} when Brain needs ${role} in the brain -> coder -> reviewer workflow.`,
 			`Tasks passed to ${toolName} must be self-contained: include goal, relevant files/context, constraints, and expected output.`,
-			...(agent === "reviewer" ? ["Pass explicit goals whenever possible so each reviewer target validates one acceptance criterion."] : []),
+			...(agent === "reviewer" ? ["Pass explicit reviewer goals whenever possible so each target reviews one implementation/behavior/test-evidence checkpoint. Do not use goals to request reviewer approval of Brain plans."] : []),
 			`If this delegation fails or returns CHANGES_REQUESTED, do NOT take over code edits/fixes yourself. Re-delegate a focused fix to coder (or a room worker) and then re-review. Brain may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.`,
 		],
 		parameters: Type.Object({
@@ -213,7 +213,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 				role: Type.Optional(Type.String({ description: "Agent role label (e.g. 'backend', 'frontend', 'planner'); defaults to PI_WORKFLOW_AGENT_ROLE env or the agent name" })),
 			}, { description: "Optional workflow room context. When set, the delegated sub-agent receives PI_WORKFLOW_ROOM_ID/AGENT_ID/AGENT_ROLE env vars and a communication block in its system prompt." })),
 			...(agent === "reviewer"
-				? { goals: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Optional review goals/acceptance criteria. When reviewer swarm is enabled, one reviewer runs per goal." })) }
+				? { goals: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Optional implementation review goals (acceptance/scope/test evidence checkpoints). When reviewer swarm is enabled, one reviewer runs per goal." })) }
 				: {}),
 		}),
 		renderCall(args: any, theme) {
