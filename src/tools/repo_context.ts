@@ -21,11 +21,43 @@ import {
 } from "./repo_context_helpers";
 import type { EvidenceRow, FileRecord, ImportRow } from "./repo_context_helpers";
 
+function sanitizeCardContent(cardContent: string): string {
+	const lines = cardContent.split(/\r?\n/);
+	const result: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const marker = line.match(/^(\s*)-\s*excerpt(?:s)?\s*:/i);
+		if (!marker) {
+			result.push(line);
+			continue;
+		}
+
+		const markerIndent = marker[1]?.length ?? 0;
+		i++;
+		while (i < lines.length) {
+			const nextLine = lines[i];
+			const nextIndent = nextLine.match(/^\s*/)?.[0].length ?? 0;
+			if (/^\s*-\s+/.test(nextLine) && nextIndent <= markerIndent) {
+				i--;
+				break;
+			}
+			i++;
+		}
+	}
+	return result.join("\n").trimEnd();
+}
+
 export const repoContextParameters = Type.Object({
 	query: Type.Optional(Type.String({ description: "Optional focus query to rank relevance" })),
-	maxFiles: Type.Optional(Type.Integer({ default: 30, description: "Max files to include" })),
-	maxTokens: Type.Optional(Type.Integer({ default: 8000, description: "Approximate token budget for response" })),
+	maxFiles: Type.Optional(Type.Integer({ default: 12, description: "Max files to include (navigation-first default)" })),
+	maxTokens: Type.Optional(Type.Integer({ default: 3000, description: "Approximate token budget for response (navigation-first default)" })),
 	includeCards: Type.Optional(Type.Boolean({ default: true, description: "Include file cards if fresh" })),
+	includeExcerpts: Type.Optional(
+		Type.Boolean({
+			default: false,
+			description: "Include file excerpts in output and details. Keep false for navigation-only use unless scope is narrowed.",
+		}),
+	),
 	includeEvidence: Type.Optional(Type.Boolean({ default: false, description: "Include recent evidence items" })),
 	contextVersion: Type.Optional(Type.String({ description: "Optional expected context version; warns if stale" })),
 });
@@ -35,9 +67,10 @@ export function registerRepoContext(pi: ExtensionAPI) {
 		name: "repo_context",
 		label: "Repo: Context",
 		description: "Return a bounded, structured summary of the repo for the current agent turn.",
-		promptSnippet: "Get bounded repo context before planning or coding",
+		promptSnippet: "Use repo_context for navigation-first repository orientation",
 		promptGuidelines: [
-			"Use repo_context when you need a quick overview of the repo structure, key files, or current state.",
+			"Use repo_context for quick navigation before calling additional tools.",
+			"Request excerpts only after scope is narrowed with a focused query.",
 			"Pass a query to rank files by relevance.",
 		],
 		parameters: repoContextParameters,
@@ -55,6 +88,7 @@ export function registerRepoContext(pi: ExtensionAPI) {
 			const maxFiles = clamp(Number(p?.maxFiles ?? cfg.tools.repo_context.maxFiles), 1, 100);
 			const maxTokens = clamp(Number(p?.maxTokens ?? cfg.tools.repo_context.maxTokens), 100, 100000);
 			const includeCards = Boolean(p?.includeCards ?? true);
+			const includeExcerpts = Boolean(p?.includeExcerpts ?? cfg.tools.repo_context.includeExcerpts);
 			const includeEvidence = Boolean(p?.includeEvidence ?? false);
 			const query = typeof p?.query === "string" ? p.query : undefined;
 			const requestedContextVersion = typeof p?.contextVersion === "string" ? p.contextVersion : undefined;
@@ -226,9 +260,11 @@ export function registerRepoContext(pi: ExtensionAPI) {
 					if (includeCards && f.card_content && cardTrusted) {
 						fileLines.push("- card (fresh, trusted):");
 						fileLines.push("  ```");
-						const cardLines = f.card_content.split(/\r?\n/).slice(0, 10);
-						for (const cl of cardLines) fileLines.push(`  ${cl}`);
-						if (f.card_content.split(/\r?\n/).length > 10) fileLines.push("  …");
+						const renderedCard = includeExcerpts ? f.card_content : sanitizeCardContent(f.card_content);
+						const cardLines = renderedCard.split(/\r?\n/);
+						const previewLines = cardLines.slice(0, 10);
+						for (const cl of previewLines) fileLines.push(`  ${cl}`);
+						if (cardLines.length > 10) fileLines.push("  …");
 						fileLines.push("  ```");
 						if (f.card_confidence !== null) {
 							fileLines.push(`  confidence: ${f.card_confidence}, worker: ${f.card_worker_id ?? "?"}`);
@@ -241,23 +277,30 @@ export function registerRepoContext(pi: ExtensionAPI) {
 					}
 
 					// Excerpts
-					const excerptBudget = Math.max(500, Math.floor(tokenBudget / Math.max(1, selected.length - fileDetails.length)));
-					const excerpts = readExcerptsSmart(
-						absPath,
-						f.relative_path,
-						query,
-						2,
-						6,
-						Math.min(4096, excerptBudget * 4),
-					);
-					if (excerpts && excerpts.length > 0) {
-						for (const ex of excerpts) {
-							fileLines.push(`- excerpt: ${ex.ref}`);
-							fileLines.push("  ```");
-							for (const line of ex.lines) {
-								fileLines.push(`  ${line}`);
+					let excerpts: { ref: string; lines: string[]; startLine: number }[] = [];
+					if (includeExcerpts) {
+						const excerptBudget = Math.max(
+							500,
+							Math.floor(tokenBudget / Math.max(1, selected.length - fileDetails.length)),
+						);
+						const foundExcerpts = readExcerptsSmart(
+							absPath,
+							f.relative_path,
+							query,
+							2,
+							6,
+							Math.min(4096, excerptBudget * 4),
+						) ?? [];
+						excerpts = foundExcerpts;
+						if (foundExcerpts.length > 0) {
+							for (const ex of foundExcerpts) {
+								fileLines.push(`- excerpt: ${ex.ref}`);
+								fileLines.push("  ```");
+								for (const line of ex.lines) {
+									fileLines.push(`  ${line}`);
+								}
+								fileLines.push("  ```");
 							}
-							fileLines.push("  ```");
 						}
 					}
 
@@ -286,7 +329,7 @@ export function registerRepoContext(pi: ExtensionAPI) {
 						is_dirty: !!f.is_dirty,
 						is_untracked: !!f.is_untracked,
 						imports,
-						excerpts: excerpts?.map((ex) => ({ ref: ex.ref, lines: ex.lines, start_line: ex.startLine })) ?? [],
+						excerpts: excerpts.map((ex) => ({ ref: ex.ref, lines: ex.lines, start_line: ex.startLine })),
 					});
 				}
 
@@ -339,6 +382,7 @@ export function registerRepoContext(pi: ExtensionAPI) {
 						line_limit: lineLimit,
 						maxTokens,
 						tokenBudgetRemaining: tokenBudget,
+						include_excerpts: includeExcerpts,
 						files: fileDetails,
 						evidence: evidenceRows.map((e) => ({
 							claim: e.claim,

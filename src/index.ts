@@ -14,7 +14,6 @@ import { registerRepoCheckpoint } from "./tools/repo_checkpoint";
 import { registerRepoHealthReport } from "./tools/repo_health_report";
 import { registerRepoIndexStatus } from "./tools/repo_index_status";
 import { syncRepo } from "./index/sync";
-import { openDb, closeDb } from "./index/db";
 import { buildRuntime } from "./runtime";
 import { loadConfig } from "./config/loader";
 import { errorMessage } from "./util/errors";
@@ -25,8 +24,36 @@ import { resolvePreset } from "./models/presets";
 import { runKeeperUnit } from "./keeper/scheduler";
 import { runScoutUnit } from "./scout/runner";
 
-// In-memory cooldown for auto-brief: repoKey + contextVersion -> lastBriefAt
+// In-memory cooldown for auto-brief: one entry per repo key
 const lastBriefTimestamps = new Map<string, number>();
+const BRIEF_TRUNCATION_SUFFIX = "\n\n[Brief truncated: use repo_context for navigation details]";
+
+function truncateBriefContent(content: string, maxBytes: number): { text: string; truncated: boolean } {
+	const textByteLimit = Math.max(1, maxBytes);
+	const fullSuffix = BRIEF_TRUNCATION_SUFFIX;
+	const fullSuffixBytes = Buffer.byteLength(fullSuffix, "utf-8");
+
+	if (Buffer.byteLength(content, "utf-8") <= textByteLimit) {
+		return { text: content, truncated: false };
+	}
+
+	let suffix = fullSuffix;
+	let suffixBytes = fullSuffixBytes;
+	if (fullSuffixBytes >= textByteLimit) {
+		suffix = "…";
+		suffixBytes = Buffer.byteLength(suffix, "utf-8");
+	}
+	let truncated = content;
+	while (
+		truncated.length > 0 && Buffer.byteLength(truncated, "utf-8") + suffixBytes > textByteLimit
+	) {
+		truncated = truncated.slice(0, -1);
+	}
+	if (truncated.length === 0) {
+		return suffixBytes <= textByteLimit ? { text: suffix, truncated: true } : { text: "", truncated: true };
+	}
+	return { text: `${truncated}${suffix}`, truncated: true };
+}
 
 export default function piAiAutomationMemory(pi: ExtensionAPI) {
 	// Register the four AI-facing tools
@@ -70,74 +97,68 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 			return undefined;
 		}
 
-		// Sync and get context version with graceful degradation
+		const now = Date.now();
+		const cooldownKey = rt.repoKey;
+		const lastAt = lastBriefTimestamps.get(cooldownKey);
+		if (lastAt !== undefined && now - lastAt < cfg.autoBrief.minIntervalMs) {
+			return undefined;
+		}
+
+		// Record attempt before sync to prevent repeated expensive retries from blocking prompt flow
+		lastBriefTimestamps.set(cooldownKey, now);
+
 		let sync: ReturnType<typeof syncRepo>;
-		let staleCardFiles: string[] = [];
 		let syncError: string | undefined;
 		try {
 			sync = syncRepo(rt.repoRoot, rt.repoKey, rt.cacheDbPath);
-			const handle = openDb(rt.repoKey, rt.repoRoot);
-			try {
-				const rows = handle.db.prepare(
-					`SELECT relative_path FROM files
-					 WHERE repo_key = ? AND card_freshness = 'stale' AND is_deleted = 0
-					 ORDER BY relative_path`
-				).all(rt.repoKey) as Array<{ relative_path: string }>;
-				staleCardFiles = rows.map((r) => r.relative_path);
-			} finally {
-				closeDb(handle);
-			}
 		} catch (err) {
 			syncError = errorMessage(err);
-			// Return degraded brief with error info
+		}
+
+		if (syncError) {
+			const { text, truncated } = truncateBriefContent(
+				`## Repo Brief: ${rt.repoKey}\n- warning: auto-brief degraded — ${syncError}\n- generated: ${new Date(now).toISOString()}\n- Use \`repo_context\` with a focused query; set \`includeExcerpts=true\` only after narrowing scope.`,
+				cfg.autoBrief.maxTokens * 4,
+			);
 			return {
 				message: {
 					customType: "repo-memory-brief",
 					display: true,
-					content: `## Repo Brief: ${rt.repoKey}\n- **warning**: auto-brief degraded — ${syncError}\n- Use \`repo_context\` for details.`,
+					content: text,
 					details: {
 						repoKey: rt.repoKey,
 						repoRoot: rt.repoRoot,
-						error: syncError,
 						degraded: true,
+						error: syncError,
+						generatedAt: now,
+						truncated,
 					},
 				},
 			};
 		}
 
-		const now = Date.now();
-		const cooldownKey = `${rt.repoKey}:${sync.contextVersion}`;
-		const lastAt = lastBriefTimestamps.get(cooldownKey);
-		if (lastAt !== undefined && now - lastAt < cfg.autoBrief.minIntervalMs) {
-			return undefined;
-		}
-		lastBriefTimestamps.set(cooldownKey, now);
+		const generatedAt = Date.now();
+		const languageCounts = Object.entries(sync.languageCounts)
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 5)
+			.map(([lang, count]) => `${lang}(${count})`)
+			.join(", ");
 
-		// Build compact brief
 		const lines: string[] = [];
 		lines.push(`## Repo Brief: ${rt.repoKey}`);
 		lines.push(`- branch: ${sync.branch ?? "(none)"}, head: ${sync.head ? sync.head.slice(0, 12) : "(none)"}`);
 		lines.push(`- dirty: ${sync.isDirty}, untracked: ${sync.hasUntracked}, conflicts: ${sync.hasConflicts}`);
 		lines.push(`- files: ${sync.totalFiles}`);
-		lines.push(`- languages: ${Object.entries(sync.languageCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k}(${v})`).join(", ") || "(none)"}`);
-		lines.push(`- package_roots: ${sync.topPackageRoots.slice(0, 5).join(", ") || "(none)"}`);
-		if (staleCardFiles.length > 0) {
-			lines.push(`- stale_cards: ${staleCardFiles.slice(0, 10).join(", ")}${staleCardFiles.length > 10 ? " …" : ""}`);
-		}
+		lines.push(`- languages: ${languageCounts || "(none)"}`);
+		lines.push(`- package_roots: ${sync.topPackageRoots.slice(0, 3).join(", ") || "(none)"}`);
+		lines.push(`- cards: fresh=${sync.freshCards}, stale=${sync.staleCards}, missing=${sync.missingCards}`);
 		lines.push(`- context_version: ${sync.contextVersion}`);
-		lines.push(`- generated: ${new Date(now).toISOString()}`);
-		lines.push("- Use `repo_context` for detailed file listings and excerpts.");
+		lines.push(`- generated: ${new Date(generatedAt).toISOString()}`);
+		lines.push("- Use `repo_context` with a focused query; set `includeExcerpts=true` only after narrowing scope.");
 
-		let content = lines.join("\n");
-		let truncated = false;
-		const effectiveByteLimit = Math.min(cfg.output.defaultTruncationLimitBytes, cfg.autoBrief.maxTokens * 4);
-		const byteLen = Buffer.byteLength(content, "utf-8");
-		if (byteLen > effectiveByteLimit) {
-			let idx = content.length;
-			while (idx > 0 && Buffer.byteLength(content.slice(0, idx), "utf-8") > effectiveByteLimit) idx--;
-			content = content.slice(0, idx) + "\n\n[Brief truncated: use repo_context tool for full details]";
-			truncated = true;
-		}
+		const contentText = lines.join("\n");
+		const byteLimit = Math.max(1, cfg.autoBrief.maxTokens * 4);
+		const { text: content, truncated } = truncateBriefContent(contentText, byteLimit);
 
 		return {
 			message: {
@@ -155,12 +176,12 @@ export default function piAiAutomationMemory(pi: ExtensionAPI) {
 					hasUntracked: sync.hasUntracked,
 					hasConflicts: sync.hasConflicts,
 					filesTotal: sync.totalFiles,
-					languageCounts: sync.languageCounts,
-					topPackageRoots: sync.topPackageRoots,
-					staleCardFiles,
-					generatedAt: now,
+					freshCards: sync.freshCards,
+					staleCards: sync.staleCards,
+					missingCards: sync.missingCards,
+					generatedAt,
 					truncated,
-					byteLimit: effectiveByteLimit,
+					byteLimit: byteLimit,
 				},
 			},
 		};

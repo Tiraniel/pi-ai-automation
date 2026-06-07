@@ -38,7 +38,7 @@ After install, the extension auto-registers when Pi starts in any repo.
 
 | Tool | Purpose | Current Behavior |
 |------|---------|------------------|
-| `repo_context` | Bounded repo summary for agent planning | Implemented: syncs index, ranks files by query/importance/dirty state, returns file metadata, excerpts, and optional evidence with token/byte/line caps. Stale cards labeled `DO NOT TRUST`. |
+| `repo_context` | Bounded repo summary for agent planning | Implemented: syncs index, ranks files by query/importance/dirty state, returns file metadata, optional excerpts (`includeExcerpts` false by default), and optional evidence with token/byte/line caps. Stale cards labeled `DO NOT TRUST`. |
 | `repo_checkpoint` | Append evidence to the evidence queue | Implemented: persists redacted evidence to SQLite, records agent/task/context refs, dedupes repeated claims, marks stale context/file-hash drift, and returns queue counts. |
 | `repo_health_report` | Ranked integrity/consultant report | Implemented: generates evidence-bound findings from deterministic scans, ranks by severity/task relevance/confidence, and optionally includes a Mermaid Gantt chart. No external LLM calls; all findings are local and deterministic. |
 | `repo_index_status` | Quick diagnostic of the deterministic index | Core implemented: syncs on demand, shows file counts, dirty/untracked state, exclusion counts, language breakdown, keeper lease, and evidence queue stats (pending/processing/stale). |

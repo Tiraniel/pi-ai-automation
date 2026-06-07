@@ -27,6 +27,7 @@ export function sessionBindingPromptText(binding: SessionBinding, markers?: Brai
 		"",
 		"This Pi session is dedicated to a single sprint task. Do NOT switch to a different task or sprint in this session, even if .sprints/current.json is later modified by other sessions or commands.",
 		"Work this task using the brain -> coder -> reviewer workflow: delegate implementation to coder and verification to reviewer.",
+		"Brain owns task understanding, sprint/task authoring, architecture decisions, and phase planning; coder receives and implements Brain-authored plans only.",
 		"Guardrail: when delegate_to_coder fails or reviewer returns CHANGES_REQUESTED, do NOT take over code edits/fixes yourself with the premium model. Re-delegate a focused fix back to coder (or a room worker) and then re-review. You may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.",
 		"Keep the task file and PROGRESS.md updated with sprint_update_task and sprint_log_progress as you work.",
 		markersBlock(markers),
@@ -41,8 +42,9 @@ export function buildTaskSessionKickoff(binding: SessionBinding, autoRun: boolea
 		`Task path: ${binding.taskPath}`,
 		"",
 		"Read the sprint and task context with sprint_read_context, then implement this task using the brain -> coder -> reviewer workflow:",
-		"1. Plan and inspect enough context yourself.",
+		"1. Inspect enough context and author this task's Brain-owned blueprint before delegating.",
 		"2. Delegate implementation to coder with delegate_to_coder. Give coder a self-contained task with relevant files, constraints, and expected checks.",
+		"Coder must not author task understanding, planning, sprint/task authoring, architecture planning, contract/block planning, or phase planning; coder implements only the Brain-authored plan.",
 		"3. Delegate independent verification to reviewer with delegate_to_reviewer. Use goals mapped to the task's acceptance criteria.",
 		"4. If reviewer requests changes, send focused fixes back to coder, then re-review.",
 		"5. When the task is complete, mark it done with sprint_update_task and append a final progress note with sprint_log_progress.",
@@ -62,6 +64,7 @@ export function sprintPointerText(current: SprintCurrent, markers?: BrainMarkers
 		`Active sprint path: ${current.activeSprintPath}`,
 		`Active task path: ${current.activeTaskPath ?? "(none)"}`,
 		"Before non-trivial implementation, read sprint/task context. Keep PROGRESS/task evidence updated.",
+		"Brain retains planning ownership for sprint/task architecture and authoring; coder does not perform plan/sprint/architecture authoring.",
 		markersBlock(markers),
 	].filter(Boolean).join("\n");
 }

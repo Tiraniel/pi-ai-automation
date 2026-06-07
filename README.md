@@ -433,6 +433,8 @@ No configuration is required. The extension works out of the box with safe defau
 - Default cache path: `~/.pi/agent/repo-memory/` (outside the repo)
 - Default exclusions: secrets, generated artifacts, large binaries, IDE files, lockfiles
 - Secret redaction enabled before hashing or storage
+- `repo_context` navigation-first defaults: `maxFiles=12`, `maxTokens=3000`, `includeExcerpts=false`
+- Auto-brief defaults: `maxTokens=500`, `includeCards=false`, `includeEvidence=false`
 - No telemetry, no network syncing, no external dashboard
 
 Optional per-project config at `.pi/repo-memory.json`:

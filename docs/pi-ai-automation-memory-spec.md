@@ -285,9 +285,10 @@ All tools are registered via `pi.registerTool()`. Outputs are bounded/truncated.
 ```typescript
 Type.Object({
   query: Type.Optional(Type.String({ description: "Optional focus query to rank relevance" })),
-  maxFiles: Type.Optional(Type.Integer({ default: 30, description: "Max files to include" })),
-  maxTokens: Type.Optional(Type.Integer({ default: 8000, description: "Approximate token budget for response" })),
+  maxFiles: Type.Optional(Type.Integer({ default: 12, description: "Max files to include (navigation-first default)" })),
+  maxTokens: Type.Optional(Type.Integer({ default: 3000, description: "Approximate token budget for response (navigation-first default)" })),
   includeCards: Type.Optional(Type.Boolean({ default: true, description: "Include file cards if fresh" })),
+  includeExcerpts: Type.Optional(Type.Boolean({ default: false, description: "Include file excerpts in markdown + details" })),
   includeEvidence: Type.Optional(Type.Boolean({ default: false, description: "Include recent evidence items" })),
 })
 ```
@@ -304,6 +305,7 @@ Type.Object({
    - `language`
    - `card_freshness`: `"fresh" | "stale" | "missing"`
    - `card_content` (only if `includeCards` and `fresh`; if `stale`, include a one-line stale warning instead)
+   - `excerpts` (array of excerpt objects; empty unless `includeExcerpts=true`)
    - Key imports/exports (bounded list)
 4. If `includeEvidence`, append up to 20 most recent non-stale evidence items with `claim`, `confidence`, `changed_files`.
 5. Append metadata block:
@@ -421,25 +423,22 @@ The extension subscribes to `before_agent_start` and injects a compact repo brie
 
 **Behavior:**
 1. Check if auto-brief is enabled in config (`autoBrief.enabled`). Default: `true`.
-2. Check cooldown: do not regenerate if the last brief was generated within `autoBrief.minIntervalMs` (default: 30s) **and** context_version has not changed.
-3. If cache miss, run a fast path equivalent to `repo_context` with:
-   - `maxFiles: 20`
-   - `maxTokens: 4000`
-   - `includeCards: true`
-   - `includeEvidence: false`
+2. Check cooldown: do not regenerate if the last brief for this repo was generated within `autoBrief.minIntervalMs` (default: 30s).
+3. If not on cooldown, call `syncRepo` to gather current metadata (or return a tiny degraded brief on sync failure).
 4. Format as a brief Markdown block (not a tool result; injected as a `message` with `customType: "repo-memory-brief"`).
 5. The brief includes:
-   - One-line repo identity (`repo_root`, branch, HEAD short SHA, dirty/untracked flags)
+   - Repo identity (`repo_key`, branch, HEAD short SHA, dirty/untracked/conflicts flags)
    - File count, language breakdown (top 5)
-   - Key directories / package roots
-   - Files with stale cards ( flagged for attention )
-   - `context_version` and brief generation timestamp
+   - Key package roots
+   - Card counts (`fresh`, `stale`, `missing`)
+   - `context_version` and generation timestamp
+   - A short hint to continue with `repo_context` when focused.
 
-**Bounded output:** The brief is truncated to `autoBrief.maxTokens` (default 4000). If truncated, it ends with `[Brief truncated: use repo_context tool for full details]`.
+**Bounded output:** The brief is truncated to fit `autoBrief.maxTokens` (default 500). If truncated, it ends with `[Brief truncated: use repo_context tool for navigation details]`.
 
 **No session pollution:** The auto Brain brief is bounded and must not accumulate large permanent session pollution. If the implementation injects the brief as a persistent custom message (`repo-memory-brief`), older messages of the same type must be compacted, suppressed, or replaced so that only the most recent brief remains active. The brief message must stay small (within `autoBrief.maxTokens`).
 
-**No blocking:** The brief generation uses cached index data only. It does not wait for keeper or scouts. If the index needs sync, sync runs synchronously but is optimized to be fast.
+**No blocking:** Cooldown checks are cheap and run before any sync. The brief generation does not wait for keeper or scouts. If the index needs sync, sync runs synchronously but is optimized to be fast; sync failures return a tiny degraded brief while still honoring cooldown.
 
 ---
 
@@ -688,14 +687,15 @@ Config file: `.pi/repo-memory.json` (project-local, optional). If absent, hard-c
 
 **`autoBrief`**
 - `enabled`: `true`
-- `maxTokens`: `4000`
+- `maxTokens`: `500`
 - `minIntervalMs`: `30000`
-- `includeCards`: `true`
+- `includeCards`: `false`
 - `includeEvidence`: `false`
 
 **`tools`**
-- `repo_context.maxFiles`: `30`
-- `repo_context.maxTokens`: `8000`
+- `repo_context.maxFiles`: `12`
+- `repo_context.maxTokens`: `3000`
+- `tools.repo_context.includeExcerpts`: `false`
 - `repo_health_report.maxFindings`: `20`
 - `repo_health_report.includeGanttDefault`: `false`
 - `repo_health_report.forceRefreshDefault`: `false`

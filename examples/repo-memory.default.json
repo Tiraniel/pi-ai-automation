@@ -58,15 +58,16 @@
   },
   "autoBrief": {
     "enabled": true,
-    "maxTokens": 4000,
+    "maxTokens": 500,
     "minIntervalMs": 30000,
-    "includeCards": true,
+    "includeCards": false,
     "includeEvidence": false
   },
   "tools": {
     "repo_context": {
-      "maxFiles": 30,
-      "maxTokens": 8000
+      "maxFiles": 12,
+      "maxTokens": 3000,
+      "includeExcerpts": false
     },
     "repo_health_report": {
       "maxFindings": 20,

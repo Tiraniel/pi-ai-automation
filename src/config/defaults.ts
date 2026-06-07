@@ -6,11 +6,11 @@
 export const DEFAULT_CACHE_BASE = "~/.pi/agent/repo-memory";
 
 export const DEFAULT_AUTO_BRIEF_ENABLED = true;
-export const DEFAULT_AUTO_BRIEF_MAX_TOKENS = 4000;
+export const DEFAULT_AUTO_BRIEF_MAX_TOKENS = 500;
 export const DEFAULT_AUTO_BRIEF_MIN_INTERVAL_MS = 30000;
 
 export const DEFAULT_TOOLS = {
-	repo_context: { maxFiles: 30, maxTokens: 8000 },
+	repo_context: { maxFiles: 12, maxTokens: 3000, includeExcerpts: false },
 	repo_health_report: { maxFindings: 20, includeGanttDefault: false, forceRefreshDefault: false },
 } as const;
 

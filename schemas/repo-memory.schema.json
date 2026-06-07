@@ -156,18 +156,18 @@
           "type": "integer",
           "minimum": 500,
           "description": "Approximate token budget for the brief.",
-          "default": 4000
+          "default": 500
         },
         "minIntervalMs": {
           "type": "integer",
           "minimum": 0,
-          "description": "Minimum time between brief regenerations if context_version has not changed.",
+          "description": "Minimum time between auto-brief attempts for the same repo.",
           "default": 30000
         },
         "includeCards": {
           "type": "boolean",
           "description": "Include file cards in the brief when fresh.",
-          "default": true
+          "default": false
         },
         "includeEvidence": {
           "type": "boolean",
@@ -187,12 +187,17 @@
             "maxFiles": {
               "type": "integer",
               "minimum": 1,
-              "default": 30
+              "default": 12
             },
             "maxTokens": {
               "type": "integer",
               "minimum": 500,
-              "default": 8000
+              "default": 3000
+            },
+            "includeExcerpts": {
+              "type": "boolean",
+              "description": "Include file excerpts in repo_context output/details.",
+              "default": false
             }
           },
           "additionalProperties": false

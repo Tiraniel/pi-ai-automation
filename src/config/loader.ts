@@ -25,6 +25,7 @@ export interface RepoMemoryConfig {
 		repo_context: {
 			maxFiles: number;
 			maxTokens: number;
+			includeExcerpts: boolean;
 		};
 		repo_health_report: {
 			maxFindings: number;
@@ -151,6 +152,7 @@ export function loadConfig(repoRoot: string): RepoMemoryConfig {
 			repo_context: {
 				maxFiles: num(repoContextSrc.maxFiles, DEFAULT_TOOLS.repo_context.maxFiles, 1, 100),
 				maxTokens: num(repoContextSrc.maxTokens, DEFAULT_TOOLS.repo_context.maxTokens, 100, 100000),
+				includeExcerpts: bool(repoContextSrc.includeExcerpts, DEFAULT_TOOLS.repo_context.includeExcerpts),
 			},
 			repo_health_report: {
 				maxFindings: num(repoHealthSrc.maxFindings, DEFAULT_TOOLS.repo_health_report.maxFindings, 1, 1000),
