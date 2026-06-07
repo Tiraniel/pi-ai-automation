@@ -35,9 +35,22 @@ import {
 	resolveDelegateDisplayMode,
 	resolveReviewerSwarmConfig,
 } from "./workflow/delegate";
+import { registerArchitectureTools } from "./workflow/architecture";
+import {
+	ensureManagedGlobalWorkflow,
+	inspectGlobalWorkflowState,
+} from "./workflow/runtime/bootstrap";
 
 export default function brainWorkflow(pi: ExtensionAPI) {
 	loadGonkaEnvFromDefaultDotenv();
+
+	if (process.env.PI_WORKFLOW_CHILD !== "1") {
+		try {
+			ensureManagedGlobalWorkflow();
+		} catch {
+			// bootstrap is best effort at startup
+		}
+	}
 
 	pi.registerFlag("workflow-agent", {
 		description: "Workflow agent for this process: brain or none",
@@ -61,6 +74,7 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 	registerDelegateTools(pi);
 	registerRoomTools(pi);
 	registerDelegateDoneTools(pi);
+	registerArchitectureTools(pi);
 
 	pi.registerCommand("workflow", {
 		description: "Show effective brain/coder/reviewer workflow presets",
@@ -71,13 +85,43 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 			const gonkaEnv = getGonkaEnvStatus();
 			const delegateMode = resolveDelegateDisplayMode(loaded.config);
 			const cmuxAvailable = isCmuxAvailable();
+			const globalWorkflowState = inspectGlobalWorkflowState();
+			const configDiagnostics = loaded.configDiagnostics ?? [];
+			const errorCount = configDiagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
+			const warningCount = configDiagnostics.filter((diagnostic) => diagnostic.severity === "warning").length;
+			const sourceLines = loaded.sources.map((source) => {
+				const managed = [
+					source.managedBy ? `managedBy=${source.managedBy}` : undefined,
+					source.managedVersion ? `managedVersion=${source.managedVersion}` : undefined,
+				];
+				const parts = [
+					`scope=${source.scope}`,
+					`format=${source.format}`,
+					`version=${source.version ?? "1"}`,
+					`selected=${source.selected ? "yes" : "no"}`,
+					`path=${source.path}`,
+					...managed.filter(Boolean),
+				];
+				return `- ${parts.join(" ")}`;
+			});
+			const diagnosticPreview = configDiagnostics
+				.slice(0, 5)
+				.map((diagnostic) => `[${diagnostic.severity}] ${diagnostic.code}: ${diagnostic.message}`);
 			const lines = [
 				"Pi workflow: brain -> coder -> reviewer",
 				`global: ${loaded.globalPath}`,
+				`global preset source: ${globalWorkflowState.state}`,
 				`project override: ${loaded.projectPath ?? "(none)"}`,
+				`config diagnostics: errors=${errorCount} warnings=${warningCount}`,
+				"",
+				"loaded.sources:",
+				...sourceLines,
 				"",
 				`profile: ${loaded.profileId} source=${loaded.profileSource} (${profile.label})`,
 				`gonka: provider=${GONKA_PROVIDER_NAME} ${GONKA_BROKER_URL_ENV}=${gonkaEnv.url} ${GONKA_BROKER_API_KEY_ENV}=${gonkaEnv.apiKey}`,
+				"",
+				`config diagnostics (${configDiagnostics.length}):`,
+				...diagnosticPreview.map((diagnostic) => `- ${diagnostic}`),
 				"",
 				formatPreset("brain", getAgentPreset(loaded.config, "brain")),
 				formatPreset("coder", getAgentPreset(loaded.config, "coder")),

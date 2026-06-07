@@ -1,38 +1,29 @@
 {
-  "autoApplyBrain": true,
-  "delegateDisplay": "headless",
-  "delegatePaneAutoClose": true,
-  "reviewerSwarm": {
-    "enabled": true,
-    "maxConcurrency": 2,
-    "targets": [
-      "Requirements and acceptance criteria coverage",
-      "Correctness and regression risks",
-      "Tests and validation quality",
-      "Security, performance, and maintainability"
-    ]
-  },
-  "agents": {
-    "brain": {
-      "provider": "openai-codex",
-      "model": "gpt-5.5",
-      "thinkingLevel": "xhigh",
-      "instructions": "Optional: override Brain orchestration instructions."
-    },
-    "coder": {
-      "provider": "openai-codex",
-      "model": "gpt-5.3-codex",
-      "thinkingLevel": "medium",
-      "tools": ["read", "bash", "edit", "write", "grep", "find", "ls", "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status"],
-      "includeKarpathyGuidelines": true,
-      "instructions": "Optional: override Coder instructions."
-    },
-    "reviewer": {
-      "provider": "openai-codex",
-      "model": "gpt-5.5",
-      "thinkingLevel": "high",
-      "tools": ["read", "bash", "grep", "find", "ls", "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status"],
-      "instructions": "Optional: override Reviewer instructions."
-    }
-  }
+	"_comment_purpose": "High-level v2 workflow definition. This file intentionally does NOT contain model ids, tool names, prompt text, or reviewer-swarm configuration. It only references catalog entries by id. Brain orchestration is constrained to meta.activeAgents.",
+	"_comment_catalog_files": "All concrete model ids, tool lists, prompt packs, and quality gates live in catalog files. v2 runtime consumes these catalog references via the resolved workflow graph.",
+	"_comment_reviewer_swarm": "Reviewer-swarm goals live in the quality-gates catalog and are attached to the reviewer agent via `agentCatalog.agents[reviewer-default].qualityGates`; the resolver derives the swarm identity from resolved reviewer quality gates whose catalog gate has `kind: review-goal`.",
+	"version": 2,
+	"meta": {
+		"name": "default-pi-workflow",
+		"description": "Default three-agent flow: brain orchestrates, coder implements, reviewer reviews with a goal-aligned reviewer swarm.",
+		"activeAgents": ["brain", "coder", "reviewer"]
+	},
+	"direction": "sequential",
+	"flow": [
+		{ "role": "brain" },
+		{ "role": "coder" },
+		{ "role": "reviewer" }
+	],
+	"roles": [
+		{ "role": "brain", "agent": "brain-default" },
+		{ "role": "coder", "agent": "coder-default" },
+		{ "role": "reviewer", "agent": "reviewer-default" }
+	],
+	"references": {
+		"agentCatalog": "workflow.agent-catalog.json",
+		"modelPresets": "workflow.model-presets.json",
+		"toolProfiles": "workflow.tool-profiles.json",
+		"promptPacks": "workflow.prompt-packs.json",
+		"qualityGates": "workflow.quality-gates.json"
+	}
 }

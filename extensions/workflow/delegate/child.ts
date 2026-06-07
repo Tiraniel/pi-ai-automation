@@ -25,7 +25,9 @@ import { getWorkflowRunsRoot, buildRoomCommunicationBlock } from "../rooms";
 import { KARPATHY_GUIDELINES_PROMPT } from "../prompts";
 import { resolveModelArg } from "../runtime/config";
 import {
+	DELEGATE_ACTIVITY_ENV_VAR,
 	DELEGATE_DONE_ENV_VAR,
+	DELEGATE_RUN_ID_ENV_VAR,
 	SUB_AGENT_DONE_TOOL_NAME,
 	DELEGATE_DONE_TOOL_NAME,
 } from "./constants";
@@ -211,7 +213,15 @@ export function buildChildEnv(parentCwd: string, roomContext?: ResolvedRoomConte
 
 export function buildHeadlessChildEnv(parentCwd: string, roomContext?: ResolvedRoomContext): NodeJS.ProcessEnv {
 	const childEnv: NodeJS.ProcessEnv = { ...process.env };
-	for (const key of [ROOM_ENV_ROOM_ROOT, ROOM_ENV_ROOM_ID, ROOM_ENV_AGENT_ID, ROOM_ENV_AGENT_ROLE, DELEGATE_DONE_ENV_VAR]) {
+	for (const key of [
+		ROOM_ENV_ROOM_ROOT,
+		ROOM_ENV_ROOM_ID,
+		ROOM_ENV_AGENT_ID,
+		ROOM_ENV_AGENT_ROLE,
+		DELEGATE_DONE_ENV_VAR,
+		DELEGATE_ACTIVITY_ENV_VAR,
+		DELEGATE_RUN_ID_ENV_VAR,
+	]) {
 		delete childEnv[key];
 	}
 	for (const [key, value] of Object.entries(buildChildEnv(parentCwd, roomContext))) {

@@ -9,14 +9,25 @@
 // share the same delegate progress shape; the actual progress formatting
 // helpers are imported from `./messages`.
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { DelegateRunResult, UsageStats } from "../types";
-import { resolveRoomContextFromDelegateParams, type ResolvedRoomContext } from "../rooms";
+import { getWorkflowRunsRoot, resolveRoomContextFromDelegateParams, type ResolvedRoomContext } from "../rooms";
 import { loadWorkflowConfig } from "../runtime/config";
-import { MAX_RENDERED_PROGRESS, MAX_TASK_PREVIEW } from "./constants";
+import {
+	DELEGATE_MANIFEST_DIR,
+	DELEGATE_PANE_ACTIVITY_STALE_MS,
+	DELEGATE_STATUS_LIMIT_DEFAULT,
+	MAX_RENDERED_PROGRESS,
+	MAX_TASK_PREVIEW,
+} from "./constants";
+import {
+	markArchitecturePhaseUpdate,
+	resolveArchitectureContext,
+} from "./architecture-gate";
 import {
 	formatDelegateProgressLine,
 	formatUsage,
@@ -26,7 +37,152 @@ import {
 	truncateText,
 } from "./messages";
 import { runDelegateAgent } from "./runner";
-import { resolveReviewerSwarmConfig, runReviewerSwarm } from "./swarm";
+import { parseReviewerVerdict, resolveReviewerSwarmConfig, runReviewerSwarm } from "./swarm";
+
+interface DelegateManifest {
+	manifestVersion: number;
+	runId: string;
+	startedAt?: string;
+	updatedAt?: string;
+	agent: string;
+	task: string;
+	taskPreview?: string;
+	groupKey?: string;
+	tabTitle?: string;
+	surface?: string;
+	state?: "running" | "completed" | "failed" | "aborted";
+	exitCode?: number;
+	latestEvent?: string;
+	activity?: {
+		version?: number;
+		phase?: "starting" | "active" | "waiting" | "done";
+		lastEvent?: string;
+		updatedAt?: number;
+	};
+	roomContext?: {
+		roomId?: string;
+		agentId?: string;
+		role?: string;
+	};
+}
+
+function getToolResultText(result: any): string {
+	return (
+		result?.finalOutput
+		|| getFinalAssistantText((result as { messages?: unknown[] }).messages as any)
+		|| (typeof result?.errorMessage === "string" ? result.errorMessage : "")
+		|| (typeof result?.stderr === "string" ? result.stderr : "")
+		|| "(no output)"
+	);
+}
+
+function safeReadManifest(filePath: string): DelegateManifest | undefined {
+	try {
+		const raw = fs.readFileSync(filePath, "utf8");
+		const parsed = JSON.parse(raw) as DelegateManifest;
+		if (!parsed || typeof parsed !== "object" || typeof parsed.runId !== "string") return undefined;
+		return parsed;
+	} catch {
+		return undefined;
+	}
+}
+
+function formatManifestLine(manifest: DelegateManifest): string {
+	const updated = manifest.updatedAt || manifest.startedAt || new Date().toISOString();
+	const updatedText = (() => {
+		try {
+			return new Date(updated).toISOString();
+		} catch {
+			return String(updated);
+		}
+	})();
+	const preview = manifest.taskPreview || manifest.task || "";
+	const room = manifest.roomContext?.roomId ? ` room=${manifest.roomContext.roomId}` : "";
+	const activityText = manifest.activity
+		? `${manifest.activity.phase ?? "waiting"}${manifest.activity.lastEvent ? `:${manifest.activity.lastEvent}` : ""}`
+		: "n/a";
+	const activityAgeMs = manifest.activity?.updatedAt ? Date.now() - manifest.activity.updatedAt : undefined;
+	const ageText = typeof activityAgeMs === "number" ? ` age=${Math.max(0, Math.floor(activityAgeMs / 1000))}s${activityAgeMs > DELEGATE_PANE_ACTIVITY_STALE_MS ? " STALE" : ""}` : "";
+	const activity = `${activityText}${ageText}`;
+	return `${manifest.runId} ${manifest.state ?? "running"} ${manifest.agent || "agent"} ${manifest.exitCode !== undefined ? `exit=${manifest.exitCode}` : ""} ${manifest.tabTitle ?? ""} @ ${updatedText}${room}\n  task: ${preview}\n  surface: ${manifest.surface || "-"} activity: ${activity}`;
+}
+
+function registerDelegateStatusTool(pi: ExtensionAPI): void {
+	pi.registerTool({
+		name: "workflow_delegate_status",
+		label: "Delegate Status",
+		description: "List parent-visible pane delegate run manifests for the most recent delegated executions.",
+		promptSnippet: "Check active/completed pane delegates and their activity.",
+		promptGuidelines: [
+			"Use this when a pane delegate appears stuck or before taking action to inspect recent delegation progress.",
+		],
+		parameters: Type.Object({
+			runId: Type.Optional(Type.String({ description: "Optional exact runId to filter" })),
+			roomId: Type.Optional(Type.String({ description: "Optional room id filter" })),
+			limit: Type.Optional(Type.Integer({ minimum: 1, description: `Maximum entries returned (defaults to ${DELEGATE_STATUS_LIMIT_DEFAULT}).` })),
+		}),
+		renderResult(result: any) {
+			const output = String(result?.content?.[0]?.text ?? "");
+			return new Text(output);
+		},
+		execute: async (_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
+			const runIdFilter = typeof params?.runId === "string" ? params.runId.trim() : "";
+			const roomIdFilter = typeof params?.roomId === "string" ? params.roomId.trim() : "";
+			const configuredLimit = Number.isFinite(Number(params?.limit)) ? Number(params.limit) : DELEGATE_STATUS_LIMIT_DEFAULT;
+			const limit = Math.max(1, Math.min(200, configuredLimit));
+			const root = getWorkflowRunsRoot(typeof ctx?.cwd === "string" ? ctx.cwd : process.cwd());
+			const manifestDir = path.join(root, DELEGATE_MANIFEST_DIR);
+			let manifestFiles: string[] = [];
+			try {
+				manifestFiles = (await fs.promises.readdir(manifestDir, { withFileTypes: true })).filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map((entry) => entry.name);
+			} catch {
+				manifestFiles = [];
+			}
+
+			const manifests: DelegateManifest[] = [];
+			for (const name of manifestFiles) {
+				const manifest = safeReadManifest(path.join(manifestDir, name));
+				if (!manifest) continue;
+				if (runIdFilter && manifest.runId !== runIdFilter) continue;
+				if (roomIdFilter && manifest.roomContext?.roomId !== roomIdFilter) continue;
+				manifests.push(manifest);
+			}
+
+			manifests.sort((a, b) => {
+				const ad = new Date(a.updatedAt || a.startedAt || 0).getTime() || 0;
+				const bd = new Date(b.updatedAt || b.startedAt || 0).getTime() || 0;
+				return bd - ad;
+			});
+
+			if (!runIdFilter) {
+				manifests.splice(limit);
+			}
+			if (manifests.length > limit) {
+				manifests.length = limit;
+			}
+
+			if (manifests.length === 0) {
+				return {
+					content: [{ type: "text", text: `No delegate manifests found under ${manifestDir}` }],
+					details: { count: 0, items: [] },
+				};
+			}
+
+			const lines = manifests.map(formatManifestLine);
+			const statusSummary = runIdFilter
+				? `Showing delegate manifest for ${runIdFilter}`
+				: `Showing ${manifests.length} most recent delegate manifest(s)`;
+			const output = `${statusSummary}:\n${lines.join("\n\n")}`;
+			return {
+				content: [{ type: "text", text: output }],
+				details: {
+					count: manifests.length,
+					items: manifests,
+				},
+			};
+		},
+	});
+}
 
 function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 	const toolName = agent === "coder" ? "delegate_to_coder" : "delegate_to_reviewer";
@@ -47,6 +203,10 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 		parameters: Type.Object({
 			task: Type.String({ description: `Self-contained task for ${agent}` }),
 			cwd: Type.Optional(Type.String({ description: "Working directory for the delegated Pi process; defaults to current cwd" })),
+			architecture: Type.Object({
+				planId: Type.String({ description: "Architecture plan id from workflow_record_architecture_plan." }),
+				phase: Type.Union([Type.Literal("phaseA"), Type.Literal("phaseB")]),
+			}, { description: "Required runtime architecture gate context." }),
 			room: Type.Optional(Type.Object({
 				roomId: Type.Optional(Type.String({ description: "Workflow room id; falls back to PI_WORKFLOW_ROOM_ID env or the active room from .pi/workflow-runs/current.json" })),
 				agentId: Type.Optional(Type.String({ description: "Agent id within the room; defaults to the agent name (coder or reviewer) or PI_WORKFLOW_AGENT_ID env" })),
@@ -75,7 +235,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			const recent = progress.slice(-(expanded ? MAX_RENDERED_PROGRESS : 5));
 			const usageText = details.usage ? formatUsage(details.usage) : "";
 			const taskText = details.task ?? (details as { taskPreview?: string }).taskPreview;
-			const output = details.finalOutput || (result?.content?.[0]?.type === "text" ? result.content[0].text : "");
+			const output = getToolResultText(result);
 			const thinkingChars = (details as any).thinkingChars ?? 0;
 
 			if (!expanded) {
@@ -182,6 +342,17 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 				};
 			}
 
+			const architecture = resolveArchitectureContext(ctx.cwd, task, (params as any).architecture, agent, (ctx as any).sessionManager);
+			if (!architecture.ok) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: architecture.text }],
+					details: architecture.details,
+				};
+			}
+			const delegatedTask = architecture.delegatedTask;
+			const architectureRequirement = architecture.requirement;
+
 			let roomContext: ResolvedRoomContext | undefined;
 			if ((params as any).room && typeof (params as any).room === "object") {
 				try {
@@ -195,28 +366,46 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					};
 				}
 			}
-
 			if (agent === "reviewer") {
 				const goals = Array.isArray((params as any).goals)
 					? (params as any).goals.map((goal: unknown) => String(goal).trim()).filter((goal: string) => goal.length > 0)
 					: undefined;
 				const swarmConfig = resolveReviewerSwarmConfig(loadWorkflowConfig(ctx.cwd).config);
 				if (!swarmConfig.enabled) {
-					const singleTask = goals?.length ? `${task}\n\nReview goals:\n${goals.map((goal: string) => `- ${goal}`).join("\n")}` : task;
+					const singleTask = goals?.length
+						? `${delegatedTask}\n\nReview goals:\n${goals.map((goal: string) => `- ${goal}`).join("\n")}`
+						: delegatedTask;
 					const result = await runDelegateAgent(ctx, "reviewer", singleTask, requestedCwd, signal, onUpdate, roomContext);
-					const finalOutput = getFinalAssistantText(result.messages) || result.errorMessage || result.stderr || "(no output)";
 					const status = normalizeFinalStatus(result);
+					const finalOutput = getToolResultText(result);
+					const verdict = parseReviewerVerdict(finalOutput);
+					const phaseStatus = verdict === "CHANGES_REQUESTED" || status !== "completed" ? "changes_requested" : "review_approved";
+					const reviewerUpdate = markArchitecturePhaseUpdate(
+						ctx.cwd,
+						architectureRequirement,
+						phaseStatus,
+						`Delegation ${agent} returned ${status}`,
+						(ctx as any).sessionManager,
+					);
 					const usageText = formatUsage(result.usage);
+					const details = {
+						...result,
+						task: delegatedTask,
+						planId: architectureRequirement.planId,
+						phase: architectureRequirement.phase,
+						architectureGatePlanUpdateError: reviewerUpdate,
+					};
+					const isReviewFailing = verdict === "CHANGES_REQUESTED" || status !== "completed";
 					return {
 						content: [{ type: "text", text: `[reviewer] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}` }],
-						details: result,
-						isError: status !== "completed",
+						details,
+						isError: isReviewFailing,
 					};
 				}
 
-				const swarm = await runReviewerSwarm(ctx, task, requestedCwd, goals, signal, onUpdate, roomContext);
+				const swarm = await runReviewerSwarm(ctx, delegatedTask, requestedCwd, goals, signal, onUpdate, roomContext);
 				const lines = swarm.results.map((item, index) => {
-					const detail = item.result?.finalOutput || item.result?.errorMessage || item.result?.stderr || "(no output)";
+					const detail = item.result ? getToolResultText(item.result) : "(no output)";
 					return `[${index + 1}] ${item.target}\n${item.verdict} (${item.status})\n${detail}`;
 				});
 				const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
@@ -230,13 +419,21 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					usage.contextTokens = Math.max(usage.contextTokens, item.result.usage.contextTokens);
 					usage.turns += item.result.usage.turns;
 				}
-				const finalOutput = lines.join("\n\n");
+				const hasChangesRequested = swarm.results.some((item) => item.verdict === "CHANGES_REQUESTED");
 				const status = swarm.aborted ? "aborted" : swarm.failed ? "failed" : "completed";
+				const reviewerUpdate = markArchitecturePhaseUpdate(
+					ctx.cwd,
+					architectureRequirement,
+					status === "completed" && !hasChangesRequested ? "review_approved" : "changes_requested",
+					`Delegation ${agent} returned ${status}`,
+					(ctx as any).sessionManager,
+				);
+				const finalOutput = lines.join("\n\n");
 				return {
 					content: [{ type: "text", text: `[reviewer] ${status}\n\n${finalOutput}` }],
 					details: {
 						agent: "reviewer",
-						task,
+						task: delegatedTask,
 						cwd: requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd,
 						status,
 						swarm: swarm.results,
@@ -244,25 +441,37 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 						usage,
 						exitCode: swarm.failed ? 1 : 0,
 						finalOutput,
+						planId: architectureRequirement.planId,
+						phase: architectureRequirement.phase,
+						architectureGatePlanUpdateError: reviewerUpdate,
 					},
-					isError: swarm.failed,
+					isError: status !== "completed",
 				};
 			}
 
-			const result = await runDelegateAgent(ctx, agent, task, requestedCwd, signal, onUpdate, roomContext);
-			const finalOutput = getFinalAssistantText(result.messages) || result.errorMessage || result.stderr || "(no output)";
+			const result = await runDelegateAgent(ctx, agent, delegatedTask, requestedCwd, signal, onUpdate, roomContext);
 			const status = normalizeFinalStatus(result);
+			const finalOutput = getToolResultText(result);
 			const failed = status !== "completed";
 			const usageText = formatUsage(result.usage);
-
+			const coderUpdate = failed
+				? undefined
+				: markArchitecturePhaseUpdate(
+						ctx.cwd,
+						architectureRequirement,
+						"coder_completed",
+						`Delegation ${agent} returned ${status}`,
+						(ctx as any).sessionManager,
+					);
 			return {
-				content: [
-					{
-						type: "text",
-						text: `[${agent}] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}`,
-					},
-				],
-				details: result,
+				content: [{ type: "text", text: `[${agent}] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}` }],
+				details: {
+					...result,
+					task: delegatedTask,
+					planId: architectureRequirement.planId,
+					phase: architectureRequirement.phase,
+					architectureGatePlanUpdateError: coderUpdate,
+				},
 				isError: failed,
 			};
 		},
@@ -272,4 +481,5 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 export function registerDelegateTools(pi: ExtensionAPI): void {
 	makeDelegateTool(pi, "coder");
 	makeDelegateTool(pi, "reviewer");
+	registerDelegateStatusTool(pi);
 }

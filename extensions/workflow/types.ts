@@ -87,6 +87,26 @@ export type V1AgentPreset = AgentPreset;
 export type V1ReviewerSwarmConfig = ReviewerSwarmConfig;
 export type V1WorkflowConfig = WorkflowConfig;
 
+export interface WorkflowConfigLoadDiagnostic {
+	scope: "global" | "project";
+	severity: V2Diagnostic["severity"] | "info";
+	code: string;
+	message: string;
+	source?: string;
+}
+
+export interface WorkflowConfigSourceInfo {
+	scope: "global" | "project";
+	path: string;
+	exists: boolean;
+	format: "v1" | "v2";
+	version?: number;
+	managedBy?: string;
+	managedVersion?: string;
+	diagnostics?: WorkflowConfigLoadDiagnostic[];
+	selected: boolean;
+}
+
 export interface LoadedWorkflowConfig {
 	config: WorkflowConfig;
 	globalPath: string;
@@ -95,6 +115,8 @@ export interface LoadedWorkflowConfig {
 	projectSettings: Record<string, unknown> | undefined;
 	profileId: WorkflowProfileId;
 	profileSource: WorkflowProfileSource;
+	sources: WorkflowConfigSourceInfo[];
+	configDiagnostics: WorkflowConfigLoadDiagnostic[];
 }
 
 export type WorkflowProfileId = "default" | "gonka-hybrid" | "premium-brain-gonka-workers";
@@ -146,6 +168,15 @@ export interface DelegateRunResult {
 	surface?: string;
 	/** Session JSONL file path when pane mode was used. */
 	sessionFile?: string;
+	/** stderr file path written by the pane transport (when running in pane mode). */
+	stderrFile?: string;
+	/** Parent-visible manifest/run identifier for pane-mode status tooling. */
+	runId?: string;
+	/** Sidecar file paths used by pane-mode completion/liveness tracking. */
+	doneFile?: string;
+	activityFile?: string;
+	manifestFile?: string;
+	activityState?: "starting" | "active" | "waiting" | "done";
 }
 
 export interface ReviewerTargetResult {

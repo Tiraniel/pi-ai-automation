@@ -1,15 +1,9 @@
 /**
  * Barrel for the v2 workflow config layer.
  *
- * Slice 1 intentionally does NOT export a file loader, a default catalog, or
- * any side-effecting module. Consumers that need the resolver should import
- * `resolveWorkflow` and feed it normalized v2 inputs.
- *
- * Slice 2 adds `loadV2Workflow` — the side-effect boundary that reads a v2
- * workflow JSON file plus referenced catalog JSON files from disk and returns
- * a normalized/resolved v2 config. It is still NOT wired into the v1 runtime
- * (`extensions/brain-workflow.ts`); it is a pure loader seam for tests and
- * future slices.
+ * Exports v2 normalize/resolve/load helpers used by the runtime. `loadWorkflowConfig`
+ * resolves and loads versioned workflow files through this module so v2
+ * config and catalog references are consumed at startup/delegate time.
  */
 
 export {

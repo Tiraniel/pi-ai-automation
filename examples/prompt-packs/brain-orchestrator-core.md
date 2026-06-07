@@ -1,12 +1,12 @@
 # Brain Orchestrator Core (prompt pack example)
 
 Example content for the `brain-orchestrator-core` prompt pack referenced from
-`examples/workflow.prompt-packs.v2.json`. Slice 1 keeps this as a plain
-Markdown file; the resolver surfaces the path on the resolved identity so
-future slices can load the file at delegation time.
+`examples/workflow.prompt-packs.json`. Prompt packs are catalog-backed markdown
+entries referenced by `path` in that catalog.
 
-> Real production content lives in the project's prompt catalog and is loaded
-> by `extensions/brain-workflow.ts` via the new v2 resolver.
+> Current runtime behavior injects only inline prompt-pack text. This markdown
+> file is referenced by `path` as metadata/example documentation and is not read
+> or injected by the resolver/runtime.
 
 ## Identity
 

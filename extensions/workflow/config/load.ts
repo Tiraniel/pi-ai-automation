@@ -47,9 +47,16 @@ import type {
 
 export interface V2WorkflowLoadDiagnostic extends V2Diagnostic {}
 
+interface V2WorkflowSourceMeta {
+	managedBy?: string;
+	managedVersion?: string;
+}
+
 export interface V2WorkflowLoadResult {
 	/** Normalized v2 workflow when the file parsed and normalized successfully. */
 	workflow?: V2Workflow;
+	/** Raw workflow source metadata for diagnostics and provenance tracking. */
+	sourceMeta?: V2WorkflowSourceMeta;
 	/** Loaded and normalized catalogs. Missing or malformed catalogs are omitted. */
 	catalogs?: V2CatalogBundle;
 	/** Resolved workflow when the workflow normalized successfully. */
@@ -120,10 +127,17 @@ export function loadV2Workflow(workflowFilePath: string): V2WorkflowLoadResult {
 		return { diagnostics };
 	}
 
+	const sourceMeta: V2WorkflowSourceMeta = {};
+	if (rawWorkflow !== null && typeof rawWorkflow === "object") {
+		const raw = rawWorkflow as Record<string, unknown>;
+		sourceMeta.managedBy = typeof raw._managedBy === "string" ? raw._managedBy : undefined;
+		sourceMeta.managedVersion = typeof raw._managedVersion === "string" ? raw._managedVersion : undefined;
+	}
+
 	const workflow = normalizeV2Workflow(rawWorkflow);
 	if (!workflow) {
 		pushDiag(diagnostics, "error", "workflow-malformed", "Workflow file is not a valid v2 workflow.");
-		return { diagnostics };
+		return { diagnostics, sourceMeta };
 	}
 
 	const workflowDir = path.dirname(path.resolve(workflowFilePath));
@@ -176,6 +190,7 @@ export function loadV2Workflow(workflowFilePath: string): V2WorkflowLoadResult {
 	const resolved = resolveWorkflow(workflow, catalogs);
 
 	return {
+		sourceMeta,
 		workflow,
 		catalogs,
 		resolved,

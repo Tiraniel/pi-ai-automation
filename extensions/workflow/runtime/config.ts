@@ -19,6 +19,8 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 
 import { DEFAULT_CONFIG } from "../defaults";
 import { GONKA_DOTENV_KEYS, GONKA_DOTENV_PATH, WORKFLOW_PROFILES } from "../profiles";
+import { adaptV2ResolvedWorkflow } from "./v2-adapter";
+import { detectConfigVersion, loadV2Workflow } from "../config";
 import type {
 	AgentName,
 	AgentPreset,
@@ -27,6 +29,8 @@ import type {
 	WorkflowProfile,
 	WorkflowProfileId,
 	WorkflowProfileSource,
+	WorkflowConfigSourceInfo,
+	WorkflowConfigLoadDiagnostic,
 } from "../types";
 
 // ============================================================================
@@ -137,6 +141,101 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function makeWorkflowDiagnostic(
+	scope: WorkflowConfigLoadDiagnostic["scope"],
+	severity: WorkflowConfigLoadDiagnostic["severity"],
+	code: string,
+	message: string,
+	source?: string,
+): WorkflowConfigLoadDiagnostic {
+	return { scope, severity, code, message, source };
+}
+
+function dedupeWorkflowDiagnostics(diagnostics: WorkflowConfigLoadDiagnostic[]): WorkflowConfigLoadDiagnostic[] {
+	const seen = new Set<string>();
+	const out: WorkflowConfigLoadDiagnostic[] = [];
+	for (const diag of diagnostics) {
+		const signature = `${diag.severity}|${diag.code}|${diag.message}|${diag.source ?? ""}`;
+		if (seen.has(signature)) continue;
+		seen.add(signature);
+		out.push(diag);
+	}
+	return out;
+}
+
+function mapV2Diagnostics(
+	scope: WorkflowConfigLoadDiagnostic["scope"],
+	diagnostics: { severity: string; code: string; message: string; ref?: { id?: string } }[],
+): WorkflowConfigLoadDiagnostic[] {
+	return diagnostics.map((diag) => makeWorkflowDiagnostic(scope, diag.severity as WorkflowConfigLoadDiagnostic["severity"], diag.code, diag.message, diag.ref?.id));
+}
+
+function ensureV1Config(value: unknown): WorkflowConfig {
+	if (isPlainObject(value)) return value as WorkflowConfig;
+	return {};
+}
+
+function loadV2WorkflowConfig(scope: "global" | "project", filePath: string): {
+	config: WorkflowConfig;
+	source: WorkflowConfigSourceInfo;
+	diagnostics: WorkflowConfigLoadDiagnostic[];
+} {
+	let sourceDiagnostics: WorkflowConfigLoadDiagnostic[] = [];
+	const source: WorkflowConfigSourceInfo = {
+		scope,
+		path: filePath,
+		exists: false,
+		format: "v1",
+		selected: false,
+		diagnostics: sourceDiagnostics,
+	};
+	if (!fs.existsSync(filePath)) {
+		return { config: {}, source, diagnostics: sourceDiagnostics };
+	}
+	source.exists = true;
+	try {
+		const fileText = fs.readFileSync(filePath, "utf-8");
+		const raw = JSON.parse(fileText) as unknown;
+		source.version = detectConfigVersion(raw) || 1;
+		source.format = source.version === 2 ? "v2" : "v1";
+
+		if (source.version === 2) {
+			const loadedWorkflow = loadV2Workflow(filePath);
+			sourceDiagnostics.push(...mapV2Diagnostics(scope, loadedWorkflow.diagnostics));
+			if (loadedWorkflow.sourceMeta) {
+				source.managedBy = loadedWorkflow.sourceMeta.managedBy;
+				source.managedVersion = loadedWorkflow.sourceMeta.managedVersion;
+			}
+			if (!loadedWorkflow.workflow || !loadedWorkflow.resolved) {
+				if (!sourceDiagnostics.some((item) => item.severity === "error")) {
+					sourceDiagnostics.push(
+						makeWorkflowDiagnostic(scope, "error", "workflow-unresolved", "V2 workflow could not be resolved."),
+					);
+				}
+				return { config: {}, source, diagnostics: sourceDiagnostics };
+			}
+			const adapted = adaptV2ResolvedWorkflow(loadedWorkflow.resolved, { scope, path: filePath }, loadedWorkflow.diagnostics, loadedWorkflow.sourceMeta);
+			source.version = adapted.source.version;
+			if (adapted.source.managedBy) source.managedBy = adapted.source.managedBy;
+			if (adapted.source.managedVersion) source.managedVersion = adapted.source.managedVersion;
+			sourceDiagnostics = dedupeWorkflowDiagnostics([
+				...sourceDiagnostics,
+				...adapted.diagnostics.map((diag) =>
+					makeWorkflowDiagnostic(scope, diag.severity as WorkflowConfigLoadDiagnostic["severity"], diag.code, diag.message, diag.ref?.id),
+				),
+			]);
+			source.diagnostics = sourceDiagnostics;
+			return { config: adapted.config, source, diagnostics: sourceDiagnostics };
+		}
+
+		return { config: ensureV1Config(raw), source, diagnostics: sourceDiagnostics };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		sourceDiagnostics.push(makeWorkflowDiagnostic(scope, "error", "workflow-read-failed", message));
+		return { config: {}, source, diagnostics: sourceDiagnostics };
+	}
+}
+
 // Exported (not just private) because the remaining runtime in
 // brain-workflow.ts (resolveReviewerSwarmConfig and any future helper that
 // needs the same merge semantics) reuses it. The other private helpers in
@@ -179,26 +278,36 @@ export function loadWorkflowConfig(cwd: string, options?: { cliProfile?: string 
 	const projectPath = findNearestFile(cwd, path.join(".pi", "workflow.json"));
 	const projectSettingsPath = findNearestFile(cwd, path.join(".pi", "settings.json"));
 
-	const globalConfig = readJsonFile<WorkflowConfig>(globalPath) ?? {};
-	const projectConfig = projectPath ? (readJsonFile<WorkflowConfig>(projectPath) ?? {}) : {};
+	const globalLoaded = loadV2WorkflowConfig("global", globalPath);
+	const projectLoaded = projectPath ? loadV2WorkflowConfig("project", projectPath) : undefined;
+
+	const globalConfig = globalLoaded.config;
+	const projectConfig = projectLoaded?.config ?? {};
 	const projectSettings = projectSettingsPath ? readJsonFile<Record<string, unknown>>(projectSettingsPath) : undefined;
 
 	const cliProfile = options?.cliProfile ?? readWorkflowProfileFlagFromArgv();
 	const profileSelection = resolveWorkflowProfileSelection(cliProfile, globalConfig, projectConfig);
 	const { id: profileId, source: profileSource } = profileSelection;
 
-	// Merge profiles at their source layer:
-	// - global profile: DEFAULT -> PROFILE -> GLOBAL -> PROJECT
-	// - project profile: DEFAULT -> GLOBAL -> PROFILE -> PROJECT
-	// - CLI profile: DEFAULT -> GLOBAL -> PROJECT -> PROFILE
-	// This lets profile: "gonka-hybrid" override older lower-precedence configs,
-	// while fields in the same config file still win over the profile.
 	let config = DEFAULT_CONFIG;
 	if (profileSource === "global") config = applyWorkflowProfile(config, profileId);
 	config = deepMerge(config, globalConfig);
 	if (profileSource === "project") config = applyWorkflowProfile(config, profileId);
 	config = deepMerge(config, projectConfig);
 	if (profileSource === "cli") config = applyWorkflowProfile(config, profileId);
+
+	const allSources: WorkflowConfigSourceInfo[] = [
+		globalLoaded.source,
+		...(projectLoaded ? [projectLoaded.source] : []),
+	];
+	for (const source of allSources) {
+		source.selected = source.scope === profileSource || (source.scope === "global" && source.version === 2) || (source.scope === "project" && source.path === projectLoaded?.source.path);
+	}
+
+	const configDiagnostics: WorkflowConfigLoadDiagnostic[] = [
+		...globalLoaded.diagnostics,
+		...(projectLoaded ? projectLoaded.diagnostics : []),
+	];
 
 	return {
 		config,
@@ -208,6 +317,8 @@ export function loadWorkflowConfig(cwd: string, options?: { cliProfile?: string 
 		projectSettings,
 		profileId,
 		profileSource,
+		sources: allSources,
+		configDiagnostics,
 	};
 }
 

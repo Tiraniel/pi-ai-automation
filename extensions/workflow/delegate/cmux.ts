@@ -1,27 +1,22 @@
-// Workflow delegate runtime — cmux pane/workspace helpers and display-mode resolver.
-// Extracted from extensions/brain-workflow.ts as part of TASK-018 Slice 3.
+// Workflow delegate runtime — cmux pane helpers and display-mode resolver.
 //
-// This module owns the cmux subprocess transport (identify / new-surface /
-// send / move-tab-to-new-workspace / close-surface), the workspace/tab
-// grouping cache, the shell escape used when scripting the pane, and the
-// display-mode resolver. Everything here is independent of the runner —
-// the runner simply calls `createCmuxDelegateTab` and the close helpers.
+// This module owns cmux transport primitives: surface detection/parsing, split
+// + pane surface creation, command dispatch, and small shell helpers.
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import type { AgentName, WorkflowConfig } from "../types";
 import {
-	sanitizeAgentId,
-	sanitizeRole,
-	type ResolvedRoomContext,
-} from "../rooms";
-import { DELEGATE_DISPLAY_ENV } from "./constants";
+	DELEGATE_DISPLAY_ENV,
+	DELEGATE_PANE_SHELL_READY_DELAY_ENV,
+	DELEGATE_PANE_SHELL_READY_DELAY_MS,
+} from "./constants";
+import type { ResolvedRoomContext } from "../rooms";
 import { isPlainObject } from "./messages";
 
-export function resolveDelegateDisplayMode(config: WorkflowConfig): "headless" | "pane" {
+export function resolveDelegateDisplayMode(config: any): "headless" | "pane" {
 	const fromEnv = process.env[DELEGATE_DISPLAY_ENV]?.trim().toLowerCase();
 	if (fromEnv === "headless" || fromEnv === "pane") return fromEnv;
-	const fromConfig = config.delegateDisplay?.trim().toLowerCase();
+	const fromConfig = config?.delegateDisplay?.trim().toLowerCase();
 	if (fromConfig === "headless" || fromConfig === "pane") return fromConfig;
 	if (fromEnv === "auto" || fromConfig === "auto") {
 		return isCmuxAvailable() ? "pane" : "headless";
@@ -53,13 +48,30 @@ export function sendCmuxCommand(args: string[]): { stdout: string; stderr: strin
 	}
 }
 
+export function sendCmuxShellCommand(surfaceId: string, command: string): { stdout: string; stderr: string; ok: boolean } {
+	return sendCmuxCommand(["send", "--surface", surfaceId, `${command}\\n`]);
+}
+
 export interface CmuxSurfaceContext {
 	workspace?: string;
 	pane?: string;
-	window?: string;
+	surface?: string;
 }
 
-export function readStringField(source: Record<string, unknown>, keys: string[]): string | undefined {
+export interface CmuxCreatedSurface {
+	surface: string;
+	pane?: string;
+}
+
+function parseJson(value: string): unknown {
+	try {
+		return JSON.parse(value);
+	} catch {
+		return null;
+	}
+}
+
+function readStringField(source: Record<string, unknown>, keys: string[]): string | undefined {
 	for (const key of keys) {
 		const value = source[key];
 		if (typeof value === "string" && value.trim()) return value.trim();
@@ -67,23 +79,57 @@ export function readStringField(source: Record<string, unknown>, keys: string[])
 	return undefined;
 }
 
-export function parseCmuxSurfaceContext(stdout: string): CmuxSurfaceContext | undefined {
-	try {
-		const parsed = JSON.parse(stdout);
-		if (!isPlainObject(parsed)) return undefined;
-		const source = isPlainObject(parsed.caller) ? parsed.caller : isPlainObject(parsed.focused) ? parsed.focused : parsed;
-		const context = {
-			workspace: readStringField(source, ["workspace_ref", "workspace"]),
-			pane: readStringField(source, ["pane_ref", "pane"]),
-			window: readStringField(source, ["window_ref", "window"]),
-		};
-		return context.workspace || context.pane || context.window ? context : undefined;
-	} catch {
-		return undefined;
-	}
+function readCmuxFieldFromSource(source: unknown): { workspace?: string; pane?: string; surface?: string } | undefined {
+	if (!isPlainObject(source)) return undefined;
+	const workspace = readStringField(source as Record<string, unknown>, ["workspace_ref", "workspace"]);
+	const pane = readStringField(source as Record<string, unknown>, ["pane_ref", "pane"]);
+	const surface = readStringField(source as Record<string, unknown>, ["surface_ref", "surface"]);
+	if (!workspace && !pane && !surface) return undefined;
+	return { workspace, pane, surface };
 }
 
-export const cmuxWorkspaceCache = new Map<string, string>();
+export function parseCmuxSurfaceContext(stdout: string): CmuxSurfaceContext | undefined {
+	const parsed = parseJson(stdout);
+	if (!parsed) return undefined;
+	if (!isPlainObject(parsed)) return undefined;
+	const context =
+		readCmuxFieldFromSource((parsed as Record<string, unknown>).caller) ||
+		readCmuxFieldFromSource((parsed as Record<string, unknown>).focused) ||
+		readCmuxFieldFromSource(parsed);
+	if (!context) return undefined;
+	return {
+		workspace: context.workspace,
+		pane: context.pane,
+		surface: context.surface,
+	};
+}
+
+export function parseCmuxCreatedSurface(stdout: string): CmuxCreatedSurface | undefined {
+	const surfaceMatch = stdout.match(/surface:\S+/i);
+	if (!surfaceMatch) return undefined;
+	const paneMatch = stdout.match(/pane:\S+/i);
+	return {
+		surface: surfaceMatch[0],
+		pane: paneMatch?.[0],
+	};
+}
+
+function readPaneForSurface(surface: string): string | undefined {
+	const result = sendCmuxCommand(["identify", "--json", "--surface", surface]);
+	if (!result.ok) return undefined;
+	const context = parseCmuxSurfaceContext(result.stdout);
+	return context?.pane;
+}
+
+export const cmuxGroupPaneCache = new Map<string, string>();
+
+export function getPaneShellReadyDelayMs(): number {
+	const raw = process.env[DELEGATE_PANE_SHELL_READY_DELAY_ENV];
+	if (!raw) return DELEGATE_PANE_SHELL_READY_DELAY_MS;
+	const parsed = Number.parseInt(raw.trim(), 10);
+	if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+	return DELEGATE_PANE_SHELL_READY_DELAY_MS;
+}
 
 export function deriveGroupKeyAndTitle(roomContext: ResolvedRoomContext | undefined, task: string): { groupKey: string; groupTitle: string } {
 	if (roomContext?.roomId) {
@@ -99,45 +145,68 @@ export function deriveGroupKeyAndTitle(roomContext: ResolvedRoomContext | undefi
 	return { groupKey: title, groupTitle: title };
 }
 
-export function buildTabTitle(groupTitle: string, roomContext: ResolvedRoomContext | undefined, agent: AgentName): string {
+export function buildTabTitle(groupTitle: string, roomContext: ResolvedRoomContext | undefined, agent: string): string {
 	const roleLabel = roomContext?.role
-		? sanitizeRole(roomContext.role)
+		? roomContext.role
 		: roomContext?.agentId
-		? sanitizeAgentId(roomContext.agentId)
+		? roomContext.agentId
 		: agent;
 	const safeGroup = groupTitle.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "task";
-	const safeRole = roleLabel.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || agent;
+	const safeRole = String(roleLabel).replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || agent;
 	return `${safeGroup}-${safeRole}`;
 }
 
-export function createCmuxDelegateTab(title: string, workspace?: string): string | null {
-	const args = ["new-surface", "--type", "terminal"];
-	if (workspace) {
-		args.push("--workspace", workspace);
-	} else {
-		// Gather caller context so the new surface opens in the same workspace/pane
-		const context = parseCmuxSurfaceContext(sendCmuxCommand(["identify", "--json"]).stdout);
-		if (context?.workspace) args.push("--workspace", context.workspace);
-		if (context?.pane) args.push("--pane", context.pane);
-		if (context?.window) args.push("--window", context.window);
-	}
-	const result = sendCmuxCommand(args);
-	if (!result.ok) return null;
-	const match = result.stdout.trim().match(/surface:(\d+)/);
-	if (!match) return null;
-	const surfaceId = match[0]; // preserve "surface:<n>" form
-	if (title) {
-		sendCmuxCommand(["rename-tab", "--surface", surfaceId, title]);
-	}
-	return surfaceId;
+function sanitizeShellArg(value: string): string {
+	return "'" + value.replace(/'/g, "'\"'\"'") + "'";
 }
 
-export function createCmuxWorkspaceForGroup(groupTitle: string, firstSurfaceId: string): string | undefined {
-	const moveResult = sendCmuxCommand(["move-tab-to-new-workspace", "--surface", firstSurfaceId, "--title", groupTitle]);
-	if (!moveResult.ok) return undefined;
-	const identifyResult = sendCmuxCommand(["identify", "--json", "--no-caller", "--surface", firstSurfaceId]);
-	const context = parseCmuxSurfaceContext(identifyResult.stdout);
-	return context?.workspace;
+function sanitizeTabLabel(value: string): string {
+	return value
+		.replace(/[^\w.-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 48);
+}
+
+export function createCmuxSplitSurface(tabTitle: string, fromSurface?: string): CmuxCreatedSurface | null {
+	const args = ["new-split", "right"];
+	if (fromSurface) args.push("--surface", fromSurface);
+	const result = sendCmuxCommand(args);
+	if (!result.ok) return null;
+	const created = parseCmuxCreatedSurface(result.stdout);
+	if (!created) return null;
+	if (tabTitle) {
+		sendCmuxCommand(["rename-tab", "--surface", created.surface, sanitizeTabLabel(tabTitle)]);
+	}
+	if (!created.pane) {
+		created.pane = readPaneForSurface(created.surface);
+	}
+	return created;
+}
+
+export function createCmuxSurfaceInPane(tabTitle: string, pane: string): string | null {
+	const result = sendCmuxCommand(["new-surface", "--pane", pane]);
+	if (!result.ok) return null;
+	const created = parseCmuxCreatedSurface(result.stdout);
+	if (!created?.surface) return null;
+	if (tabTitle) {
+		sendCmuxCommand(["rename-tab", "--surface", created.surface, sanitizeTabLabel(tabTitle)]);
+	}
+	return created.surface;
+}
+
+export function createCmuxDelegateTab(tabTitle: string, groupKey: string): string | null {
+	const cachedPane = cmuxGroupPaneCache.get(groupKey);
+	if (cachedPane) {
+		const existingSurface = createCmuxSurfaceInPane(tabTitle, cachedPane);
+		if (existingSurface) return existingSurface;
+		cmuxGroupPaneCache.delete(groupKey);
+	}
+
+	const sourceSurface = process.env.CMUX_SURFACE_ID;
+	const created = createCmuxSplitSurface(tabTitle, sourceSurface);
+	if (!created) return null;
+	if (created.pane) cmuxGroupPaneCache.set(groupKey, created.pane);
+	return created.surface;
 }
 
 export function closeCmuxSurface(surfaceId: string): void {
@@ -145,6 +214,6 @@ export function closeCmuxSurface(surfaceId: string): void {
 }
 
 export function shellEscape(str: string): string {
-	if (!/[^\w@%=+,./-]/.test(str)) return str;
-	return "'" + str.replace(/'/g, "'\"'\"'") + "'";
+	if (/^[A-Za-z0-9@%_\-+=:,./]+$/.test(str)) return str;
+	return sanitizeShellArg(str);
 }

@@ -1,8 +1,9 @@
 # Karpathy Guidelines (prompt pack example, reference copy)
 
 This file is a placeholder reference copy of the Karpathy guidelines used by
-the Coder role. The real canonical copy lives inside
-`extensions/brain-workflow.ts` as `KARPATHY_GUIDELINES_PROMPT` and is
-injected into the system prompt by the v1 path. Slice 1 keeps a stub here
-so the catalog example references a real file path; future slices can decide
-whether to source the actual guidelines from disk or keep them inlined.
+the Coder role. It is a catalog-backed markdown prompt pack source referenced
+via `path` in `examples/workflow.prompt-packs.json`.
+
+> Current runtime behavior injects only inline prompt-pack text. This markdown
+> file is referenced by `path` as metadata/example documentation and is not read
+> or injected by the resolver/runtime.

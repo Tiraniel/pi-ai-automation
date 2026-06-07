@@ -34,7 +34,7 @@ Child delegates run with:
 - `--mode json --print --no-session`
 - preset `--model`, `--thinking`, and `--tools`
 - `PI_WORKFLOW_CHILD=1` to prevent recursive Brain behavior in child sessions
-- `PI_WORKFLOW_ROOM_ROOT`, `PI_WORKFLOW_ROOM_ID`, `PI_WORKFLOW_AGENT_ID`, `PI_WORKFLOW_AGENT_ROLE` when delegated with `room` context; the root points at the parent's `.pi/workflow-runs` so a delegated child with a sub-`cwd` still shares the same room store (see [Workflow Rooms v1](#workflow-rooms-v1))
+- `PI_WORKFLOW_ROOM_ROOT`, `PI_WORKFLOW_ROOM_ID`, `PI_WORKFLOW_AGENT_ID`, `PI_WORKFLOW_AGENT_ROLE` when delegated with `room` context; the root points at the parent's `.pi/workflow-runs` so a delegated child with a sub-`cwd` still shares the same room store (see [Workflow Rooms](#workflow-rooms))
 
 ## Configuration override
 
@@ -121,7 +121,7 @@ Valid values: `headless`, `pane`, `auto`. The env var takes precedence over conf
 - **Surfaces auto-close by default** after the child finishes. Set `delegatePaneAutoClose: false` to keep them open for inspection.
 - **Initial support is cmux-only.** tmux/zellij are not implemented unless very cheap to add later.
 - **Reviewer swarm** works with pane mode too — each reviewer target may open its own pane when cmux is available.
-- **`sub_agent_done` is required** in pane mode. A child that exits without calling it is treated as a failure, even on exit code 0. The legacy alias `workflow_delegate_done` is still registered for backward compatibility but prompts and system instructions prefer `sub_agent_done`.
+- **`sub_agent_done` is required** in pane mode. A child that exits without calling it is treated as a failure, even on exit code 0. The backward-compatible alias `workflow_delegate_done` is still registered, but prompts and system instructions prefer `sub_agent_done`.
 
 ## Opt-in Gonka hybrid profile
 
@@ -168,7 +168,7 @@ The `gonka` provider is registered unconditionally, but its models are only usab
 
 `Thinking: off` is the Pi setting for these Gonka workers. Some brokers/models may still stream provider reasoning metadata (for example `reasoning_content` from Kimi); Pi handled this in smoke tests, but do not interpret `off` as a guarantee that the upstream model will never emit reasoning metadata.
 
-See [`examples/workflow.gonka-hybrid.json`](./examples/workflow.gonka-hybrid.json) for a minimal opt-in project config.
+See [`examples/workflow.gonka-hybrid.json`](./examples/workflow.gonka-hybrid.json) for the opt-in project override with `profile: "gonka-hybrid"`. For the default workflow setup, start from `examples/workflow.json` and its sibling `workflow.*.json` catalog files.
 
 ### Structured tool-call gate
 
@@ -183,6 +183,7 @@ The three broker models pass the OpenAI Chat Completions **auto/default** `tool_
 ```bash
 mkdir -p .pi
 cp examples/workflow.gonka-hybrid.json .pi/workflow.json
+# For the default workflow setup, copy examples/workflow.json and its sibling catalog files (`workflow.*.json`)
 # Put GONKA_BROKER_API_KEY (and optionally GONKA_BROKER_URL) in ~/.pi/.env,
 # or export them in this shell, then:
 pi
@@ -190,11 +191,11 @@ pi
 
 The project-local `profile: "gonka-hybrid"` field is the project's source of truth; the CLI flag overrides it for the current run if you want to A/B test. To leave the profile but pin one worker back to a different model, override `agents.coder` / `agents.reviewer` in the same `.pi/workflow.json` — those fields win over the built-in profile.
 
-## Workflow Rooms v1
+## Workflow Rooms
 
 Workflow Rooms are a **durable async coordination queue** for delegated sub-agents. They let a `brain` (or a future planner agent) hand work to multiple specialised sub-agents — e.g. backend + frontend, planner + implementer, or independent reviewers — and let them exchange assumptions, contracts, blockers, and decisions at job boundaries **without real-time interruption**.
 
-v1 is intentionally minimal:
+Workflow rooms are intentionally minimal:
 
 - No WebSocket server, no live interruption. Messages queue on disk and agents read them at `room_job_start` / `room_read` / `room_job_done` checkpoints.
 - The event log is a plain append-only `events.jsonl` with a monotonic `seq`. It is dashboard-friendly (one JSON object per line) so a future UI can tail it directly.
@@ -291,18 +292,18 @@ What the child sub-agent sees:
 [frontend]  room_job_done({ jobId: "frontend-auth", summary: "Client rotation wired with single-use retry-on-401", filesChanged: ["src/auth/client.ts"] })
 ```
 
-### Limitations / non-goals (v1)
+### Limitations / non-goals
 
-- **No real-time interruption.** Sub-agents finish heavy work, then read queued messages at checkpoints. If you need live interruption, use a future v2 (or a dedicated channel).
+- **No real-time interruption.** Sub-agents finish heavy work, then read queued messages at checkpoints. If you need live interruption, use a dedicated channel.
 - **No built-in dashboard.** The event log is plain JSONL; you can `tail -f .pi/workflow-runs/<roomId>/events.jsonl` to watch a room. A TUI / web dashboard is a deliberate follow-up.
 - **In-process atomicity for tool calls.** The cross-process lock is per-room (`.lock` in the room dir). It is short-lived (held only for read-mutate-write of `events.jsonl` and `agents.json`). There is no fsync — on hard crash mid-append you may lose the last unfsync'd line, but `seq` numbering will not corrupt the file.
-- **Per-agent routing is by `agentId` only.** `to` matches an exact `agentId`; there is no role-based broadcast fan-out in v1. Use broadcast (omit `to`) if you want a "to anyone in role X" message and have consumers filter by their own role.
+- **Per-agent routing is by `agentId` only.** `to` matches an exact `agentId`; there is no role-based broadcast fan-out. Use broadcast (omit `to`) if you want a "to anyone in role X" message and have consumers filter by their own role.
 - **Project-local only.** Rooms live in `.pi/workflow-runs/` of the cwd where the workflow runs. When a delegate is launched with `room` context, the parent exports `PI_WORKFLOW_ROOM_ROOT` so a child running in a sub-`cwd` still reads/writes the same room store. They are not synced or aggregated across machines.
 - **Reviewer swarm + room context.** When `delegate_to_reviewer` runs the reviewer swarm with `room` context, each parallel reviewer gets a unique `agentId` of the form `<baseAgentId>-<index+1>` (e.g. `reviewer-1`, `reviewer-2`) so they don't share one read cursor / status row.
 
 ### Existing delegation stays the same
 
-If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the child receives no `PI_WORKFLOW_ROOM_*` env vars and no communication block, and behaviour is identical to the previous version. The room tools are still registered, but resolve nothing without a `roomId` and will return a clear error prompting the user to call `room_create` first.
+If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the child receives no `PI_WORKFLOW_ROOM_*` env vars and no communication block, so normal delegation behavior is unchanged. The room tools are still registered, but resolve nothing without a `roomId` and will return a clear error prompting the user to call `room_create` first.
 
 Useful commands:
 
@@ -332,7 +333,7 @@ Useful commands:
 
 ## Brain task markers
 
-Sprint task files (`.sprints/.../TASK-*.md`) can carry Brain-specific HTML-comment markers that surface a parallelization hint to Brain when it calls `sprint_read_context`. Markers are optional hints, not instructions to override Brain's own contract-first planning; unmarked/legacy tasks remain valid and Brain should treat them as "no explicit task hint".
+Sprint task files (`.sprints/.../TASK-*.md`) can carry Brain-specific HTML-comment markers that surface a parallelization hint to Brain when it calls `sprint_read_context`. Markers are optional hints, not instructions to override Brain's own contract-first planning; unmarked tasks remain valid and Brain should treat them as "no explicit task hint".
 
 ### Syntax
 
@@ -350,7 +351,7 @@ All markers are HTML comments so they stay invisible in rendered Markdown:
 | Marker | Effect |
 | --- | --- |
 | `<!-- brain:parallel=auto -->` | **Default for new tasks.** Brain applies its own parallel-work assessment; when uncertain it must ask the user rather than guess. |
-| `<!-- brain:parallel=required -->` | The task is designed for parallel multi-agent execution. Brain should create/use a [workflow room](#workflow-rooms-v1) and delegate with `room: { roomId, agentId, role }` matching the markers. |
+| `<!-- brain:parallel=required -->` | The task is designed for parallel multi-agent execution. Brain should create/use a [workflow room](#workflow-rooms) and delegate with `room: { roomId, agentId, role }` matching the markers. |
 | `<!-- brain:parallel=off -->` | Prefer serial execution. Brain should not spawn parallel agents unless the user explicitly overrides. |
 | `<!-- brain:room=auto -->` | (default) Brain picks a room id, e.g. derived from the task id (`TASK-019` → `task-019`). |
 | `<!-- brain:room=<room-id> -->` | Brain reuses the named room (creates it if it does not exist). |
@@ -371,7 +372,7 @@ When markers opt in (or Brain's own Parallel Work Assessment decides parallel is
 - Brain must **only** parallelize when workstreams have clear file-ownership boundaries and shared contracts (DTOs, ports, events, schemas) that are already agreed. Never invent contracts in flight.
 - If Brain is **uncertain** whether parallelization is safe, it must ask the user before launching parallel agents - it must not guess.
 - `parallel=off` is a hint, not a hard ban: the user can still override per task.
-- Unmarked/legacy tasks keep working unchanged: Brain falls back to its normal contract-first planning pipeline without a parallel hint, and the sprint subsystem treats missing markers as a no-op.
+- Unmarked tasks keep working unchanged: Brain falls back to its normal contract-first planning pipeline without a parallel hint, and the sprint subsystem treats missing markers as a no-op.
 
 ## Sprint system
 

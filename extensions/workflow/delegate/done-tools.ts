@@ -14,22 +14,87 @@
 import * as fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { DELEGATE_DONE_ENV_VAR, DELEGATE_DONE_TOOL_NAME, SUB_AGENT_DONE_TOOL_NAME } from "./constants";
+import {
+	DELEGATE_ACTIVITY_ENV_VAR,
+	DELEGATE_DONE_ENV_VAR,
+	DELEGATE_DONE_TOOL_NAME,
+	DELEGATE_RUN_ID_ENV_VAR,
+	SUB_AGENT_DONE_TOOL_NAME,
+} from "./constants";
+import { makeActivityPayload, type ActivityPhase, writeActivitySidecar } from "./pane-status";
+
+const NOISY_ACTIVITY_EVENT_THROTTLE_MS = 1500;
+
+interface DelegateActivityHooksState {
+	lastWrite: number;
+}
+
+function okTool(text: string, details: Record<string, unknown> = {}) {
+	return {
+		content: [{ type: "text" as const, text }],
+		details,
+	};
+}
+
+function errTool(text: string, details: Record<string, unknown> = {}) {
+	return {
+		isError: true,
+		content: [{ type: "text" as const, text }],
+		details,
+	};
+}
+
+function registerDelegateActivityHooks(pi: ExtensionAPI): void {
+	const activityFile = process.env[DELEGATE_ACTIVITY_ENV_VAR];
+	if (!activityFile) return;
+
+	const runId = process.env[DELEGATE_RUN_ID_ENV_VAR] || "";
+	const state: DelegateActivityHooksState = { lastWrite: 0 };
+
+	const writeActivity = (eventName: string, phase: ActivityPhase): void => {
+		const now = Date.now();
+		if (eventName === "message_update" && now - state.lastWrite < NOISY_ACTIVITY_EVENT_THROTTLE_MS) {
+			return;
+		}
+		state.lastWrite = now;
+		void writeActivitySidecar(activityFile, makeActivityPayload(runId, phase, eventName, now));
+	};
+
+	pi.on("session_start", () => writeActivity("session_start", "starting"));
+	pi.on("before_agent_start", () => writeActivity("before_agent_start", "starting"));
+	pi.on("agent_start", () => writeActivity("agent_start", "active"));
+	pi.on("turn_start", () => writeActivity("turn_start", "active"));
+	pi.on("turn_end", () => writeActivity("turn_end", "active"));
+	pi.on("before_provider_request", () => writeActivity("before_provider_request", "active"));
+	pi.on("after_provider_response", () => writeActivity("after_provider_response", "active"));
+	pi.on("message_update", () => writeActivity("message_update", "active"));
+	pi.on("tool_execution_start", () => writeActivity("tool_execution_start", "active"));
+	pi.on("tool_execution_end", () => writeActivity("tool_execution_end", "active"));
+	pi.on("tool_result", () => writeActivity("tool_result", "active"));
+	pi.on("session_shutdown", () => writeActivity("session_shutdown", "done"));
+}
 
 function makeDoneToolExecute(toolName: string) {
 	return async (_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: ExtensionContext) => {
 		const doneFile = process.env[DELEGATE_DONE_ENV_VAR];
 		if (!doneFile) {
-			return { content: [{ type: "text", text: "Done file path not set in env." }], isError: true, details: { reason: "missing_env" } };
+			return errTool("Done file path not set in env.", { reason: "missing_env" });
 		}
+		const summary = String(params?.summary ?? "").trim();
+		const runId = process.env[DELEGATE_RUN_ID_ENV_VAR] || "";
+		const now = new Date().toISOString();
 		try {
-			const data = { done: true, summary: String(params?.summary ?? "").trim() || undefined, at: new Date().toISOString() };
+			const data = { done: true, summary: summary || undefined, at: now };
 			fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
+			const activityFile = process.env[DELEGATE_ACTIVITY_ENV_VAR];
+			if (activityFile) {
+				void writeActivitySidecar(activityFile, makeActivityPayload(runId, "done", summary || "completed"));
+			}
 		} catch (error) {
-			return { content: [{ type: "text", text: `Failed to write done file: ${error}` }], isError: true, details: { reason: "write_failed" } };
+			return errTool(`Failed to write done file: ${error}`, { reason: "write_failed" });
 		}
 		setTimeout(() => ctx.shutdown(), 500);
-		return { content: [{ type: "text", text: "Delegate completion signaled. Shutting down." }], details: { doneFile, tool: toolName } };
+		return okTool("Delegate completion signaled. Shutting down.", { doneFile, tool: toolName });
 	};
 }
 
@@ -37,6 +102,8 @@ export function registerDelegateDoneTools(pi: ExtensionAPI): void {
 	// Child-only completion tools for pane delegates. Only registered when the
 	// env var is set (parent sets it before launching a pane delegate).
 	if (!process.env[DELEGATE_DONE_ENV_VAR]) return;
+
+	registerDelegateActivityHooks(pi);
 
 	pi.registerTool({
 		name: SUB_AGENT_DONE_TOOL_NAME,
