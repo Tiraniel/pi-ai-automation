@@ -24,11 +24,11 @@ its catalog files for delegation.
 6. Make coder / reviewer / reviewer-swarm identities composable from the
    same catalog building blocks, so a quality-gate catalog entry is the
    same object whether it is a CI check or a reviewer-swarm goal. Reviewer
-   goals are code-review goals derived from the reviewer identity and are not
-   a plan-quality approval mechanism. The reviewer swarm has no runtime
-   settings on the v2 workflow; its goals are owned by the quality-gate
-   catalog and attached to the reviewer agent identity through
-   `agentCatalog.agents[].qualityGates`.
+   goals/targets are code-review goals derived from the reviewer identity and
+   its quality-gate catalog entries, not from top-level v2 flow fields. The
+   top-level v2 workflow may only carry compatibility runtime overrides for
+   `reviewerSwarm.enabled` and `reviewerSwarm.maxConcurrency`;
+   `reviewerSwarm.targets` is not merged from top-level v2 config.
 7. Fail loudly on malformed required workflow entries. `normalizeV2Workflow`
    returns `undefined` when `flow` or `roles` is absent, empty, or
    contains any malformed entry; malformed entries are not silently
@@ -42,7 +42,7 @@ high-level orchestration data; the catalogs hold concrete values.
 
 | File | Responsibility | Concretely carries |
 | --- | --- | --- |
-| `examples/workflow.json` | The high-level workflow. | `meta`, `direction`, `flow`, `roles`, `references`, `deepPlanning` (runtime-wired planning mode exception). `deepPlanning` uses `modelPreset` planner references and stays planning-only. No raw model ids, and runtime settings remain out-of-scope. |
+| `examples/workflow.json` | The high-level workflow. | `meta`, `direction`, `flow`, `roles`, `references`, `deepPlanning` (runtime-wired planning mode exception). `deepPlanning` uses `modelPreset` planner references and stays planning-only. No raw model/tool/prompt/gate identities belong here; a tiny compatibility/runtime overlay may also include `autoApplyBrain`, `profile`, `reviewerSwarm.{enabled,maxConcurrency}`, `delegateDisplay`, and `delegatePaneAutoClose`. |
 | `examples/workflow.agent-catalog.json` | Logical agent identities. | `agents[]`: `{id, role, modelPreset?, toolProfile?, promptPacks?, qualityGates?, overrides?}`. |
 | `examples/workflow.model-presets.json` | Model preset catalog. | `presets[]`: `{id, provider, model, thinkingLevel?}`. |
 | `examples/workflow.tool-profiles.json` | Tool profile catalog. | `profiles[]`: `{id, tools, includeKarpathyGuidelines?}`. |
@@ -54,22 +54,21 @@ The example set lives in `examples/` and is intentionally separate from
 `extensions/` so the workflow model is documented without touching the v1
 runtime.
 
-### Runtime / delegate settings are explicitly out of v2 workflow scope except `deepPlanning`
+### Runtime / runtime-wired compatibility overlay on v2 workflows
 
-The v1 `WorkflowConfig` carries runtime/delegate settings at the top
-level — `autoApplyBrain`, `delegateDisplay`, `delegatePaneAutoClose` —
-that control how `extensions/brain-workflow.ts` invokes Pi, not what
-the workflow does. These are intentionally NOT a v2 workflow concern. `deepPlanning` is the explicit runtime-wired exception.
+v2 workflows remain catalog-driven for identities (`agents`, models,
+`toolProfiles`, `promptPacks`, `qualityGates`), but the loader keeps a
+small compatibility/runtime overlay on top-level for the most common legacy knobs:
+`autoApplyBrain`, `profile`, `reviewerSwarm.{enabled,maxConcurrency}`, `delegateDisplay`, and
+`delegatePaneAutoClose`. These fields are validated and merged by
+`loadWorkflowConfig` after catalog adaptation.
 
-- The v2 `V2Workflow` type has no general `runtime` field. `normalizeV2Workflow`
-  drops any top-level `runtime` key from the input without warning
-  (it is explicitly out-of-scope, not a malformed required entry). `deepPlanning`
-  remains first-class at top-level and is modeled explicitly via its own fields.
-- `loadWorkflowConfig` routes `version: 2` files through `loadV2Workflow`
-  and keeps legacy v1 runtime behavior for v1 config files.
-- If runtime settings need v2-first-class modeling, the right place is a
-  separate runtime-settings/profile artifact, not a field on `V2Workflow`.
-  That keeps workflow definitions high-level and shareable across profiles.
+- `deepPlanning` remains the explicit runtime-wired planning exception and is
+  resolved through the model preset catalog via `loadV2Workflow` + adapter.
+- `loadWorkflowConfig` routes `version: 2` files through `loadV2Workflow` and
+  keeps legacy v1 compatibility behavior for v1 config files.
+- v2 model/tool/prompt/gate identity still comes from catalogs, not top-level
+  raw ids on the workflow file.
 
 ### Deep-planning config as the explicit runtime-wired exception
 
@@ -141,16 +140,16 @@ independently of `overrides.tools`.
    `quality-gate-missing`.
 
 The reviewer-swarm identity is a derived projection of the resolved
-reviewer role identity. The v2 workflow carries no `reviewerSwarm` field
-— the swarm goals are the resolved reviewer quality gates whose catalog
-gate has `kind === "review-goal"`, surfaced on
-`V2ResolvedWorkflow.reviewerSwarm = { goals, goalIds }`. There is no
-`enabled`, `maxConcurrency`, or other runtime setting on the v2 resolved
-identity: those remain v1-only and are honored by the legacy v1 compatibility
-path in `extensions/brain-workflow.ts`. Duplicating reviewer goals between the
-workflow and the agent catalog is intentionally rejected: the agent
-catalog and quality-gates catalog are the single source of truth, and
-the swarm identity is composed from them.
+reviewer role identity. Reviewer goals/targets are not carried directly in
+the workflow file; they come from resolved reviewer quality gates whose
+catalog gate has `kind === "review-goal"`, surfaced on
+`V2ResolvedWorkflow.reviewerSwarm = { goals, goalIds }`.
+`loadWorkflowConfig` applies a compatibility overlay for `reviewerSwarm.enabled`
+and `reviewerSwarm.maxConcurrency`, but it intentionally does not merge
+`reviewerSwarm.targets` from top-level v2 config because targets must remain
+catalog-derived. Duplicating reviewer goals between the workflow and the agent
+catalog is intentionally rejected: the agent catalog and quality-gates catalog
+are the single source of truth, and the swarm identity is composed from them.
 
 The `coder` and `reviewer` identity compositions are intentionally
 symmetric — both are agents with a model, a tool list, a stack of prompt
@@ -208,9 +207,9 @@ When `version: 2` is present, runtime routes through `loadV2Workflow` and
 
 For migration, the v1 normalizer is a lossless pass-through:
 
-- Every v1 field that has a v2 home is mapped below; runtime/delegate
-  settings are deliberately NOT migrated (see "Runtime / delegate
-  settings" above).
+- Every v1 field that has a v2 home is mapped below; compatible runtime/delegate
+  settings are preserved as compatibility overlay on the loaded config where safe.
+  See the runtime-wired compatibility section above.
 - `normalizeV1Config(input: unknown): V1WorkflowConfig | undefined`
   validates shape and drops invalid fields; it does not throw.
 - `v1ConfigToV2Workflow(v1)` returns a `{workflow, catalog}` pair that
@@ -228,18 +227,17 @@ V1 -> V2 field map:
 
 | v1 field | v2 home |
 | --- | --- |
-| `autoApplyBrain` | not migrated — preserved by legacy v1 compatibility behavior in `loadWorkflowConfig`. |
-| `delegateDisplay` | not migrated — preserved by legacy v1 compatibility behavior in `loadWorkflowConfig`. |
-| `delegatePaneAutoClose` | not migrated — preserved by legacy v1 compatibility behavior in `loadWorkflowConfig`. |
+| `autoApplyBrain` | preserved as a compatibility override by `loadWorkflowConfig` when a v2 workflow is selected; v1 `profile` mode remains the legacy migration path for pre-v2 configs. |
+| `delegateDisplay` | preserved as a compatibility override by `loadWorkflowConfig`; these overlay fields do not change catalog identity resolution. |
+| `delegatePaneAutoClose` | preserved as a compatibility override by `loadWorkflowConfig`; these overlay fields do not change catalog identity resolution. |
 | `agents.<role>.{provider, model, thinkingLevel, tools, instructions, includeKarpathyGuidelines}` | `agents[].overrides.*` (with `agents[].id` = `<role>` and `agents[].role` = `<role>`) |
 | `deep_planning` | `deepPlanning` (canonical). The v2 alias supports planner references (`modelPreset`) and planner rounds/concurrency settings. |
-| `reviewerSwarm.{enabled, maxConcurrency, targets}` | not migrated into the v2 workflow — preserved by legacy v1 compatibility behavior in `loadWorkflowConfig`. Reviewer-swarm configuration in v2 is owned by the quality-gates catalog and the reviewer agent identity's `qualityGates`. |
-| `profile` | preserved as `meta.name` (`"v1-profile:<id>"`) only; legacy profiles stay in v1 compatibility mode. |
+| `reviewerSwarm.{enabled, maxConcurrency}` | preserved as compatibility overrides by `loadWorkflowConfig` while reviewer-swarm goals are still derived from the resolved reviewer identity and quality-gate catalog. |
+| `profile` | preserved as a compatibility override by `loadWorkflowConfig` for v2 profile selection; catalog identities are the preferred v2 approach. |
 
 The v1 `profile` mechanism (built-in `default`, `gonka-hybrid`,
-`premium-brain-gonka-workers`) remains supported for legacy v1 inputs. V2
-profile-style behavior is now represented through catalog identities, while
-legacy profile handling remains available in v1 compatibility mode.
+`premium-brain-gonka-workers`) remains supported for legacy v1 inputs. For v2 files,
+`profile` is preserved as a compatibility overlay by `loadWorkflowConfig`, while catalog identities remain the canonical behavior source.
 
 ## Runtime-wired compatibility and canonical examples
 

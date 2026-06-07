@@ -20,7 +20,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil
 import { DEFAULT_CONFIG } from "../defaults";
 import { GONKA_DOTENV_KEYS, GONKA_DOTENV_PATH, WORKFLOW_PROFILES } from "../profiles";
 import { adaptV2ResolvedWorkflow } from "./v2-adapter";
-import { detectConfigVersion, loadV2Workflow } from "../config";
+import { detectConfigVersion, loadV2Workflow, normalizeV1Config } from "../config";
 import { readDeepPlanningConfig } from "../config/deep-planning.js";
 import type {
 	AgentName,
@@ -171,6 +171,25 @@ function mapV2Diagnostics(
 	return diagnostics.map((diag) => makeWorkflowDiagnostic(scope, diag.severity as WorkflowConfigLoadDiagnostic["severity"], diag.code, diag.message, diag.ref?.id));
 }
 
+function extractV2RuntimeOverrides(rawConfig: unknown): WorkflowConfig {
+	const normalized = normalizeV1Config(rawConfig);
+	if (!normalized) return {};
+	const runtime: WorkflowConfig = {};
+	if (normalized.autoApplyBrain !== undefined) runtime.autoApplyBrain = normalized.autoApplyBrain;
+	if (normalized.profile !== undefined) runtime.profile = normalized.profile;
+	if (normalized.reviewerSwarm !== undefined) {
+		const reviewerSwarm: WorkflowConfig["reviewerSwarm"] = {};
+		if (normalized.reviewerSwarm.enabled !== undefined) reviewerSwarm.enabled = normalized.reviewerSwarm.enabled;
+		if (normalized.reviewerSwarm.maxConcurrency !== undefined) reviewerSwarm.maxConcurrency = normalized.reviewerSwarm.maxConcurrency;
+		if (reviewerSwarm.enabled !== undefined || reviewerSwarm.maxConcurrency !== undefined) {
+			runtime.reviewerSwarm = reviewerSwarm;
+		}
+	}
+	if (normalized.delegateDisplay !== undefined) runtime.delegateDisplay = normalized.delegateDisplay;
+	if (normalized.delegatePaneAutoClose !== undefined) runtime.delegatePaneAutoClose = normalized.delegatePaneAutoClose;
+	return runtime;
+}
+
 function ensureV1Config(value: unknown): WorkflowConfig {
 	if (isPlainObject(value)) return value as WorkflowConfig;
 	return {};
@@ -232,7 +251,12 @@ function loadV2WorkflowConfig(scope: "global" | "project", filePath: string): {
 				),
 			]);
 			source.diagnostics = sourceDiagnostics;
-			return { config: adapted.config, source, diagnostics: sourceDiagnostics };
+			const runtimeOverrides = extractV2RuntimeOverrides(raw);
+			return {
+				config: deepMerge(adapted.config, runtimeOverrides),
+				source,
+				diagnostics: sourceDiagnostics,
+			};
 		}
 
 		const config = ensureV1Config(raw);
