@@ -1,8 +1,8 @@
 // Sprint subsystem — AI-facing `sprint_*` tool registration.
 // Extracted from extensions/sprint-system.ts as part of TASK-018 Slice 4.
 //
-// `registerSprintTools(pi)` registers nine AI-facing tools the agent uses
-// to read/write the .sprints substrate:
+// `registerSprintTools(pi)` registers AI-facing tools the agent uses
+// to read/write the .sprints substrate and lightweight debug lane:
 //   - sprint_read_context: read config/current/binding/effective pointer
 //   - sprint_create: init + create + activate a sprint
 //   - sprint_create_task: append a TASK file under the active sprint
@@ -12,7 +12,8 @@
 //   - sprint_log_progress: append a line to active sprint PROGRESS.md
 //   - sprint_start_task_session: prepare the /sprint task start command
 //   - sprint_get_session_binding: read the current session's binding
-// All tool bodies delegate fs/pointer work to helpers in ./store.
+//   - sprint_debug: lightweight debug/hotfix item helpers
+// Tool bodies delegate fs/pointer work to helpers in ./store and the debug lane helpers in ./debug.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -35,6 +36,7 @@ import {
 	setActiveTask,
 	updateTaskStatus,
 } from "./store";
+import { appendDebugNote, completeDebugItem, createDebugItem, readDebugLaneSummary, promoteDebugItem } from "./debug";
 import type { SprintConfig, SprintCurrent } from "./types";
 
 export function registerSprintTools(pi: ExtensionAPI): void {
@@ -77,6 +79,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			const sprintReadme = sprintPath && fs.existsSync(path.join(sprintPath, "README.md")) ? fs.readFileSync(path.join(sprintPath, "README.md"), "utf8").slice(0, 400) : "";
 			const taskHead = taskPath && fs.existsSync(taskPath) ? fs.readFileSync(taskPath, "utf8").slice(0, 400) : "";
 			const brainMarkers = taskPath ? readBrainMarkersForTaskFile(taskPath) : { ...EMPTY_BRAIN_MARKERS };
+			const debugLane = readDebugLaneSummary(cwd, 5);
 			return {
 				content: [{
 					type: "text",
@@ -90,6 +93,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 						sprintReadme,
 						taskHead,
 						brainMarkers,
+						debugLane,
 					}),
 				}],
 			};
@@ -158,6 +162,101 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			if (!title) return { isError: true, content: [{ type: "text", text: "Missing title" }] };
 			const epic = createEpic(ctx.cwd, title, { humanSummary: p.humanSummary, aiContext: p.aiContext });
 			return { content: [{ type: "text", text: `Created epic ${epic.epicId} at ${path.relative(ctx.cwd, epic.epicPath)}` }] };
+		},
+	});
+
+	pi.registerTool({
+		name: "sprint_debug",
+		label: "Sprint: Debug/Hotfix Lane",
+		description: "Track tiny debug/hotfix items in the lightweight .sprints/debug lane.",
+		promptSnippet: "Use sprint_debug for tiny debug/hotfix/few-line fixes without starting a full sprint task session.",
+		promptGuidelines: [
+			"Use sprint_debug for minimal debug/hotfix items with optional notes/evidence. For larger work, promote to a normal sprint task with `action: promote`.",
+			"When action is `promote`, the item is converted into a normal sprint task in the current active sprint via `createTask` and does not start a task session.",
+		],
+		parameters: Type.Object({
+			action: Type.String(),
+			itemId: Type.Optional(Type.String()),
+			title: Type.Optional(Type.String()),
+			note: Type.Optional(Type.String()),
+			evidence: Type.Optional(Type.String()),
+			limit: Type.Optional(Type.Number()),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const p = params as any;
+			const action = String(p.action || "").trim();
+			if (!action) return { isError: true, content: [{ type: "text", text: "Missing action" }] };
+			const actionLower = action.toLowerCase();
+			if (!new Set(["status", "add", "note", "done", "promote"]).has(actionLower)) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: "Unsupported sprint_debug action. Use status|add|note|done|promote" }],
+				};
+			}
+			try {
+				const cwd = ctx.cwd;
+				if (actionLower === "status") {
+					const rawLimit = p.limit;
+					const safeLimit = Number.isFinite(rawLimit) ? Math.max(0, Math.floor(rawLimit)) : 5;
+					const summary = readDebugLaneSummary(cwd, safeLimit || 5);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Debug lane: open=${summary.openCount}, done=${summary.doneCount}, promoted=${summary.promotedCount} (latest=${summary.latest.length})`,
+							},
+							{ type: "text", text: JSON.stringify({ summary }) },
+						],
+					};
+				}
+				if (actionLower === "add") {
+					const title = String(p.title || "").trim();
+					if (!title) return { isError: true, content: [{ type: "text", text: "Missing title" }] };
+					const created = createDebugItem(cwd, title);
+					return {
+						content: [
+							{ type: "text", text: `Created ${created.id}: ${created.title}` },
+							{ type: "text", text: JSON.stringify({ item: created }) },
+						],
+					};
+				}
+				if (actionLower === "note") {
+					const itemId = String(p.itemId || "").trim();
+					const note = String(p.note || "").trim();
+					if (!itemId) return { isError: true, content: [{ type: "text", text: "Missing itemId" }] };
+					if (!note) return { isError: true, content: [{ type: "text", text: "Missing note" }] };
+					const updated = appendDebugNote(cwd, itemId, note);
+					return {
+						content: [
+							{ type: "text", text: `Appended note to ${updated.id}` },
+							{ type: "text", text: JSON.stringify({ item: updated }) },
+						],
+					};
+				}
+				if (actionLower === "done") {
+					const itemId = String(p.itemId || "").trim();
+					if (!itemId) return { isError: true, content: [{ type: "text", text: "Missing itemId" }] };
+					const updated = completeDebugItem(cwd, itemId, p.evidence ? String(p.evidence) : undefined);
+					return {
+						content: [
+							{ type: "text", text: `Completed ${updated.id}` },
+							{ type: "text", text: JSON.stringify({ item: updated }) },
+						],
+					};
+				}
+				const itemId = String(p.itemId || "").trim();
+				if (!itemId) return { isError: true, content: [{ type: "text", text: "Missing itemId" }] };
+				const title = String(p.title || "").trim();
+				const result = promoteDebugItem(cwd, itemId, title ? { title } : undefined);
+				return {
+					content: [
+						{ type: "text", text: `Promoted ${result.item.id} to ${result.task.id}` },
+						{ type: "text", text: JSON.stringify({ item: result.item, task: result.task }) },
+					],
+				};
+			} catch (error) {
+				return { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] };
+			}
 		},
 	});
 

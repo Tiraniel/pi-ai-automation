@@ -313,6 +313,16 @@ Useful commands:
 /sprint init [--private] [--gitignore]
 /sprint new <name>
 /sprint status
+/sprint debug status
+/sprint debug add <title>
+/sprint debug note <DBG-ID> <note>
+/sprint debug done <DBG-ID> [evidence]
+/sprint debug promote <DBG-ID> [task title]
+/sprint hotfix status  # alias of /sprint debug
+/sprint hotfix add <title>
+/sprint hotfix note <DBG-ID> <note>
+/sprint hotfix done <DBG-ID> [evidence]
+/sprint hotfix promote <DBG-ID> [task title]
 /sprint task add <title>
 /sprint task active <TASK-ID>
 /sprint task start <TASK-ID> [--auto-run]
@@ -397,7 +407,7 @@ Default `.sprints/config.json`:
 
 Auto-bootstrap behavior (non-child sessions):
 - If no active sprint, the extension can auto-create based on `~/.pi/agent/sprints.json` (`autoCreate`: `always|ask|never`, default `ask`).
-- It uses a simple non-trivial-work heuristic and skips `/sprint` command prompts.
+- It uses a simple non-trivial-work heuristic and skips `/sprint` command prompts. Tiny debug/hotfix prompts now inject debug-lane guidance instead of forcing auto-bootstrap.
 - Child delegated sessions still get active sprint pointer injection but do not auto-bootstrap.
 
 AI-callable sprint tools:
@@ -410,6 +420,13 @@ AI-callable sprint tools:
 - `sprint_log_progress`
 - `sprint_start_task_session`
 - `sprint_get_session_binding`
+- `sprint_debug`
+
+Lightweight debug/hotfix lane:
+
+- For tiny fixes, typos, one-liners, or few-line corrections that do not need full sprint commitment, use the debug lane under `.sprints/debug/` (with `LOG.md` plus `items/DBG-###-slug.md`).
+- Use `/sprint debug ...` slash commands or `sprint_debug` tool actions (`status`, `add`, `note`, `done`, `promote`) for minimal, low-friction tracking.
+- `sprint_debug promote` (or `/sprint debug promote`) moves a debug lane item into a normal `.sprints` task once scope grows; this does **not** start a session.
 
 Default session-per-task flow:
 

@@ -19,7 +19,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readBrainMarkersForTaskFile } from "./markers";
-import { sessionBindingPromptText, sprintPointerText } from "./prompt";
+import { debugLaneGuidanceText, sessionBindingPromptText, sprintPointerText } from "./prompt";
 import {
 	createSprint,
 	deriveSprintName,
@@ -34,6 +34,23 @@ import {
 	askUi,
 	askUiInput,
 } from "./store";
+
+const LIGHTWEIGHT_DEBUG_SCOPE_HINT_RE = /\b(tiny|typo|few-line|few\s+line|one-line|one\s+line|small\s+fix|minor\s+fix|quick\s+fix)\b/i;
+const LIGHTWEIGHT_HOTFIX_HINT_RE = /\bhotfix\b/i;
+const NON_LIGHTWEIGHT_DEBUG_HINT_RE = /\b(implement|feature|refactor|non-trivial|tests?|regression|production|architecture|across|migration|build|create|multi[-\s]step)\b/i;
+const LIGHTWEIGHT_DEBUG_PROMPT_MAX_LEN = 140;
+const LIGHTWEIGHT_HOTFIX_MAX_LEN = 90;
+
+function isLikelyLightweightDebugPrompt(prompt: string): boolean {
+	const normalized = String(prompt || "").trim().toLowerCase();
+	if (!normalized) return false;
+	if (normalized.length > LIGHTWEIGHT_DEBUG_PROMPT_MAX_LEN) return false;
+	if (/^\s*\/sprint\b/.test(normalized)) return false;
+	if (NON_LIGHTWEIGHT_DEBUG_HINT_RE.test(normalized)) return false;
+	if (LIGHTWEIGHT_DEBUG_SCOPE_HINT_RE.test(normalized)) return true;
+	if (LIGHTWEIGHT_HOTFIX_HINT_RE.test(normalized)) return normalized.length <= LIGHTWEIGHT_HOTFIX_MAX_LEN;
+	return false;
+}
 
 const DECLINED_CWDS = new Set<string>();
 
@@ -78,7 +95,11 @@ export function registerSprintHooks(pi: ExtensionAPI): void {
 
 		if (process.env.PI_WORKFLOW_CHILD === "1") return;
 		if (DECLINED_CWDS.has(ctx.cwd)) return;
-		const prompt = String((event as any)?.prompt ?? "");
+		const rawPrompt = (event as any)?.prompt ?? (event as any)?.userPrompt ?? (event as any)?.message;
+		const prompt = typeof rawPrompt === "string" ? String(rawPrompt) : "";
+		if (isLikelyLightweightDebugPrompt(prompt)) {
+			return { systemPrompt: `${event.systemPrompt}\n\n${debugLaneGuidanceText()}` };
+		}
 		if (!isNonTrivialPrompt(prompt)) return;
 		const mode = getGlobalAutoCreate();
 		if (mode === "never") return;

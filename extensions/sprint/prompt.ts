@@ -1,7 +1,7 @@
 // Sprint subsystem — prompt text builders for session binding and global pointer.
 // Extracted from extensions/sprint-system.ts as part of TASK-018 Slice 4.
 //
-// These three text builders are the strings the before_agent_start hook
+// These prompt builders are the strings the before_agent_start hook
 // injects into the system prompt (or the user message, for auto-run kickoff).
 // Keeping them here means the hook body in ./hooks.ts is just branching +
 // orchestration, and the strings can be reviewed/edited in one place.
@@ -64,7 +64,18 @@ export function sprintPointerText(current: SprintCurrent, markers?: BrainMarkers
 		`Active sprint path: ${current.activeSprintPath}`,
 		`Active task path: ${current.activeTaskPath ?? "(none)"}`,
 		"Before non-trivial implementation, read sprint/task context. Keep PROGRESS/task evidence updated.",
+		"For tiny debug/hotfix work (few-line fixes, typo/quick-fix corrections, tiny changes), use /sprint debug or sprint_debug instead of starting a full sprint task flow.",
+		"For concrete, multi-step implementation, use normal .sprints task/session flow; one dedicated session is still required for that path.",
 		"Brain retains planning ownership for sprint/task architecture and authoring; coder does not perform plan/sprint/architecture authoring.",
 		markersBlock(markers),
+	].filter(Boolean).join("\n");
+}
+
+export function debugLaneGuidanceText(): string {
+	return [
+		"Tiny debug/hotfix work can be tracked without opening a dedicated sprint task session:",
+		"- Use `/sprint debug add <title>` or `sprint_debug` with `action: add` for minimal findings.",
+		"- Append evidence with `note` or `done` as needed while investigating.",
+		"- Promote to a normal sprint task when scope grows using `promote`, then continue in the regular sprint workflow.",
 	].filter(Boolean).join("\n");
 }

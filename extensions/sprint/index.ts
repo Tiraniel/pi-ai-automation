@@ -69,6 +69,18 @@ export {
 	type BrainParallelMode,
 } from "./markers";
 
+export {
+	appendDebugNote,
+	completeDebugItem,
+	createDebugItem,
+	ensureDebugLane,
+	promoteDebugItem,
+	readDebugLaneSummary,
+	type DebugItem,
+	type DebugItemStatus,
+	type DebugLaneSummary,
+} from "./debug";
+
 export { buildTaskSessionKickoff, sessionBindingPromptText, sprintPointerText } from "./prompt";
 
 export { registerSprintCommand } from "./command";

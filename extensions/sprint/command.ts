@@ -2,7 +2,7 @@
 // Extracted from extensions/sprint-system.ts as part of TASK-018 Slice 4.
 //
 // `registerSprintCommand(pi)` registers the single `/sprint` command that
-// drives the v1 .sprints substrate: init/new/status, task add/active/start/
+// drives the v1 .sprints substrate: init/new/status, debug/hotfix, task add/active/start/
 // done, epic add, and log. The handler parses subcommands then dispatches
 // to the store helpers in ./store. The task-start subcommand is the only
 // one with non-trivial side effects (it pins the new Pi session to a
@@ -29,6 +29,7 @@ import {
 	setActiveTask,
 	updateTaskStatus,
 } from "./store";
+import { appendDebugNote, completeDebugItem, createDebugItem, promoteDebugItem, readDebugLaneSummary } from "./debug";
 import { SPRINT_BINDING_CUSTOM_TYPE, SPRINTS_DIR, type SessionBinding, type SprintCurrent } from "./types";
 
 export function registerSprintCommand(pi: ExtensionAPI): void {
@@ -64,6 +65,66 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 						"info",
 					);
 					return;
+				}
+				if (sub === "debug" || sub === "hotfix") {
+					const action = args[1] ?? "status";
+					if (action === "status") {
+						const summary = readDebugLaneSummary(ctx.cwd, 5);
+						const latestText = summary.latest.length
+							? summary.latest
+									.map((item) => `${item.id} [${item.status}] ${item.title}${item.notePreview ? ` - ${item.notePreview}` : ""}`)
+									.join("\n")
+							: "(none)";
+						ctx.ui.notify(
+							[
+								`Debug lane: ${summary.path} (${summary.exists ? "initialized" : "not initialized"})`,
+								`open: ${summary.openCount} | done: ${summary.doneCount} | promoted: ${summary.promotedCount}`,
+								"",
+								"Latest: ",
+								latestText,
+							].join("\n"),
+							"info",
+						);
+						return;
+					}
+					if (action === "add") {
+						const title = args.slice(2).join(" ").trim();
+						if (!title) throw new Error("Usage: /sprint debug add <title>");
+						const item = createDebugItem(ctx.cwd, title);
+						ctx.ui.notify(`Created ${item.id}: ${item.title}`, "info");
+						return;
+					}
+					if (action === "note") {
+						const id = args[2];
+						if (!id) throw new Error("Usage: /sprint debug note <DBG-ID> <note>");
+						const note = args.slice(3).join(" ").trim();
+						if (!note) throw new Error("Usage: /sprint debug note <DBG-ID> <note>");
+						const item = appendDebugNote(ctx.cwd, id, note);
+						ctx.ui.notify(`Note added to ${item.id}`, "info");
+						return;
+					}
+					if (action === "done") {
+						const id = args[2];
+						if (!id) throw new Error("Usage: /sprint debug done <DBG-ID> [evidence]");
+						const evidence = args.slice(3).join(" ").trim();
+						const item = completeDebugItem(ctx.cwd, id, evidence || undefined);
+						ctx.ui.notify(`Completed ${item.id}${item.completedAt ? ` (${item.completedAt})` : ""}`, "info");
+						return;
+					}
+					if (action === "promote") {
+						const id = args[2];
+						if (!id) throw new Error("Usage: /sprint debug promote <DBG-ID> [task title]");
+						const taskTitle = args.slice(3).join(" ").trim();
+						const result = promoteDebugItem(ctx.cwd, id, taskTitle ? { title: taskTitle } : undefined);
+						ctx.ui.notify(
+							`Promoted ${result.item.id} as ${result.task.id} at ${path.relative(ctx.cwd, result.task.filePath)}`,
+							"info",
+						);
+						return;
+					}
+					throw new Error(
+						"Usage: /sprint debug [status] | add <title> | note <DBG-ID> <note> | done <DBG-ID> [evidence] | promote <DBG-ID> [task title]",
+					);
 				}
 				if (sub === "task" && args[1] === "add") {
 					const title = args.slice(2).join(" ").trim();
@@ -166,7 +227,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					return;
 				}
 				ctx.ui.notify(
-					"Usage: /sprint init [--private] [--gitignore] | new <name> | status | task add <title> | task active <TASK-ID> | task start <TASK-ID> [--auto-run] | task done <TASK-ID> | epic add <title> | log <message>",
+					"Usage: /sprint init [--private] [--gitignore] | new <name> | status | debug|hotfix [status] | debug add <title> | debug note <DBG-ID> <note> | debug done <DBG-ID> [evidence] | debug promote <DBG-ID> [task title] | task add <title> | task active <TASK-ID> | task start <TASK-ID> [--auto-run] | task done <TASK-ID> | epic add <title> | log <message>",
 					"info",
 				);
 			} catch (error) {
