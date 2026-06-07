@@ -84,7 +84,7 @@ function makeDoneToolExecute(toolName: string) {
 		const runId = process.env[DELEGATE_RUN_ID_ENV_VAR] || "";
 		const now = new Date().toISOString();
 		try {
-			const data = { done: true, summary: summary || undefined, at: now };
+			const data = { done: true, summary: summary || undefined, at: now, tool: toolName };
 			fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
 			const activityFile = process.env[DELEGATE_ACTIVITY_ENV_VAR];
 			if (activityFile) {

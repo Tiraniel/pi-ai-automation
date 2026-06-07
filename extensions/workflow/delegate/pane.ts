@@ -47,7 +47,6 @@ import {
 	DELEGATE_PANE_POLL_MS,
 	DELEGATE_RUN_ID_ENV_VAR,
 	MAX_STDERR_BYTES,
-	SUB_AGENT_DONE_TOOL_NAME,
 } from "./constants";
 import {
 	ActivitySidecar,
@@ -62,6 +61,7 @@ import {
 	writeManifest,
 } from "./pane-status";
 import { createDelegateEventState, processSessionLine } from "./state";
+import { resolvePaneCompletionOutcome } from "./pane-completion";
 
 function summarizeTask(task: string): string {
 	return task.replace(/\s+/g, " ").trim().slice(0, 200) || "(no task)";
@@ -109,6 +109,8 @@ export async function runDelegateAgentPane(
 	let surfaceId: string | null = null;
 	let surfaceClosed = false;
 	let finalDoneData: DoneSidecar | undefined;
+	let completionOutcome: ReturnType<typeof resolvePaneCompletionOutcome> | undefined;
+	let finalOutput = "";
 	let manifest: PaneManifest;
 	let finalActivity: ActivitySidecar | undefined;
 
@@ -400,30 +402,13 @@ export async function runDelegateAgentPane(
 			}
 		}
 		pendingSessionText = "";
-		if (!finalDoneData) return 1;
-		const sidecarExitCode = typeof finalDoneData.exit_code === "number" ? finalDoneData.exit_code : undefined;
-		const fromExit = finalDoneData.from_exit === true;
-		if (fromExit) {
-			state.stderr = appendCapped(
-				state.stderr,
-				`\npane delegate exited without calling ${SUB_AGENT_DONE_TOOL_NAME}${
-					sidecarExitCode === undefined ? "" : ` (exit ${sidecarExitCode})`
-				}. The child MUST call ${SUB_AGENT_DONE_TOOL_NAME} as its final action to return control to Brain.`,
-				MAX_STDERR_BYTES,
-			);
-			return sidecarExitCode || 1;
-		}
 		const finalAssistantOutput = getFinalAssistantText(state.messages);
-		const finalDoneSummary = typeof finalDoneData.summary === "string" ? finalDoneData.summary.trim() : "";
-		const hasFinalOutput = finalAssistantOutput.length > 0;
-		if (hasFinalOutput) {
-			return sidecarExitCode || 0;
+		completionOutcome = resolvePaneCompletionOutcome(finalDoneData, finalAssistantOutput);
+		finalOutput = completionOutcome.finalOutput;
+		if (completionOutcome.stderr) {
+			state.stderr = appendCapped(state.stderr, completionOutcome.stderr, MAX_STDERR_BYTES);
 		}
-		if (finalDoneSummary) {
-			return 0;
-		}
-		state.stderr = appendCapped(state.stderr, "\npane delegate completed without output or summary", MAX_STDERR_BYTES);
-		return 1;
+		return completionOutcome.exitCode;
 	};
 
 	try {
@@ -454,7 +439,7 @@ export async function runDelegateAgentPane(
 			status: finalStatus,
 			activeTools: Array.from(state.activeTools.entries()).map(([id, t]) => ({ id, name: t.name })),
 			progress: state.progress,
-			finalOutput: (getFinalAssistantText(state.messages) || ((typeof finalDoneData?.summary === "string" ? finalDoneData.summary.trim() : "")) || ""),
+			finalOutput: finalOutput || getFinalAssistantText(state.messages) || ((typeof finalDoneData?.summary === "string" ? finalDoneData.summary.trim() : "")) || "",
 			thinkingChars: countThinkingChars(state.messages),
 			display: "pane",
 			runId,

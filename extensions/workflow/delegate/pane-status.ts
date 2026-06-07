@@ -12,6 +12,7 @@ export interface DoneSidecar {
 	at?: string;
 	exit_code?: number;
 	from_exit?: boolean;
+	tool?: string;
 }
 
 export interface ActivitySidecar {
