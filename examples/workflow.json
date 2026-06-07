@@ -25,5 +25,37 @@
 		"toolProfiles": "workflow.tool-profiles.json",
 		"promptPacks": "workflow.prompt-packs.json",
 		"qualityGates": "workflow.quality-gates.json"
-	}
+	},
+	"deepPlanning": {
+		"enabled": false,
+		"plannerCount": 3,
+		"maxConcurrency": 3,
+		"rounds": 2,
+		"roomIdPrefix": "deep-plan",
+		"planners": [
+			{
+				"id": "planner-1",
+				"role": "architecture",
+				"modelPreset": "premium-planner",
+				"thinkingLevel": "xhigh",
+				"instructions": "Generate options with explicit architecture tradeoffs and boundary decisions for the task."
+			},
+			{
+				"id": "planner-2",
+				"role": "risk",
+				"modelPreset": "premium-planner",
+				"thinkingLevel": "high",
+				"instructions": "Identify regression, rollout, and operational risks for each option with clear assumptions."
+			},
+			{
+				"id": "planner-3",
+				"role": "review",
+				"modelPreset": "premium-planner",
+				"thinkingLevel": "xhigh",
+				"instructions": "Critically synthesize options and residual risks into a concise consensus recommendation."
+			}
+		]
+	},
+	"_comment_deep_planning": "deepPlanning is opt-in only (enabled=false by default). Planners must reference model presets (modelPreset) not raw model ids.",
+	"_comment_tool": "Use workflow_deep_plan only when Brain chooses/deems opt-in planning beneficial."
 }

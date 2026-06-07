@@ -19,6 +19,12 @@
 			"provider": "openai-codex",
 			"model": "gpt-5.5",
 			"thinkingLevel": "high"
+		},
+		{
+			"id": "premium-planner",
+			"provider": "openai-codex",
+			"model": "gpt-5.5",
+			"thinkingLevel": "xhigh"
 		}
 	]
 }

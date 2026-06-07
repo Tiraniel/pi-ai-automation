@@ -20,6 +20,7 @@ Workflow tools:
 - `delegate_to_coder`
 - `delegate_to_reviewer` (supports optional `goals` for targeted reviewer swarm)
 - `room_create`, `room_job_start`, `room_send`, `room_read`, `room_job_done`, `room_status`
+- `workflow_deep_plan` (optional planning-only deep-planning pass; planning-only delegates, no code edits)
 
 Delegated agents run as headless JSON subprocesses (`--mode json -p --no-session`) and stream bounded live events back to the parent. The parent Pi terminal renders delegate progress using theme-colored sections (status, tools, thinking indicators, assistant output previews, usage, and final output). Thinking/reasoning content from child agents is shown as a sanitized indicator (`thinking…`) rather than raw hidden chain-of-thought. There is no nested interactive TUI inside the child; rendering is handled by the parent using Pi extension rendering/theme APIs.
 
@@ -57,6 +58,56 @@ Reviewer swarm behavior:
 - If any target reviewer fails or returns `CHANGES_REQUESTED`, the delegation result is marked failed.
 - Set `reviewerSwarm.enabled: false` to keep single-reviewer behavior.
 
+## Deep planning (opt-in)
+
+Deep planning is planning-only and disabled by default:
+
+```json
+{
+  "deepPlanning": {
+    "enabled": false,
+    "plannerCount": 3,
+    "maxConcurrency": 3,
+    "rounds": 2,
+    "roomIdPrefix": "deep-plan",
+    "planners": [
+      {
+        "id": "planner-1",
+        "role": "architecture",
+        "modelPreset": "premium-planner",
+        "thinkingLevel": "xhigh"
+      }
+    ]
+  }
+}
+```
+
+Planner entries are planning personas for `workflow_deep_plan`: read-only delegates, no `edit`, `write`, or `bash`.
+Planners should reference model presets (like `modelPreset`) instead of raw model ids.
+`brain` should call `workflow_deep_plan` for complex tasks when the task marker/opt-in requests it, then synthesize options and risks before sending implementation tasks to `delegate_to_coder`. If deep-planning config is disabled (default), pass `force:true` when honoring a required/auto marker unless the user explicitly enabled deep planning in config.
+
+For opt-in control, put a task marker in the sprint task markdown:
+
+```markdown
+<!-- brain:deep_planning=required -->
+```
+
+Use `off` or `auto` to down-scope or let Brain decide:
+
+```markdown
+<!-- brain:deep_planning=off -->
+<!-- brain:deep_planning=auto -->
+```
+
+To opt in via config instead of marker forcing (or in addition):
+
+```json
+{
+  "deepPlanning": {
+    "enabled": true
+  }
+}
+```
 To disable Karpathy Guidelines for delegated coder prompts in overrides:
 
 ```json
@@ -340,7 +391,7 @@ Useful commands:
 - With `--auto-run`, a kickoff prompt is sent in the new session telling the agent to work the pinned task using the brain -> coder -> reviewer workflow. Without `--auto-run`, the new session is just opened and the user is notified.
 - If `<TASK-ID>` is omitted, the command falls back to the active task from `.sprints/current.json`.
 
-`/workflow` shows effective resolved presets, reviewer swarm settings, the active workflow profile, and the `GONKA_BROKER_URL` / `GONKA_BROKER_API_KEY` env status (set/default/unset, no values).
+`/workflow` shows effective resolved presets, reviewer swarm settings, deep-planning state (`enabled`, `plannerCount`, `rounds`, `maxConcurrency`, `roomIdPrefix`, planner ids/roles), the active workflow profile, and the `GONKA_BROKER_URL` / `GONKA_BROKER_API_KEY` env status (set/default/unset, no values).
 
 ## Brain task markers
 
@@ -352,6 +403,7 @@ All markers are HTML comments so they stay invisible in rendered Markdown:
 
 ```markdown
 <!-- brain:parallel=auto|required|off -->
+<!-- brain:deep_planning=auto|required|off -->
 <!-- brain:room=auto|<room-id> -->
 <!-- brain:agent id=backend role=backend job=backend-api owns=src/api/** -->
 <!-- brain:contract topic=api message="Agree request/response schema before editing." -->
@@ -364,6 +416,9 @@ All markers are HTML comments so they stay invisible in rendered Markdown:
 | `<!-- brain:parallel=auto -->` | **Default for new tasks.** Brain applies its own parallel-work assessment; when uncertain it must ask the user rather than guess. |
 | `<!-- brain:parallel=required -->` | The task is designed for parallel multi-agent execution. Brain should create/use a [workflow room](#workflow-rooms) and delegate with `room: { roomId, agentId, role }` matching the markers. |
 | `<!-- brain:parallel=off -->` | Prefer serial execution. Brain should not spawn parallel agents unless the user explicitly overrides. |
+| `<!-- brain:deep_planning=auto -->` | Brain may run planning-only deep-planning when helpful (for complex/architecture-risk tasks) before coder delegation. When config is disabled, running due to this marker should pass `force:true`. |
+| `<!-- brain:deep_planning=required -->` | Brain must run planning-only `workflow_deep_plan` before coder delegation and synthesize planner options/risks first, using `force:true` if config is not already enabled. |
+| `<!-- brain:deep_planning=off -->` | Deep planning is skipped unless the user explicitly enables it. |
 | `<!-- brain:room=auto -->` | (default) Brain picks a room id, e.g. derived from the task id (`TASK-019` → `task-019`). |
 | `<!-- brain:room=<room-id> -->` | Brain reuses the named room (creates it if it does not exist). |
 | `<!-- brain:agent id=... role=... job=... owns=... -->` | Declares one planned sub-agent. Multiple `brain:agent` lines list the expected workers. The `id` is the `agentId` Brain will use on `delegate_to_coder` and in the room. `owns` is advisory file ownership. |
@@ -384,6 +439,7 @@ When markers opt in (or Brain's own Parallel Work Assessment decides parallel is
 - If Brain is **uncertain** whether parallelization is safe, it must ask the user before launching parallel agents - it must not guess.
 - `parallel=off` is a hint, not a hard ban: the user can still override per task.
 - Unmarked tasks keep working unchanged: Brain falls back to its normal contract-first planning pipeline without a parallel hint, and the sprint subsystem treats missing markers as a no-op.
+- `deep_planning=required` means Brain must run planning-only deep-planning (`workflow_deep_plan`) before delegation; if config is disabled, run it with `force:true`. `deep_planning=auto` follows the same marker-derived force rule when config is off. `deep_planning=off` skips it.
 
 ## Sprint system
 

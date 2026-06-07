@@ -11,7 +11,7 @@
 import { spawn } from "node:child_process";
 import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentName, DelegateRunResult } from "../types";
+import type { AgentName, AgentPreset, DelegateRunResult } from "../types";
 import type { ResolvedRoomContext } from "../rooms";
 import { getAgentPreset, loadWorkflowConfig, resolveModelLabel } from "../runtime/config";
 import {
@@ -31,17 +31,16 @@ import {
 import { MAX_STDERR_BYTES } from "./constants";
 import { createDelegateEventState, processEventLine } from "./state";
 
-export async function runDelegateAgentHeadless(
+export async function runAgentPresetHeadless(
 	ctx: ExtensionContext,
 	agent: AgentName,
+	preset: AgentPreset,
 	task: string,
 	requestedCwd: string | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate: ((partial: any) => void) | undefined,
 	roomContext?: ResolvedRoomContext,
 ): Promise<DelegateRunResult> {
-	const loaded = loadWorkflowConfig(ctx.cwd);
-	const preset = getAgentPreset(loaded.config, agent);
 	const cwd = requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd;
 	let tmpDir: string | null = null;
 	let tmpPromptPath: string | null = null;
@@ -129,4 +128,18 @@ export async function runDelegateAgentHeadless(
 	} finally {
 		await removeTempPrompt(tmpDir, tmpPromptPath);
 	}
+}
+
+export async function runDelegateAgentHeadless(
+	ctx: ExtensionContext,
+	agent: AgentName,
+	task: string,
+	requestedCwd: string | undefined,
+	signal: AbortSignal | undefined,
+	onUpdate: ((partial: any) => void) | undefined,
+	roomContext?: ResolvedRoomContext,
+): Promise<DelegateRunResult> {
+	const loaded = loadWorkflowConfig(ctx.cwd);
+	const preset = getAgentPreset(loaded.config, agent);
+	return runAgentPresetHeadless(ctx, agent, preset, task, requestedCwd, signal, onUpdate, roomContext);
 }

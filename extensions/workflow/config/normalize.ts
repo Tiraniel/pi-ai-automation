@@ -27,6 +27,7 @@ import {
 	asStringArray,
 	asThinkingLevel,
 } from "./guards.js";
+import { readDeepPlanningConfig } from "./deep-planning.js";
 import {
 	AGENT_ROLES,
 	type AgentRole,
@@ -111,6 +112,8 @@ export function normalizeV1Config(input: unknown): V1WorkflowConfig | undefined 
 	}
 	const reviewer = normalizeV1ReviewerSwarm(record.reviewerSwarm);
 	if (reviewer) out.reviewerSwarm = reviewer;
+	const deepPlanning = readDeepPlanningConfig(record);
+	if (deepPlanning) out.deepPlanning = deepPlanning;
 	const display = asDelegateDisplayMode(record.delegateDisplay);
 	if (display !== undefined) out.delegateDisplay = display;
 	const paneAutoClose = asBoolean(record.delegatePaneAutoClose);
@@ -384,6 +387,7 @@ export function normalizeV2Workflow(input: unknown): V2Workflow | undefined {
 	}
 	const direction: FlowDirection = asFlowDirection(record.direction) ?? "sequential";
 	const references = normalizeWorkflowReferences(record.references);
+	const deepPlanning = readDeepPlanningConfig(record);
 	return {
 		version: WORKFLOW_CONFIG_VERSION,
 		...(meta ? { meta } : {}),
@@ -391,6 +395,7 @@ export function normalizeV2Workflow(input: unknown): V2Workflow | undefined {
 		flow,
 		roles,
 		...(references ? { references } : {}),
+		...(deepPlanning ? { deepPlanning } : {}),
 	};
 }
 

@@ -16,6 +16,7 @@
 import * as fs from "node:fs";
 
 export type BrainParallelMode = "auto" | "required" | "off";
+export type BrainDeepPlanningMode = "auto" | "required" | "off";
 
 export type BrainAgentMarker = {
 	id?: string;
@@ -31,6 +32,7 @@ export type BrainContractMarker = {
 
 export type BrainMarkers = {
 	parallel: BrainParallelMode | null;
+	deepPlanning: BrainDeepPlanningMode | null;
 	room: string | null;
 	agents: BrainAgentMarker[];
 	contracts: BrainContractMarker[];
@@ -42,6 +44,7 @@ const COMMENT_RE = /<!--([\s\S]*?)-->/g;
 
 export const EMPTY_BRAIN_MARKERS: BrainMarkers = {
 	parallel: null,
+	deepPlanning: null,
 	room: null,
 	agents: [],
 	contracts: [],
@@ -54,6 +57,7 @@ export const DEFAULT_BRAIN_MARKERS_BLOCK = [
 	"<!--",
 	"  Brain marker syntax (read-only docs, not markers):",
 	"  brain:parallel=auto|required|off",
+	"  brain:deep_planning=auto|required|off",
 	"  brain:room=auto|<room-id>",
 	"  brain:agent id=backend role=backend job=backend-api owns=src/api/**",
 	"  brain:contract topic=api message=\"Agree request/response schema before editing.\"",
@@ -124,6 +128,12 @@ function isParallelMode(value: string): BrainParallelMode | null {
 	return null;
 }
 
+function isDeepPlanningMode(value: string): BrainDeepPlanningMode | null {
+	const v = value.trim().toLowerCase();
+	if (v === "auto" || v === "required" || v === "off") return v;
+	return null;
+}
+
 function normalizeRoom(value: string): string {
 	const v = value.trim();
 	if (!v) return "";
@@ -151,6 +161,7 @@ function directAssignmentValue(attrs: Array<[string, string]>): string | null {
 export function parseBrainMarkersFromText(text: string | null | undefined): BrainMarkers {
 	const result: BrainMarkers = {
 		parallel: null,
+		deepPlanning: null,
 		room: null,
 		agents: [],
 		contracts: [],
@@ -176,6 +187,16 @@ export function parseBrainMarkersFromText(text: string | null | undefined): Brai
 			const mode = isParallelMode(value);
 			if (mode) {
 				result.parallel = mode;
+				result.hasMarkers = true;
+			}
+			continue;
+		}
+		if (h === "deep_planning" || h === "deepplanning") {
+			const value = directAssignmentValue(attrs);
+			if (value === null) continue;
+			const mode = isDeepPlanningMode(value);
+			if (mode) {
+				result.deepPlanning = mode;
 				result.hasMarkers = true;
 			}
 			continue;
@@ -262,6 +283,17 @@ export function formatBrainMarkersForPrompt(markers: BrainMarkers): string {
 		}
 		lines.push(`- parallel=${markers.parallel}: ${hint}`);
 	}
+	if (markers.deepPlanning) {
+		let hint = "";
+		if (markers.deepPlanning === "required") {
+			hint = "Run a planning-only round of deep-planning (via workflow_deep_plan) before any coder delegation. Use force:true unless deepPlanning is already enabled in config.";
+		} else if (markers.deepPlanning === "auto") {
+			hint = "Assess task complexity and run deep planning when useful, then synthesize options + risks before coder delegation. If this opt-in comes from the marker while config is disabled, pass force:true.";
+		} else {
+			hint = "Deep planning not required for this task unless the user explicitly overrides the marker.";
+		}
+		lines.push(`- deep_planning=${markers.deepPlanning}: ${hint}`);
+	}
 	if (markers.room) {
 		if (markers.room.toLowerCase() === "auto") {
 			lines.push(
@@ -295,5 +327,10 @@ export function formatBrainMarkersForPrompt(markers: BrainMarkers): string {
 	lines.push(
 		"Concrete instructions: include the relevant marker hints in the Technical Architect / Parallel Work Assessment. If parallel=required or parallel=auto with a safe split, call room_create before delegating and pass `room: { roomId, ... }` on delegate_to_coder / delegate_to_reviewer so workers receive the workflow-room context.",
 	);
+	if (markers.deepPlanning === "required") {
+		lines.push(
+			"If deep_planning=required, run deep-planning (workflow_deep_plan) before coder delegation with force:true unless deepPlanning is already enabled in config.",
+		);
+	}
 	return lines.join("\n");
 }

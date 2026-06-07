@@ -188,6 +188,39 @@ function managedWorkflowBundle(): JsonObject {
 			{ role: "coder" },
 			{ role: "reviewer" },
 		],
+		deepPlanning: {
+			enabled: false,
+			plannerCount: 3,
+			maxConcurrency: 3,
+			rounds: 2,
+			roomIdPrefix: "deep-plan",
+			planners: [
+				{
+					id: "planner-1",
+					role: "architecture",
+					modelPreset: "premium-planner",
+					thinkingLevel: "xhigh",
+					instructions:
+						"Create options with explicit tradeoffs for architecture and implementation approach, and call out known constraints before converging.",
+				},
+				{
+					id: "planner-2",
+					role: "risk",
+					modelPreset: "premium-planner",
+					thinkingLevel: "high",
+					instructions:
+						"Analyze regression, rollout safety, validation cost, and operational risks of each option with specific assumptions.",
+				},
+				{
+					id: "planner-3",
+					role: "review",
+					modelPreset: "premium-planner",
+					thinkingLevel: "xhigh",
+					instructions:
+						"Critique the leading options for blind spots and propose consensus criteria plus residual risks to carry into implementation planning.",
+				},
+			],
+		},
 		roles: [
 			{ role: "brain", agent: "brain-default" },
 			{ role: "coder", agent: "coder-default" },
@@ -238,6 +271,7 @@ function managedModelPresets(): JsonObject {
 			{ id: "premium-brain", provider: "openai-codex", model: "gpt-5.5", thinkingLevel: "xhigh" },
 			{ id: "premium-coder", provider: "openai-codex", model: "gpt-5.3-codex", thinkingLevel: "medium" },
 			{ id: "premium-reviewer", provider: "openai-codex", model: "gpt-5.5", thinkingLevel: "high" },
+			{ id: "premium-planner", provider: "openai-codex", model: "gpt-5.5", thinkingLevel: "xhigh" },
 		],
 	};
 }
@@ -248,7 +282,7 @@ function managedToolProfiles(): JsonObject {
 		profiles: [
 			{
 				id: "brain-room-only",
-				tools: ["read", "bash", "grep", "find", "ls", "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status"],
+				tools: ["read", "bash", "grep", "find", "ls", "room_create", "room_job_start", "room_send", "room_read", "room_job_done", "room_status", "workflow_deep_plan"],
 			},
 			{
 				id: "coder-room-and-edit",

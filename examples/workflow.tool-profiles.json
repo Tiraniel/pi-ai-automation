@@ -15,7 +15,8 @@
 				"room_send",
 				"room_read",
 				"room_job_done",
-				"room_status"
+				"room_status",
+				"workflow_deep_plan"
 			]
 		},
 		{

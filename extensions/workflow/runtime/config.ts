@@ -21,6 +21,7 @@ import { DEFAULT_CONFIG } from "../defaults";
 import { GONKA_DOTENV_KEYS, GONKA_DOTENV_PATH, WORKFLOW_PROFILES } from "../profiles";
 import { adaptV2ResolvedWorkflow } from "./v2-adapter";
 import { detectConfigVersion, loadV2Workflow } from "../config";
+import { readDeepPlanningConfig } from "../config/deep-planning.js";
 import type {
 	AgentName,
 	AgentPreset,
@@ -214,7 +215,13 @@ function loadV2WorkflowConfig(scope: "global" | "project", filePath: string): {
 				}
 				return { config: {}, source, diagnostics: sourceDiagnostics };
 			}
-			const adapted = adaptV2ResolvedWorkflow(loadedWorkflow.resolved, { scope, path: filePath }, loadedWorkflow.diagnostics, loadedWorkflow.sourceMeta);
+			const adapted = adaptV2ResolvedWorkflow(
+				loadedWorkflow.resolved,
+				{ scope, path: filePath },
+				loadedWorkflow.diagnostics,
+				loadedWorkflow.sourceMeta,
+				loadedWorkflow.catalogs,
+			);
 			source.version = adapted.source.version;
 			if (adapted.source.managedBy) source.managedBy = adapted.source.managedBy;
 			if (adapted.source.managedVersion) source.managedVersion = adapted.source.managedVersion;
@@ -228,7 +235,14 @@ function loadV2WorkflowConfig(scope: "global" | "project", filePath: string): {
 			return { config: adapted.config, source, diagnostics: sourceDiagnostics };
 		}
 
-		return { config: ensureV1Config(raw), source, diagnostics: sourceDiagnostics };
+		const config = ensureV1Config(raw);
+		if (isPlainObject(raw)) {
+			const deepPlanning = readDeepPlanningConfig(raw);
+			if (deepPlanning) {
+				config.deepPlanning = deepPlanning;
+			}
+		}
+		return { config, source, diagnostics: sourceDiagnostics };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		sourceDiagnostics.push(makeWorkflowDiagnostic(scope, "error", "workflow-read-failed", message));

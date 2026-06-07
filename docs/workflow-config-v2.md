@@ -13,13 +13,15 @@ its catalog files for delegation.
 2. Make concrete model ids, tool names, prompt text, and quality-gate
    commands live in catalogs, not in the workflow file. The workflow file
    references catalog entries by id only.
-3. Preserve v1 behavior. Every v1 `workflow.json` must normalize to a
+3. Add an explicit optional `deepPlanning` workflow block that runs planning-only multi-persona passes in an isolated, room-based flow before coder delegation.
+   Planner configurations use `modelPreset` where possible and preserve a v1 `deep_planning` alias in configuration loaders.
+4. Preserve v1 behavior. Every v1 `workflow.json` must normalize to a
    workflow whose resolved effective config (model, tools, prompts, swarm
    goals) is identical to what the current v1 deep-merge produces.
-4. Make the active flow explicit. Brain orchestration is constrained to a
+5. Make the active flow explicit. Brain orchestration is constrained to a
    declared set of agents (`meta.activeAgents`), defaulting to
    `["brain", "coder", "reviewer"]`.
-5. Make coder / reviewer / reviewer-swarm identities composable from the
+6. Make coder / reviewer / reviewer-swarm identities composable from the
    same catalog building blocks, so a quality-gate catalog entry is the
    same object whether it is a CI check or a reviewer-swarm goal. Reviewer
    goals are code-review goals derived from the reviewer identity and are not
@@ -27,7 +29,7 @@ its catalog files for delegation.
    settings on the v2 workflow; its goals are owned by the quality-gate
    catalog and attached to the reviewer agent identity through
    `agentCatalog.agents[].qualityGates`.
-6. Fail loudly on malformed required workflow entries. `normalizeV2Workflow`
+7. Fail loudly on malformed required workflow entries. `normalizeV2Workflow`
    returns `undefined` when `flow` or `roles` is absent, empty, or
    contains any malformed entry; malformed entries are not silently
    dropped. Misconfiguration surfaces at load time, not as silent no-op
@@ -40,7 +42,7 @@ high-level orchestration data; the catalogs hold concrete values.
 
 | File | Responsibility | Concretely carries |
 | --- | --- | --- |
-| `examples/workflow.json` | The high-level workflow. | `meta`, `direction`, `flow`, `roles`, `references`. No model ids, tool names, prompt text, runtime settings, or reviewer-swarm configuration. |
+| `examples/workflow.json` | The high-level workflow. | `meta`, `direction`, `flow`, `roles`, `references`, `deepPlanning` (runtime-wired planning mode exception). `deepPlanning` uses `modelPreset` planner references and stays planning-only. No raw model ids, and runtime settings remain out-of-scope. |
 | `examples/workflow.agent-catalog.json` | Logical agent identities. | `agents[]`: `{id, role, modelPreset?, toolProfile?, promptPacks?, qualityGates?, overrides?}`. |
 | `examples/workflow.model-presets.json` | Model preset catalog. | `presets[]`: `{id, provider, model, thinkingLevel?}`. |
 | `examples/workflow.tool-profiles.json` | Tool profile catalog. | `profiles[]`: `{id, tools, includeKarpathyGuidelines?}`. |
@@ -52,21 +54,37 @@ The example set lives in `examples/` and is intentionally separate from
 `extensions/` so the workflow model is documented without touching the v1
 runtime.
 
-### Runtime / delegate settings are explicitly out of v2 workflow scope
+### Runtime / delegate settings are explicitly out of v2 workflow scope except `deepPlanning`
 
 The v1 `WorkflowConfig` carries runtime/delegate settings at the top
 level — `autoApplyBrain`, `delegateDisplay`, `delegatePaneAutoClose` —
 that control how `extensions/brain-workflow.ts` invokes Pi, not what
-the workflow does. These are intentionally NOT a v2 workflow concern.
+the workflow does. These are intentionally NOT a v2 workflow concern. `deepPlanning` is the explicit runtime-wired exception.
 
-- The v2 `V2Workflow` type has no `runtime` field. `normalizeV2Workflow`
+- The v2 `V2Workflow` type has no general `runtime` field. `normalizeV2Workflow`
   drops any top-level `runtime` key from the input without warning
-  (it is explicitly out-of-scope, not a malformed required entry).
+  (it is explicitly out-of-scope, not a malformed required entry). `deepPlanning`
+  remains first-class at top-level and is modeled explicitly via its own fields.
 - `loadWorkflowConfig` routes `version: 2` files through `loadV2Workflow`
   and keeps legacy v1 runtime behavior for v1 config files.
 - If runtime settings need v2-first-class modeling, the right place is a
   separate runtime-settings/profile artifact, not a field on `V2Workflow`.
   That keeps workflow definitions high-level and shareable across profiles.
+
+### Deep-planning config as the explicit runtime-wired exception
+
+`deepPlanning` is intentionally the one explicit runtime-wired feature that is first-class in the top-level workflow object.
+
+`deepPlanning` is for **planning-only** execution before implementation delegation and should not replace Brain synthesis.
+Planner entries may include `provider/model/modelPreset` references; **`modelPreset` is the preferred form for v2** and is resolved through `workflow.model-presets.json`.
+`deepPlanning` includes `enabled`, `plannerCount`, `maxConcurrency`, `rounds`, `roomIdPrefix`, and `planners` (each with `id`, `role`, `modelPreset`, optional `provider`, `model`, `thinkingLevel`, `instructions`).
+
+Deep-planning is disabled by default (`enabled: false`). Opt in via workflow config with `"deepPlanning": { "enabled": true, ... }` (v1 alias remains `deep_planning`). If Brain honors `brain:deep_planning=required`, or if Brain selects `auto` while config is disabled, Brain must call `workflow_deep_plan` with `force: true` to run planning despite `enabled` being false.
+When enabled, `workflow_deep_plan` orchestrates bounded rounds and returns a concise transcript for Brain to synthesize.
+
+### V1 deep-planning alias
+
+v1 config uses snake_case for this block (`deep_planning`) and is supported by `readDeepPlanningConfig` as an alias that maps into the normalized `deepPlanning` config.
 
 ## Active-flow constraint
 
@@ -169,6 +187,17 @@ identity (filtering `qualityGates` to entries whose catalog gate has
 These reviewer goals are implementation-focused checks over changed code,
 not approval of architecture-plan text.
 
+### Deep-planner `modelPreset` resolution
+
+Planner entries use the same catalog-first pattern as roles:
+
+1. If `planner.modelPreset` is set, it resolves to `workflow.model-presets.json`.
+2. Missing presets emit `deep-planner-model-preset-missing` diagnostics.
+3. `model` and `provider` from `planner` override any preset values only when present, so a planner can still customize without losing preset defaults.
+4. Missing all model fields produces an unresolved planner model without fabricating values (no fake strings).
+
+The resolved planner list in `loadWorkflowConfig` remains visible in `/workflow` and passed to `workflow_deep_plan`.
+
 ## V1 migration path
 
 V1 is preserved end-to-end. The v1 config (`workflow.json` with no
@@ -203,6 +232,7 @@ V1 -> V2 field map:
 | `delegateDisplay` | not migrated — preserved by legacy v1 compatibility behavior in `loadWorkflowConfig`. |
 | `delegatePaneAutoClose` | not migrated — preserved by legacy v1 compatibility behavior in `loadWorkflowConfig`. |
 | `agents.<role>.{provider, model, thinkingLevel, tools, instructions, includeKarpathyGuidelines}` | `agents[].overrides.*` (with `agents[].id` = `<role>` and `agents[].role` = `<role>`) |
+| `deep_planning` | `deepPlanning` (canonical). The v2 alias supports planner references (`modelPreset`) and planner rounds/concurrency settings. |
 | `reviewerSwarm.{enabled, maxConcurrency, targets}` | not migrated into the v2 workflow — preserved by legacy v1 compatibility behavior in `loadWorkflowConfig`. Reviewer-swarm configuration in v2 is owned by the quality-gates catalog and the reviewer agent identity's `qualityGates`. |
 | `profile` | preserved as `meta.name` (`"v1-profile:<id>"`) only; legacy profiles stay in v1 compatibility mode. |
 
@@ -241,6 +271,12 @@ extensions/workflow/
     normalize.ts
     resolve.ts
     index.ts
+  deep-planning.ts
+  deep-planning-core.ts
+  runtime/
+    bootstrap.ts
+    config.ts
+    v2-adapter.ts
 examples/
   workflow.json
   workflow.agent-catalog.json

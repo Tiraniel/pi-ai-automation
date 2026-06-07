@@ -36,6 +36,7 @@ import {
 	resolveReviewerSwarmConfig,
 } from "./workflow/delegate";
 import { registerArchitectureTools } from "./workflow/architecture";
+import { registerDeepPlanningTool } from "./workflow/deep-planning";
 import {
 	ensureManagedGlobalWorkflow,
 	inspectGlobalWorkflowState,
@@ -75,6 +76,7 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 	registerRoomTools(pi);
 	registerDelegateDoneTools(pi);
 	registerArchitectureTools(pi);
+	registerDeepPlanningTool(pi);
 
 	pi.registerCommand("workflow", {
 		description: "Show effective brain/coder/reviewer workflow presets",
@@ -107,6 +109,8 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 			const diagnosticPreview = configDiagnostics
 				.slice(0, 5)
 				.map((diagnostic) => `[${diagnostic.severity}] ${diagnostic.code}: ${diagnostic.message}`);
+			const deepPlanning = loaded.config.deepPlanning ?? {};
+			const plannerLabels = (deepPlanning.planners ?? []).map((planner, index) => `${planner.id ?? `planner-${index + 1}`}: ${planner.role ?? `planner-${index + 1}`}`).join(" | ") || "(none)";
 			const lines = [
 				"Pi workflow: brain -> coder -> reviewer",
 				`global: ${loaded.globalPath}`,
@@ -128,6 +132,8 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 				formatPreset("reviewer", getAgentPreset(loaded.config, "reviewer")),
 				`reviewerSwarm: enabled=${reviewerSwarm.enabled} maxConcurrency=${reviewerSwarm.maxConcurrency}`,
 				`reviewerSwarm targets: ${reviewerSwarm.targets.join(" | ")}`,
+				`deepPlanning: enabled=${deepPlanning.enabled === true ? "true" : "false"} plannerCount=${deepPlanning.plannerCount ?? 0} rounds=${deepPlanning.rounds ?? 0} maxConcurrency=${deepPlanning.maxConcurrency ?? 0} roomIdPrefix=${deepPlanning.roomIdPrefix ?? "(none)"}`,
+				`deepPlanning planners: ${plannerLabels}`,
 				"",
 				`delegateDisplay: ${delegateMode}${delegateMode !== "headless" ? ` (cmux=${cmuxAvailable ? "available" : "unavailable"})` : ""}`,
 				`delegatePaneAutoClose: ${loaded.config.delegatePaneAutoClose !== false ? "true (default)" : "false"}`,

@@ -66,12 +66,32 @@ export interface ReviewerSwarmConfig {
 	targets?: string[];
 }
 
+export interface DeepPlanningPlannerConfig {
+	id?: string;
+	role?: string;
+	provider?: string;
+	model?: string;
+	modelPreset?: string;
+	thinkingLevel?: ThinkingLevel;
+	instructions?: string;
+}
+
+export interface DeepPlanningConfig {
+	enabled?: boolean;
+	plannerCount?: number;
+	maxConcurrency?: number;
+	rounds?: number;
+	roomIdPrefix?: string;
+	planners?: DeepPlanningPlannerConfig[];
+}
+
 export interface WorkflowConfig {
 	autoApplyBrain?: boolean;
 	/** Built-in workflow profile id (e.g. "default" or "gonka-hybrid"). */
 	profile?: string;
 	agents?: Record<string, AgentPreset>;
 	reviewerSwarm?: ReviewerSwarmConfig;
+	deepPlanning?: DeepPlanningConfig;
 	/** Delegate display/transport mode. "headless" (default) runs child delegates as JSON subprocesses.
 	 *  "pane" launches them in a visible cmux surface. "auto" uses pane when cmux is available, otherwise headless. */
 	delegateDisplay?: DelegateDisplayMode;
@@ -309,6 +329,7 @@ export interface V2Workflow {
 	flow: V2FlowStep[];
 	roles: V2RoleBinding[];
 	references?: V2WorkflowReferences;
+	deepPlanning?: DeepPlanningConfig;
 }
 
 // ---------- resolved result shapes ----------
