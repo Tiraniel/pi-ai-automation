@@ -54,15 +54,15 @@ That means a profile selected in `.pi/workflow.json` can override older global d
 
 ### Interactive workflow configuration
 
-You can open a local workflow profile/runtime editor with `/workflow_cfg` in TUI mode. It opens a centered overlay configurator with a searchable model picker, a constrained thinking-level picker, runtime settings (delegate display/pane auto-close, reviewer swarm, deep planning), and a preview/confirm step that atomically writes `.pi/workflow.local.json` on Apply. Cancel/back paths never write. `/workflow configure` and `/workflow config` remain compatibility aliases for the same overlay, so existing command bindings keep working.
+You can open a local workflow profile/runtime editor with `/workflow_cfg` in TUI mode. It opens a centered overlay configurator with a root menu of three blocks: **Profile**, **Profile config**, and **Runtime settings**. Each block has its own Apply/write; there is no global Preview & apply. Cancel/back paths never write. `/workflow configure` and `/workflow config` remain compatibility aliases for the same overlay, so existing command bindings keep working.
 
-The picker shows friendly profile tiles:
+**Profile** is an in-place selector with check (✓) markers. Rows: Default, Gonka (shown only when `GONKA_BROKER_API_KEY` is configured via process env or `~/.pi/.env`), Custom, Apply, Back. Selecting a profile row moves the ✓ marker and keeps the user in the menu; Apply writes the selected profile to `.pi/workflow.local.json`.
 
-- `Default`
-- `Gonka` (maps to the existing `gonka-hybrid` profile; only selectable when the current model registry exposes an available `gonka` provider)
-- `Custom per-role` (per-role model/thinking/runtime overrides)
+**Profile config** shows Default, Gonka (same env gate), Custom, Delegate fallback models, Apply, Back. Default and Gonka open read-only field views so you understand the built-in values; Custom opens editable per-role model/thinking pickers; Delegate fallback models opens a submenu where edits are staged and written by the parent Profile config → Apply.
 
-For `Custom per-role`, per-role models are sourced from Pi's available models list (`ctx.modelRegistry.getAvailable()`) and rendered as `provider/model` choices. The overlay also exposes coder and reviewer **fallback model** rows so you can set a backup provider/model for each delegate role. If the model registry is empty or unavailable, the overlay warns and continues in a limited mode: built-in profile and runtime settings remain available, custom model picking and fallback model picking are unavailable, and any disk write still requires the Preview/Apply confirmation.
+**Runtime settings** keeps its own Save/Discard actions and writes runtime changes immediately on Save.
+
+For Custom per-role and fallback models, choices are sourced from Pi's available models list (`ctx.modelRegistry.getAvailable()`) and rendered as `provider/model` choices. If the model registry is empty or unavailable, the overlay warns and continues in a limited mode: built-in profiles and runtime settings remain available, custom model picking and fallback model picking are unavailable.
 
 The configure flow persists only runtime override fields to `.pi/workflow.local.json` and does not mutate `.pi/workflow.json` managed catalog sidecars. The file is loaded after nearest `.pi/workflow.json` and before profile flags so it stays project-local and persistent.
 
@@ -85,7 +85,7 @@ Example fallback configuration in `.pi/workflow.local.json`:
 }
 ```
 
-`/workflow_cfg` can set or clear these fallbacks independently; cancel/back/preview-only paths never write.
+`/workflow_cfg` can set or clear these fallbacks under Profile config → Delegate fallback models; they are staged and written by Profile config → Apply. Cancel/back paths never write.
 
 Reviewer swarm behavior:
 - If `reviewerSwarm.enabled` is `true` (default), `delegate_to_reviewer` runs one read-only reviewer per goal.
@@ -97,20 +97,26 @@ Reviewer swarm behavior:
 
 ## Deep planning (opt-in)
 
-Deep planning is planning-only and disabled by default:
+Deep planning is planning-only and disabled by default. It runs bounded Product Requirements agent discussion before implementation:
 
 ```json
 {
   "deepPlanning": {
     "enabled": false,
-    "plannerCount": 3,
-    "maxConcurrency": 3,
+    "plannerCount": 2,
+    "maxConcurrency": 2,
     "rounds": 2,
     "roomIdPrefix": "deep-plan",
     "planners": [
       {
-        "id": "planner-1",
-        "role": "architecture",
+        "id": "pr-agent-1",
+        "role": "product-requirements",
+        "modelPreset": "premium-planner",
+        "thinkingLevel": "xhigh"
+      },
+      {
+        "id": "pr-agent-2",
+        "role": "product-requirements",
         "modelPreset": "premium-planner",
         "thinkingLevel": "xhigh"
       }
@@ -119,8 +125,12 @@ Deep planning is planning-only and disabled by default:
 }
 ```
 
-Planner entries are planning personas for `workflow_deep_plan`: read-only delegates, no `edit`, `write`, or `bash`.
-Planners should reference model presets (like `modelPreset`) instead of raw model ids.
+Planner entries are Product Requirements personas for `workflow_deep_plan`: read-only delegates, no `edit`, `write`, or `bash`. They use bounded grill-me behavior: inspect the codebase before asking when possible, ask at most one highest-value question per round with a recommended answer, and update a shared PRD with resolved decisions and open questions. They do not produce implementation plans or code.
+
+Brain must synthesize planner outputs into a memo with PRD draft, resolved decisions, unresolved user questions, options, risks, and `ready_for_sprint: yes|no`. Brain then proceeds with normal planning → implementation delegation only after explicit user confirmation.
+
+Planning artifacts live under `.pi/workflow-runs/<planning-room>/PRD.md` and `memo.md` as the pre-sprint contract (prompt-only scope in this slice).
+
 `brain` should call `workflow_deep_plan` for complex tasks when the task marker/opt-in requests it, then synthesize options and risks before sending implementation tasks to `delegate_to_coder`. If deep-planning config is disabled (default), pass `force:true` when honoring a required/auto marker unless the user explicitly enabled deep planning in config.
 
 For opt-in control, put a task marker in the sprint task markdown:

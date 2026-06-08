@@ -69,7 +69,7 @@ function buildRuntimeItems(runtime: WorkflowRuntimeDraft): SettingItem[] {
 			id: "deepPlanning.plannerCount",
 			label: "Deep planning planner count",
 			description: "Bounded 1-8 planners per round",
-			currentValue: String(runtime.deepPlanningPlannerCount ?? 3),
+			currentValue: String(runtime.deepPlanningPlannerCount ?? 2),
 			values: NUMERIC_VALUES_1_8,
 		},
 		{
@@ -83,13 +83,13 @@ function buildRuntimeItems(runtime: WorkflowRuntimeDraft): SettingItem[] {
 			id: "deepPlanning.maxConcurrency",
 			label: "Deep planning max concurrency",
 			description: "Bounded 1-8 concurrent planners",
-			currentValue: String(runtime.deepPlanningMaxConcurrency ?? 3),
+			currentValue: String(runtime.deepPlanningMaxConcurrency ?? 2),
 			values: NUMERIC_VALUES_1_8,
 		},
 		{
 			id: "__save",
 			label: "Save runtime edits",
-			description: "Return staged runtime settings to the dashboard; disk still requires Preview & apply",
+			description: "Apply runtime settings and write to .pi/workflow.local.json",
 			currentValue: "save",
 			values: ["save"],
 		},
@@ -184,10 +184,10 @@ export async function runRuntimeOverlay(
 
 		const container = new Container();
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Runtime settings — staged in memory")), 1, 0));
-		container.addChild(new Text(theme.fg("dim", "Edits here stay staged until you return to the dashboard and pick 'Preview & apply'."), 1, 0));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Runtime settings")), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "Save writes immediately to .pi/workflow.local.json. Discard/back leaves without writing."), 1, 0));
 		container.addChild(settingsList);
-		container.addChild(new Text(theme.fg("dim", "Enter cycles values • choose 'Save runtime edits' to stage • Esc/discard returns without staging"), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "Enter cycles values • choose 'Save runtime edits' to apply • Esc/discard returns without writing"), 1, 0));
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
 		return {

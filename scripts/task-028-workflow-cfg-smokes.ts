@@ -322,7 +322,7 @@ function readSource(rel: string): string {
 	check(configure.includes("showWorkflowConfigureOverlay") && configure.includes("./configure-overlay"), "phaseB source: /workflow configure routes to overlay");
 	const overlay = readSource("extensions/workflow/configure-overlay.ts");
 	check(overlay.includes('overlayOptions: { anchor: "center"') && overlay.includes("maxHeight"), "phaseB source: overlay uses centered overlay options");
-	check(overlay.includes("collectWorkflowModelChoices") && overlay.includes("isGonkaAvailable") && overlay.includes("runPreviewOverlay") && overlay.includes("showModelPickerOverlay") && overlay.includes("loadWorkflowConfig"), "phaseB source: overlay composes helper/model/profile/preview blocks");
+	check(overlay.includes("collectWorkflowModelChoices") && overlay.includes("showModelPickerOverlay") && overlay.includes("loadWorkflowConfig") && overlay.includes("runProfileOverlay") && overlay.includes("runRuntimeOverlay"), "phaseB source: overlay composes helper/model/profile/runtime blocks");
 	check(!overlay.includes("cleared: false"), "phaseB source: role edits do not assign cleared:false");
 	const preview = readSource("extensions/workflow/configure-overlay-preview.ts");
 	check(preview.includes("buildWorkflowLocalPreviewText") && preview.includes("buildWorkflowLocalPayload") && preview.includes("writeWorkflowLocalOverride") && preview.includes("./configure-io") && !preview.includes('from "./configure"'), "phaseB source: preview/apply uses Phase A helpers and configure-io");
@@ -337,7 +337,7 @@ function readSource(rel: string): string {
 		check(runtime.includes(id), `phaseB source: runtime setting exposed: ${id}`);
 	}
 	const readme = readSource("README.md");
-	check(readme.includes("/workflow_cfg") && readme.includes("limited mode") && readme.includes("Preview/Apply"), "phaseB docs: README documents /workflow_cfg and degraded limited mode");
+	check(readme.includes("/workflow_cfg") && readme.includes("limited mode"), "phaseB docs: README documents /workflow_cfg and degraded limited mode");
 }
 
 {
@@ -381,46 +381,60 @@ function readSource(rel: string): string {
 }
 
 {
-	// Menu-cleanup grouping/current-awareness checks (DBG-002)
+	// DBG-003 per-block apply schema checks
 	const overlay = readSource("extensions/workflow/configure-overlay.ts");
 	const profileOverlay = readSource("extensions/workflow/configure-overlay-profile.ts");
 
-	// Root dashboard: only high-level groups + preview/cancel
-	check(overlay.includes('id: "profile-models"'), "menu cleanup: root has profile-models group");
-	check(overlay.includes('id: "fallbacks"'), "menu cleanup: root has fallbacks group");
-	check(overlay.includes('id: "runtime"'), "menu cleanup: root has runtime group");
-	check(overlay.includes('id: "preview"'), "menu cleanup: root has preview");
-	check(overlay.includes('id: "cancel"'), "menu cleanup: root has cancel");
-	// Root must not expose fallback leaf rows directly
-	const rootEnd = overlay.indexOf("function runProfileModelsOverlay");
+	// Root menu: Profile, Profile config, Runtime settings, Back/Close
+	check(overlay.includes('value: "profile"') && overlay.includes('label: "Profile"'), "dbg003: root has Profile");
+	check(overlay.includes('value: "profile-config"') && overlay.includes('label: "Profile config"'), "dbg003: root has Profile config");
+	check(overlay.includes('value: "runtime"') && overlay.includes('label: "Runtime settings"'), "dbg003: root has Runtime settings");
+	check(overlay.includes('value: "back"') && overlay.includes('label: "Back/Close"'), "dbg003: root has Back/Close");
+	// Root must not have global preview/fallbacks
+	check(!overlay.includes('id: "preview"'), "dbg003: root has no global preview");
+	check(!overlay.includes('id: "cancel"'), "dbg003: root has no cancel");
+	const rootEnd = overlay.indexOf("function runProfileConfigOverlay");
 	const rootSection = rootEnd > 0 ? overlay.slice(0, rootEnd) : overlay;
-	check(!rootSection.includes('id: "fallback:'), "menu cleanup: root does not expose fallback: leaf rows");
-	check(!rootSection.includes('id: "fallback-clear:'), "menu cleanup: root does not expose fallback-clear: leaf rows");
+	check(!rootSection.includes('id: "fallback:'), "dbg003: root does not expose fallback: leaf rows");
+	check(!rootSection.includes('id: "fallback-clear:'), "dbg003: root does not expose fallback-clear: leaf rows");
 
-	// Fallback submenu exists with Back
-	check(overlay.includes("function runFallbackOverlay"), "menu cleanup: fallback submenu overlay exists");
-	check(overlay.includes('value: `fallback:${role}`'), "menu cleanup: fallback submenu has fallback: rows");
-	check(overlay.includes('value: `fallback-clear:${role}`'), "menu cleanup: fallback submenu has fallback-clear: rows");
-	check(overlay.includes('value: "back"') && overlay.includes("function runFallbackOverlay"), "menu cleanup: fallback submenu has Back row");
+	// Profile config menu: Default, Gonka (env-gated), Custom, Delegate fallback models, Apply, Back
+	check(overlay.includes("function runProfileConfigOverlay"), "dbg003: profile config overlay exists");
+	check(overlay.includes('value: "default"') && overlay.includes("read-only"), "dbg003: profile config has Default read-only");
+	check(overlay.includes('value: "gonka"') && overlay.includes("read-only"), "dbg003: profile config has Gonka read-only");
+	check(overlay.includes('value: "custom"') && overlay.includes("Edit custom"), "dbg003: profile config has Custom editable");
+	check(overlay.includes('value: "fallbacks"') && overlay.includes("Delegate fallback"), "dbg003: profile config has Delegate fallback models");
+	check(overlay.includes('value: "apply"') && overlay.includes("Profile config"), "dbg003: profile config has Apply");
+	check(overlay.includes('value: "back"') && overlay.includes("function runProfileConfigOverlay"), "dbg003: profile config has Back");
 
-	// Profile/models submenu exists with switch-profile, per-role rows, Back
-	check(overlay.includes("function runProfileModelsOverlay"), "menu cleanup: profile-models submenu overlay exists");
-	check(overlay.includes('value: "switch-profile"'), "menu cleanup: profile-models submenu has switch-profile");
-	check(overlay.includes('value: `model:${role}`'), "menu cleanup: profile-models submenu has model: rows");
-	check(overlay.includes('value: `thinking:${role}`'), "menu cleanup: profile-models submenu has thinking: rows");
-	check(overlay.includes('value: `clear:${role}`'), "menu cleanup: profile-models submenu has clear: rows");
+	// Fallback submenu is nested under profile config, has Back only
+	check(overlay.includes("function runFallbackSubmenu"), "dbg003: fallback submenu exists");
+	check(overlay.includes('value: `fallback:${role}`'), "dbg003: fallback submenu has fallback: rows");
+	check(overlay.includes('value: `fallback-clear:${role}`'), "dbg003: fallback submenu has fallback-clear: rows");
+	check(overlay.includes('value: "back"') && overlay.includes("function runFallbackSubmenu"), "dbg003: fallback submenu has Back");
 
-	// Profile picker: current-aware, omits current profile from selectable rows, omits unavailable Gonka
-	check(profileOverlay.includes("currentProfile"), "menu cleanup: profile overlay accepts currentProfile");
-	check(profileOverlay.includes('if (options.currentProfile !== "default")'), "menu cleanup: profile picker omits current default");
-	check(profileOverlay.includes('if (options.currentProfile !== "gonka")'), "menu cleanup: profile picker omits current gonka");
-	check(profileOverlay.includes('if (options.currentProfile !== "custom")'), "menu cleanup: profile picker omits current custom");
-	check(profileOverlay.includes("Current profile:") && profileOverlay.includes("currentLabel"), "menu cleanup: profile picker shows current in header text");
-	check(profileOverlay.includes('!options.gonkaAvailable && options.currentProfile !== "gonka"'), "menu cleanup: profile picker gates unavailable Gonka hint");
-	// Gonka unavailable should not appear as a selectable row (no label with "unavailable")
-	check(!profileOverlay.includes("Gonka (unavailable)"), "menu cleanup: no selectable unavailable Gonka row");
-	// Back instead of Cancel label
-	check(profileOverlay.includes('label: "Back"'), "menu cleanup: profile picker uses Back label");
+	// Custom fields overlay under profile config
+	check(overlay.includes("function runCustomFieldsOverlay"), "dbg003: custom fields overlay exists");
+	check(overlay.includes('value: `model:${role}`'), "dbg003: custom fields has model: rows");
+	check(overlay.includes('value: `thinking:${role}`'), "dbg003: custom fields has thinking: rows");
+	check(overlay.includes('value: `clear:${role}`'), "dbg003: custom fields has clear: rows");
+
+	// Profile selection overlay: checked in-place, Apply/Back, env-gated Gonka
+	check(profileOverlay.includes("gonkaEnvConfigured"), "dbg003: profile overlay uses env-gated Gonka");
+	check(profileOverlay.includes('"✓ "') || profileOverlay.includes("'✓ '"), "dbg003: profile overlay has check marker");
+	check(profileOverlay.includes('value: "apply"'), "dbg003: profile overlay has Apply");
+	check(profileOverlay.includes('value: "back"'), "dbg003: profile overlay has Back");
+	check(profileOverlay.includes("GONKA_BROKER_API_KEY"), "dbg003: profile overlay mentions env key gate");
+	check(!profileOverlay.includes("gonkaAvailable"), "dbg003: profile overlay does not use model-registry gonkaAvailable");
+
+	// Runtime writes immediately
+	check(overlay.includes("function runRuntimeBlock"), "dbg003: runtime block exists");
+	const runtimeOverlay = readSource("extensions/workflow/configure-overlay-runtime.ts");
+	check(runtimeOverlay.includes("Save runtime edits") && runtimeOverlay.includes("write to .pi/workflow.local.json"), "dbg003: runtime overlay mentions immediate write");
+
+	// Read-only built-in field views use DEFAULT_CONFIG and GONKA_HYBRID_PROFILE_APPLY
+	check(overlay.includes("DEFAULT_CONFIG.agents"), "dbg003: read-only fields use DEFAULT_CONFIG");
+	check(overlay.includes("GONKA_HYBRID_PROFILE_APPLY"), "dbg003: read-only fields use GONKA_HYBRID_PROFILE_APPLY");
 }
 
 if (failures > 0) {

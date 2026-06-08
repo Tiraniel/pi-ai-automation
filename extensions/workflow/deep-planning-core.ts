@@ -155,8 +155,8 @@ export function mergeDeepPlanningConfig(
 			|| hasPlannerOverrides
 				? true
 				: Boolean(source?.enabled),
-		plannerCount: clampPositive(request.plannerCount, source?.plannerCount ?? 3),
-		maxConcurrency: clampPositive(request.maxConcurrency, source?.maxConcurrency ?? 3),
+		plannerCount: clampPositive(request.plannerCount, source?.plannerCount ?? 2),
+		maxConcurrency: clampPositive(request.maxConcurrency, source?.maxConcurrency ?? 2),
 		rounds: clampPositive(request.rounds, source?.rounds ?? 2),
 		roomIdPrefix: source?.roomIdPrefix ?? "deep-plan",
 		planners: dedupePlanners(hasPlannerOverrides ? (request.planners ?? []) : (source?.planners ?? [])),
@@ -169,19 +169,23 @@ export function mergeDeepPlanningConfig(
 
 export function buildPlannerRoundPrompt(task: string, planner: DeepPlanningPlannerConfig, round: number, rounds: number): string {
 	const roundSummary = round === 1
-		? "Round 1: independently produce options and explicit risks for the task."
-		: "Round 2: read the room transcript, critique prior options, build consensus, and identify remaining risks.";
+		? "Round 1: independently inspect the codebase (read, grep, find, ls) and produce a PRD draft with resolved decisions, open questions, options, and risks."
+		: "Round 2: read the room transcript, critique prior PRD items, ask at most one highest-value grill-me question with a recommended answer, and update the shared PRD.";
 	return `${roundSummary}
 
 Task:
 ${task}
 
-You are a planning-only delegate inside a workflow room.
+You are a Product Requirements agent inside a workflow room.
 - Do not edit files, write files, or run edit/bash commands.
 - Use room_job_start before analysis and room_job_done after your final message.
-- Use room_send to post assumptions, options, risks, and questions.
+- Use room_send to post PRD updates, assumptions, options, risks, and questions.
 - Call room_read before finishing this round so you can incorporate other planner outputs.
-- Do not return a final implementation plan; return options/risk/recommendation only.
+- Ask at most one highest-value question per round; include a recommended answer or default.
+- Inspect the codebase (read, grep, find, ls) before asking the user when possible.
+- Maintain and update a PRD draft with resolved decisions and unresolved open questions.
+- Do not produce implementation plans or code.
+- Final output must include: PRD draft, resolved decisions, unresolved user questions, options, risks, ready_for_sprint: yes|no.
 
 Planner context:
 - id: ${planner.id}

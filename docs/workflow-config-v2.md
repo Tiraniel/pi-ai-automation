@@ -79,12 +79,15 @@ runtime safety override, not a v2 catalog identity.
 
 `deepPlanning` is intentionally the one explicit runtime-wired feature that is first-class in the top-level workflow object.
 
-`deepPlanning` is for **planning-only** execution before implementation delegation and should not replace Brain synthesis.
+`deepPlanning` is for **planning-only** Product Requirements execution before implementation delegation and should not replace Brain synthesis. The default is two Product Requirements agents (`plannerCount: 2`, `maxConcurrency: 2`, `rounds: 2`) that run bounded grill-me discussion. Planners inspect the codebase before asking when possible, ask at most one highest-value question per round with a recommended answer, and update a shared PRD with resolved decisions and open questions. They do not produce implementation plans or code.
+
 Planner entries may include `provider/model/modelPreset` references; **`modelPreset` is the preferred form for v2** and is resolved through `workflow.model-presets.json`.
 `deepPlanning` includes `enabled`, `plannerCount`, `maxConcurrency`, `rounds`, `roomIdPrefix`, and `planners` (each with `id`, `role`, `modelPreset`, optional `provider`, `model`, `thinkingLevel`, `instructions`).
 
 Deep-planning is disabled by default (`enabled: false`). Opt in via workflow config with `"deepPlanning": { "enabled": true, ... }` (v1 alias remains `deep_planning`). If Brain honors `brain:deep_planning=required`, or if Brain selects `auto` while config is disabled, Brain must call `workflow_deep_plan` with `force: true` to run planning despite `enabled` being false.
-When enabled, `workflow_deep_plan` orchestrates bounded rounds and returns a concise transcript for Brain to synthesize.
+When enabled, `workflow_deep_plan` orchestrates bounded rounds and returns a concise transcript for Brain to synthesize into a memo (PRD draft, resolved decisions, unresolved questions, options, risks, `ready_for_sprint: yes|no`). Brain proceeds with normal planning → implementation delegation only after explicit user confirmation.
+
+Planning artifacts live under `.pi/workflow-runs/<planning-room>/PRD.md` and `memo.md` as the pre-sprint contract (documented/prompt-only scope in this slice).
 
 ### V1 deep-planning alias
 
@@ -256,7 +259,7 @@ The v1 `profile` mechanism (built-in `default`, `gonka-hybrid`,
 - `package.json` and the dependency set are untouched. No new dependencies,
   no `pnpm install`.
 - `loadWorkflowConfig` now also loads nearest `.pi/workflow.local.json` after `.pi/workflow.json`; this optional file is a local-only runtime override (fields like `profile`, `agents`, `delegateDisplay`, etc.) and is applied before CLI `--workflow-profile`.
-- `/workflow_cfg` is the interactive editor for that local override: it stages profile/runtime/per-role changes in memory, shows a preview, and writes `.pi/workflow.local.json` atomically on Apply. It also exposes coder and reviewer fallback model rows using the existing searchable model picker. Catalog files (`.pi/workflow.json` and the v2 catalog sidecars) are never mutated, and cancel/back paths never write.
+- `/workflow_cfg` is the interactive editor for that local override: it uses block-level Apply menus (Profile, Profile config, Runtime settings) where each block writes independently to `.pi/workflow.local.json`. It also exposes coder and reviewer fallback model rows using the existing searchable model picker. Catalog files (`.pi/workflow.json` and the v2 catalog sidecars) are never mutated, and cancel/back paths never write.
 
 ## Example v2 file set
 

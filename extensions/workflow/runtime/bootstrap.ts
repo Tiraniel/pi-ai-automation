@@ -190,34 +190,26 @@ function managedWorkflowBundle(): JsonObject {
 		],
 		deepPlanning: {
 			enabled: false,
-			plannerCount: 3,
-			maxConcurrency: 3,
+			plannerCount: 2,
+			maxConcurrency: 2,
 			rounds: 2,
 			roomIdPrefix: "deep-plan",
 			planners: [
 				{
-					id: "planner-1",
-					role: "architecture",
+					id: "pr-agent-1",
+					role: "product-requirements",
 					modelPreset: "premium-planner",
 					thinkingLevel: "xhigh",
 					instructions:
-						"Create options with explicit tradeoffs for architecture and implementation approach, and call out known constraints before converging.",
+						"You are a Product Requirements agent. In a bounded grill-me discussion with one other PR agent, ask at most one highest-value question per round with a recommended answer. Inspect the codebase before asking when possible. Update the shared PRD with resolved decisions and open questions. Do not produce implementation plans or code. Final output must include: PRD draft, resolved decisions, unresolved user questions, options, risks, ready_for_sprint: yes|no.",
 				},
 				{
-					id: "planner-2",
-					role: "risk",
-					modelPreset: "premium-planner",
-					thinkingLevel: "high",
-					instructions:
-						"Analyze regression, rollout safety, validation cost, and operational risks of each option with specific assumptions.",
-				},
-				{
-					id: "planner-3",
-					role: "review",
+					id: "pr-agent-2",
+					role: "product-requirements",
 					modelPreset: "premium-planner",
 					thinkingLevel: "xhigh",
 					instructions:
-						"Critique the leading options for blind spots and propose consensus criteria plus residual risks to carry into implementation planning.",
+						"You are a Product Requirements agent. In a bounded grill-me discussion with one other PR agent, ask at most one highest-value question per round with a recommended answer. Inspect the codebase before asking when possible. Update the shared PRD with resolved decisions and open questions. Do not produce implementation plans or code. Final output must include: PRD draft, resolved decisions, unresolved user questions, options, risks, ready_for_sprint: yes|no.",
 				},
 			],
 		},

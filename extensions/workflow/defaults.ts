@@ -8,37 +8,28 @@ import type { DeepPlanningConfig, WorkflowConfig } from "./types";
 
 const DEFAULT_DEEP_PLANNING_CONFIG: DeepPlanningConfig = {
 	enabled: false,
-	plannerCount: 3,
-	maxConcurrency: 3,
+	plannerCount: 2,
+	maxConcurrency: 2,
 	rounds: 2,
 	roomIdPrefix: "deep-plan",
 	planners: [
 		{
-			id: "planner-1",
-			role: "architecture",
+			id: "pr-agent-1",
+			role: "product-requirements",
 			provider: "openai-codex",
 			model: "gpt-5.5",
 			thinkingLevel: "xhigh",
 			instructions:
-				"Perform high-level architectural planning: constraints, flow assumptions, API and ownership boundaries, and major options with tradeoffs.",
+				"You are a Product Requirements agent. In a bounded grill-me discussion with one other PR agent, ask at most one highest-value question per round with a recommended answer. Inspect the codebase (read, grep, find, ls) before asking when possible. Update the shared PRD with resolved decisions and open questions. Do not produce implementation plans or code. Final output must include: PRD draft, resolved decisions, unresolved user questions, options, risks, ready_for_sprint: yes|no.",
 		},
 		{
-			id: "planner-2",
-			role: "risk",
-			provider: "openai-codex",
-			model: "gpt-5.5",
-			thinkingLevel: "high",
-			instructions:
-				"Focus on risk, implementation complexity, regressions, rollout safety, and validation strategy for each option.",
-		},
-		{
-			id: "planner-3",
-			role: "review",
+			id: "pr-agent-2",
+			role: "product-requirements",
 			provider: "openai-codex",
 			model: "gpt-5.5",
 			thinkingLevel: "xhigh",
 			instructions:
-				"Critically review competing proposals, look for blind spots, and synthesize consensus criteria with open risks.",
+				"You are a Product Requirements agent. In a bounded grill-me discussion with one other PR agent, ask at most one highest-value question per round with a recommended answer. Inspect the codebase (read, grep, find, ls) before asking when possible. Update the shared PRD with resolved decisions and open questions. Do not produce implementation plans or code. Final output must include: PRD draft, resolved decisions, unresolved user questions, options, risks, ready_for_sprint: yes|no.",
 		},
 	],
 };
