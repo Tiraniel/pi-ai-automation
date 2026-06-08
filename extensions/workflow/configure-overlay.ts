@@ -18,18 +18,22 @@ import {
 	type SelectItem,
 	SelectList,
 	Text,
+	Key,
+	matchesKey,
 } from "@earendil-works/pi-tui";
 
 import {
 	AGENT_ROLES,
 	type AgentName,
 	type DelegateAgentName,
+	type LoadedWorkflowConfig,
 	type ThinkingLevel,
 } from "./types";
 import {
 	buildWorkflowLocalPayload,
 	collectWorkflowModelChoices,
 	getSupportedWorkflowThinkingLevels,
+	hydrateProfileConfigDraft,
 	type WorkflowConfigDraft,
 	type WorkflowCustomEdits,
 	type WorkflowDraftProfile,
@@ -282,14 +286,14 @@ async function runReadonlyFieldsOverlay(
 		for (const line of lines) {
 			container.addChild(new Text(theme.fg("dim", line), 1, 0));
 		}
-		container.addChild(new Text(theme.fg("dim", "Press enter or esc to return."), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "esc to return"), 1, 0));
 		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
 		return {
 			render: (w: number) => container.render(w),
 			invalidate: () => container.invalidate(),
 			handleInput: (input: string) => {
-				if (input === "\r" || input === "\n" || input === "\x1b" || input === "\x1b\x1b") {
+				if (matchesKey(input, Key.escape) || matchesKey(input, Key.ctrl("c"))) {
 					done();
 					return;
 				}
@@ -301,77 +305,138 @@ async function runReadonlyFieldsOverlay(
 
 // --- Custom editable fields ---
 
+/** Builds a per-role display string for the custom fields overlay. When
+ *  the user has no staged edit for a role but the loaded effective
+ *  config defines one (e.g. a local override from a previous session),
+ *  show that effective value so the user is not misled into thinking
+ *  the role is at "(default)". */
+function customRoleModelDisplay(
+	role: AgentName,
+	draft: WorkflowConfigDraft,
+	choices: WorkflowModelChoice[],
+	effectiveAgents: LoadedWorkflowConfig["config"]["agents"] | undefined,
+): string {
+	const staged = draft.customEdits[role];
+	if (staged) return formatRoleEditDisplay(staged, choices);
+	const effective = effectiveAgents?.[role];
+	if (!effective || (!effective.provider && !effective.model)) return "(default)";
+	const id = effective.provider && effective.model ? `${effective.provider}/${effective.model}` : "(incomplete)";
+	return effective.thinkingLevel ? `${id}:${effective.thinkingLevel}` : id;
+}
+
+function customRoleThinkingDisplay(
+	role: AgentName,
+	draft: WorkflowConfigDraft,
+	effectiveAgents: LoadedWorkflowConfig["config"]["agents"] | undefined,
+): string {
+	const staged = draft.customEdits[role];
+	if (staged) return staged.thinkingLevel ?? "(default)";
+	const effective = effectiveAgents?.[role];
+	return effective?.thinkingLevel ?? "(default)";
+}
+
 async function runCustomFieldsOverlay(
 	ctx: ExtensionContext,
 	draft: WorkflowConfigDraft,
 	choices: WorkflowModelChoice[],
+	effectiveAgents: LoadedWorkflowConfig["config"]["agents"] | undefined,
 ): Promise<WorkflowConfigDraft> {
-	const items: SelectItem[] = [];
-	for (const role of AGENT_ROLES) {
-		items.push({
-			value: `model:${role}`,
-			label: `${role} model`,
-			description: formatRoleEditDisplay(draft.customEdits[role], choices),
-		});
-		items.push({
-			value: `thinking:${role}`,
-			label: `${role} thinking`,
-			description: draft.customEdits[role]?.thinkingLevel ?? "(default)",
-		});
-		if (draft.customEdits[role]) {
+	let working = draft;
+	// Internal loop: after a model/thinking/clear action we re-open the
+	// same submenu so the user can change several fields in one visit.
+	// Esc/Back returns to the Profile config root without writing.
+	//
+	// DBG-005 chain: for coder/reviewer, the model row encapsulates the
+	// thinking-level selection (model picker -> thinking picker -> return
+	// to params) so we do not emit a standalone thinking row for those
+	// roles. Brain keeps its standalone model + thinking rows until Brain
+	// is later converted to the same chain.
+	while (true) {
+		const items: SelectItem[] = [];
+		for (const role of AGENT_ROLES) {
 			items.push({
-				value: `clear:${role}`,
-				label: `Clear ${role} override`,
-				description: "Drop the staged edit for this role",
+				value: `model:${role}`,
+				label: `${role} model`,
+				description: customRoleModelDisplay(role, working, choices, effectiveAgents),
 			});
+			// Standalone thinking row: only brain in this scoped change.
+			// For coder/reviewer the model row chains into the thinking
+			// picker, so the model row's description already shows the
+			// staged/effective thinking level.
+			if (role === "brain") {
+				items.push({
+					value: `thinking:${role}`,
+					label: `${role} thinking`,
+					description: customRoleThinkingDisplay(role, working, effectiveAgents),
+				});
+			}
+			if (working.customEdits[role]) {
+				items.push({
+					value: `clear:${role}`,
+					label: `Clear ${role} override`,
+					description: "Drop the staged edit for this role",
+				});
+			}
 		}
+		items.push({ value: "back", label: "Back", description: "Return to profile config menu" });
+
+		const sub = await ctx.ui.custom<string | null>((_tui, theme, _kb, done) => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+			container.addChild(new Text(theme.fg("accent", theme.bold("Custom profile fields")), 1, 0));
+			container.addChild(new Text(theme.fg("dim", "Edit per-role model and thinking. Changes are staged until Profile config → Apply."), 1, 0));
+
+			const selectList = new SelectList(items, Math.min(items.length, 16), getSelectListTheme(), {
+				minPrimaryColumnWidth: 22,
+				maxPrimaryColumnWidth: 50,
+			});
+			selectList.onSelect = (item) => done(item.value);
+			selectList.onCancel = () => done("back");
+
+			container.addChild(selectList);
+			container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc back"), 1, 0));
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+			return {
+				render: (w: number) => container.render(w),
+				invalidate: () => container.invalidate(),
+				handleInput: (input: string) => {
+					selectList.handleInput(input);
+					_tui.requestRender();
+				},
+			};
+		}, { overlay: true, overlayOptions: { anchor: "center", width: 92, maxHeight: "85%" } });
+
+		if (sub === "back" || sub === null) return working;
+		if (sub.startsWith("model:")) {
+			const role = sub.slice("model:".length) as AgentName;
+			if (!AGENT_ROLES.includes(role)) continue;
+			// DBG-005: coder/reviewer chain model -> thinking in one nested
+			// flow. Brain keeps the existing single-pick behavior.
+			if (role === "coder" || role === "reviewer") {
+				working = await applyRoleModelAndThinkingPick(ctx, working, role, choices);
+			} else {
+				working = await applyModelPick(ctx, working, role, choices);
+			}
+			continue;
+		}
+		if (sub.startsWith("thinking:")) {
+			const role = sub.slice("thinking:".length) as AgentName;
+			// DBG-005: only brain exposes a standalone thinking row in this
+			// scoped change. Coder/reviewer are routed through the chain.
+			if (role !== "brain") continue;
+			if (!AGENT_ROLES.includes(role)) continue;
+			working = await applyThinkingPick(ctx, working, role, choices);
+			continue;
+		}
+		if (sub.startsWith("clear:")) {
+			const role = sub.slice("clear:".length) as AgentName;
+			if (!AGENT_ROLES.includes(role)) continue;
+			working = applyClearRole(working, role);
+			continue;
+		}
+		return working;
 	}
-	items.push({ value: "back", label: "Back", description: "Return to profile config menu" });
-
-	const sub = await ctx.ui.custom<string | null>((_tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Custom profile fields")), 1, 0));
-		container.addChild(new Text(theme.fg("dim", "Edit per-role model and thinking. Changes are staged until Profile config → Apply."), 1, 0));
-
-		const selectList = new SelectList(items, Math.min(items.length, 16), getSelectListTheme(), {
-			minPrimaryColumnWidth: 22,
-			maxPrimaryColumnWidth: 50,
-		});
-		selectList.onSelect = (item) => done(item.value);
-		selectList.onCancel = () => done("back");
-
-		container.addChild(selectList);
-		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc back"), 1, 0));
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (input: string) => {
-				selectList.handleInput(input);
-				_tui.requestRender();
-			},
-		};
-	}, { overlay: true, overlayOptions: { anchor: "center", width: 92, maxHeight: "85%" } });
-
-	if (sub === "back" || sub === null) return draft;
-	if (sub.startsWith("model:")) {
-		const role = sub.slice("model:".length) as AgentName;
-		if (!AGENT_ROLES.includes(role)) return draft;
-		return await applyModelPick(ctx, draft, role, choices);
-	}
-	if (sub.startsWith("thinking:")) {
-		const role = sub.slice("thinking:".length) as AgentName;
-		if (!AGENT_ROLES.includes(role)) return draft;
-		return await applyThinkingPick(ctx, draft, role, choices);
-	}
-	if (sub.startsWith("clear:")) {
-		const role = sub.slice("clear:".length) as AgentName;
-		if (!AGENT_ROLES.includes(role)) return draft;
-		return applyClearRole(draft, role);
-	}
-	return draft;
 }
 
 // --- Delegate fallback models submenu (staged, no inner apply) ---
@@ -396,62 +461,75 @@ async function runFallbackSubmenu(
 	choices: WorkflowModelChoice[],
 	effectiveFallbacks: Partial<Record<DelegateAgentName, { provider?: string; model?: string; thinkingLevel?: ThinkingLevel }>> | undefined,
 ): Promise<WorkflowConfigDraft> {
-	const items: SelectItem[] = [];
-	for (const role of DELEGATE_AGENT_ROLES) {
-		items.push({
-			value: `fallback:${role}`,
-			label: `${role} fallback model`,
-			description: formatFallbackDisplay(role, draft, effectiveFallbacks, choices),
-		});
-		if (draft.fallbackEdits?.[role] || effectiveFallbacks?.[role]) {
+	let working = draft;
+	// Internal loop: after picking or clearing a fallback we re-open the
+	// same submenu so the user can change several fallbacks in one visit.
+	// Esc/Back returns to the Profile config root; the parent Apply still
+	// owns the disk write.
+	while (true) {
+		const items: SelectItem[] = [];
+		for (const role of DELEGATE_AGENT_ROLES) {
 			items.push({
-				value: `fallback-clear:${role}`,
-				label: `Clear ${role} fallback`,
-				description: "Remove this local fallback override",
+				value: `fallback:${role}`,
+				label: `${role} fallback model`,
+				description: formatFallbackDisplay(role, working, effectiveFallbacks, choices),
 			});
+			if (working.fallbackEdits?.[role] || effectiveFallbacks?.[role]) {
+				items.push({
+					value: `fallback-clear:${role}`,
+					label: `Clear ${role} fallback`,
+					description: "Remove this local fallback override",
+				});
+			}
 		}
+		items.push({ value: "back", label: "Back", description: "Return to profile config menu" });
+
+		const sub = await ctx.ui.custom<string | null>((_tui, theme, _kb, done) => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+			container.addChild(new Text(theme.fg("accent", theme.bold("Delegate fallback models")), 1, 0));
+			container.addChild(new Text(theme.fg("dim", "Pick a fallback model or clear an existing override. Changes are staged until Profile config → Apply."), 1, 0));
+
+			const selectList = new SelectList(items, Math.min(items.length, 12), getSelectListTheme(), {
+				minPrimaryColumnWidth: 24,
+				maxPrimaryColumnWidth: 50,
+			});
+			selectList.onSelect = (item) => done(item.value);
+			selectList.onCancel = () => done("back");
+
+			container.addChild(selectList);
+			container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc back"), 1, 0));
+			container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+			return {
+				render: (w: number) => container.render(w),
+				invalidate: () => container.invalidate(),
+				handleInput: (input: string) => {
+					selectList.handleInput(input);
+					_tui.requestRender();
+				},
+			};
+		}, { overlay: true, overlayOptions: { anchor: "center", width: 92, maxHeight: "85%" } });
+
+		if (sub === "back" || sub === null) return working;
+		if (sub.startsWith("fallback:")) {
+			const role = sub.slice("fallback:".length) as DelegateAgentName;
+			if (!DELEGATE_AGENT_ROLES.includes(role)) continue;
+			// DBG-005: fallback model -> thinking chain (matches the
+			// custom-fields chain). Esc on thinking returns to the model
+			// picker; Esc on the model picker returns to fallback params
+			// unchanged.
+			working = await applyFallbackModelAndThinkingPick(ctx, working, role, choices);
+			continue;
+		}
+		if (sub.startsWith("fallback-clear:")) {
+			const role = sub.slice("fallback-clear:".length) as DelegateAgentName;
+			if (!DELEGATE_AGENT_ROLES.includes(role)) continue;
+			working = applyClearFallback(working, role);
+			continue;
+		}
+		return working;
 	}
-	items.push({ value: "back", label: "Back", description: "Return to profile config menu" });
-
-	const sub = await ctx.ui.custom<string | null>((_tui, theme, _kb, done) => {
-		const container = new Container();
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("Delegate fallback models")), 1, 0));
-		container.addChild(new Text(theme.fg("dim", "Pick a fallback model or clear an existing override. Changes are staged until Profile config → Apply."), 1, 0));
-
-		const selectList = new SelectList(items, Math.min(items.length, 12), getSelectListTheme(), {
-			minPrimaryColumnWidth: 24,
-			maxPrimaryColumnWidth: 50,
-		});
-		selectList.onSelect = (item) => done(item.value);
-		selectList.onCancel = () => done("back");
-
-		container.addChild(selectList);
-		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc back"), 1, 0));
-		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-		return {
-			render: (w: number) => container.render(w),
-			invalidate: () => container.invalidate(),
-			handleInput: (input: string) => {
-				selectList.handleInput(input);
-				_tui.requestRender();
-			},
-		};
-	}, { overlay: true, overlayOptions: { anchor: "center", width: 92, maxHeight: "85%" } });
-
-	if (sub === "back" || sub === null) return draft;
-	if (sub.startsWith("fallback:")) {
-		const role = sub.slice("fallback:".length) as DelegateAgentName;
-		if (!DELEGATE_AGENT_ROLES.includes(role)) return draft;
-		return await applyFallbackPick(ctx, draft, role, choices);
-	}
-	if (sub.startsWith("fallback-clear:")) {
-		const role = sub.slice("fallback-clear:".length) as DelegateAgentName;
-		if (!DELEGATE_AGENT_ROLES.includes(role)) return draft;
-		return applyClearFallback(draft, role);
-	}
-	return draft;
 }
 
 // --- Profile config orchestration ---
@@ -459,14 +537,22 @@ async function runFallbackSubmenu(
 async function runProfileConfigBlock(
 	ctx: ExtensionContext,
 	choices: WorkflowModelChoice[],
-	loaded: ReturnType<typeof loadWorkflowConfig>,
+	loaded: LoadedWorkflowConfig,
 ): Promise<WorkflowConfigureResult> {
-	let draft: WorkflowConfigDraft = {
-		profile: profileFromLoaded(loaded.profileId),
-		runtime: {},
-		customEdits: {},
-		fallbackEdits: {},
-	};
+	const existingLocal = getLatestExistingLocal(ctx);
+	const localAgents = (existingLocal.agents && typeof existingLocal.agents === "object"
+		? (existingLocal.agents as LoadedWorkflowConfig["config"]["agents"])
+		: undefined);
+	const localFallbacks = (existingLocal.delegateFallbacks && typeof existingLocal.delegateFallbacks === "object"
+		? (existingLocal.delegateFallbacks as LoadedWorkflowConfig["config"]["delegateFallbacks"])
+		: undefined);
+	let draft: WorkflowConfigDraft = hydrateProfileConfigDraft(
+		loaded.config.agents,
+		loaded.config.delegateFallbacks,
+		localAgents,
+		localFallbacks,
+		profileFromLoaded(loaded.profileId),
+	);
 
 	while (true) {
 		const action = await runProfileConfigOverlay(ctx, choices, draft);
@@ -474,8 +560,8 @@ async function runProfileConfigBlock(
 			return { applied: false, cancelled: true };
 		}
 		if (action === "apply") {
-			const existingLocal = getLatestExistingLocal(ctx);
-			const payload = buildWorkflowLocalPayload(existingLocal, draft);
+			const existing = getLatestExistingLocal(ctx);
+			const payload = buildWorkflowLocalPayload(existing, draft);
 			try {
 				writeWorkflowLocalOverride(ctx.cwd, payload);
 				return notifySaved(ctx);
@@ -488,7 +574,7 @@ async function runProfileConfigBlock(
 			continue;
 		}
 		if (action === "custom") {
-			draft = await runCustomFieldsOverlay(ctx, draft, choices);
+			draft = await runCustomFieldsOverlay(ctx, draft, choices, loaded.config.agents);
 			if (Object.keys(draft.customEdits).length > 0) {
 				draft.profile = "custom";
 			}
@@ -544,6 +630,115 @@ async function runRuntimeBlock(
 // ============================================================================
 // Sub-action handlers (model/thinking/fallback pick/clear)
 // ============================================================================
+
+/** DBG-005 chain helper for the Custom profile params menu.
+ *
+ *  Opens the model picker, then the thinking picker constrained to the
+ *  chosen model. Esc on the model picker returns the draft unchanged
+ *  (no model staged). Esc on the thinking picker returns to the model
+ *  picker so the user can re-pick without losing the flow. Selecting a
+ *  thinking level stages both model and thinking atomically. */
+async function applyRoleModelAndThinkingPick(
+	ctx: ExtensionContext,
+	current: WorkflowConfigDraft,
+	role: AgentName,
+	choices: WorkflowModelChoice[],
+): Promise<WorkflowConfigDraft> {
+	const existing = current.customEdits[role];
+	while (true) {
+		const modelResult = await showModelPickerOverlay(
+			ctx,
+			choices,
+			role,
+			existing?.provider,
+			existing?.model,
+		);
+		if (!modelResult) return current;
+		const supported = getSupportedWorkflowThinkingLevels(modelResult.choice);
+		if (supported.length === 0) {
+			// No thinking levels advertised for this model -> commit model
+			// only, mirroring applyModelPick's no-think behavior.
+			const edit: WorkflowRoleEdit = { ...(existing ?? {}) };
+			delete edit.cleared;
+			edit.provider = modelResult.choice.provider;
+			edit.model = modelResult.choice.id;
+			delete edit.thinkingLevel;
+			const customEdits: WorkflowCustomEdits = { ...current.customEdits, [role]: edit };
+			return { ...current, profile: "custom", customEdits };
+		}
+		const currentLevel: ThinkingLevel = (existing?.thinkingLevel && supported.includes(existing.thinkingLevel))
+			? existing.thinkingLevel
+			: (supported.includes("off") ? "off" : (supported[0] ?? "off"));
+		const thinkingResult = await showThinkingPickerOverlay(
+			ctx,
+			role,
+			modelResult.choice,
+			currentLevel,
+		);
+		if (!thinkingResult) continue;
+		const edit: WorkflowRoleEdit = { ...(existing ?? {}) };
+		delete edit.cleared;
+		edit.provider = modelResult.choice.provider;
+		edit.model = modelResult.choice.id;
+		edit.thinkingLevel = thinkingResult.level;
+		const customEdits: WorkflowCustomEdits = { ...current.customEdits, [role]: edit };
+		return { ...current, profile: "custom", customEdits };
+	}
+}
+
+/** DBG-005 chain helper for the Delegate fallback models submenu.
+ *
+ *  Mirrors `applyRoleModelAndThinkingPick` but commits to
+ *  `fallbackEdits` instead of `customEdits` and seeds the initial
+ *  thinking highlight from the existing fallback edit. */
+async function applyFallbackModelAndThinkingPick(
+	ctx: ExtensionContext,
+	current: WorkflowConfigDraft,
+	role: DelegateAgentName,
+	choices: WorkflowModelChoice[],
+): Promise<WorkflowConfigDraft> {
+	const existing = current.fallbackEdits?.[role];
+	while (true) {
+		const modelResult = await showModelPickerOverlay(
+			ctx,
+			choices,
+			role,
+			existing?.provider,
+			existing?.model,
+		);
+		if (!modelResult) return current;
+		const supported = getSupportedWorkflowThinkingLevels(modelResult.choice);
+		if (supported.length === 0) {
+			const edit: WorkflowRoleEdit = {};
+			edit.provider = modelResult.choice.provider;
+			edit.model = modelResult.choice.id;
+			const fallbackEdits: NonNullable<WorkflowConfigDraft["fallbackEdits"]> = {
+				...(current.fallbackEdits ?? {}),
+				[role]: edit,
+			};
+			return { ...current, fallbackEdits };
+		}
+		const currentLevel: ThinkingLevel = (existing?.thinkingLevel && supported.includes(existing.thinkingLevel))
+			? existing.thinkingLevel
+			: (supported.includes("off") ? "off" : (supported[0] ?? "off"));
+		const thinkingResult = await showThinkingPickerOverlay(
+			ctx,
+			role,
+			modelResult.choice,
+			currentLevel,
+		);
+		if (!thinkingResult) continue;
+		const edit: WorkflowRoleEdit = {};
+		edit.provider = modelResult.choice.provider;
+		edit.model = modelResult.choice.id;
+		edit.thinkingLevel = thinkingResult.level;
+		const fallbackEdits: NonNullable<WorkflowConfigDraft["fallbackEdits"]> = {
+			...(current.fallbackEdits ?? {}),
+			[role]: edit,
+		};
+		return { ...current, fallbackEdits };
+	}
+}
 
 async function applyModelPick(
 	ctx: ExtensionContext,

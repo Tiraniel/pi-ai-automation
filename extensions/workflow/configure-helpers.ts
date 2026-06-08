@@ -188,6 +188,68 @@ export interface WorkflowConfigDraft {
 	fallbackEdits?: WorkflowFallbackEdits;
 }
 
+/** Inspects the existing local override (already merged config) and
+ *  returns the staged draft the configurator should hydrate from.
+ *  When the local override has any explicit `agents` or
+ *  `delegateFallbacks` entries the user is effectively in Custom mode
+ *  and the per-role edits/fallbacks are seeded from the local override
+ *  so the user can see and edit their current effective values.
+ *  Otherwise the profile id from `profileId` is used. Pure helper:
+ *  never touches disk. */
+export function hydrateProfileConfigDraft(
+	loadedEffectiveAgents: WorkflowConfig["agents"] | undefined,
+	loadedEffectiveFallbacks: WorkflowConfig["delegateFallbacks"] | undefined,
+	localOverrideAgents: WorkflowConfig["agents"] | undefined,
+	localOverrideFallbacks: WorkflowConfig["delegateFallbacks"] | undefined,
+	loadedProfileId: WorkflowDraftProfile,
+): WorkflowConfigDraft {
+	const hasLocalAgentOverride = Boolean(localOverrideAgents && Object.keys(localOverrideAgents).length > 0);
+	const hasLocalFallbackOverride = Boolean(localOverrideFallbacks && Object.keys(localOverrideFallbacks).length > 0);
+	const profile: WorkflowDraftProfile = hasLocalAgentOverride ? "custom" : loadedProfileId;
+
+	const sourceAgents = hasLocalAgentOverride ? localOverrideAgents : undefined;
+	const sourceFallbacks = hasLocalFallbackOverride ? localOverrideFallbacks : undefined;
+
+	const customEdits: WorkflowCustomEdits = {};
+	if (sourceAgents) {
+		for (const role of AGENT_ROLES) {
+			const preset = sourceAgents[role];
+			if (!preset) continue;
+			const edit: WorkflowRoleEdit = {};
+			if (typeof preset.provider === "string" && preset.provider.length > 0) edit.provider = preset.provider;
+			if (typeof preset.model === "string" && preset.model.length > 0) edit.model = preset.model;
+			if (isThinkingLevel(preset.thinkingLevel)) edit.thinkingLevel = preset.thinkingLevel;
+			if (edit.provider || edit.model || edit.thinkingLevel) customEdits[role] = edit;
+		}
+	}
+
+	const fallbackEdits: WorkflowFallbackEdits = {};
+	if (sourceFallbacks) {
+		for (const role of DELEGATE_AGENT_ROLES) {
+			const preset = sourceFallbacks[role];
+			if (!preset) continue;
+			const edit: WorkflowRoleEdit = {};
+			if (typeof preset.provider === "string" && preset.provider.length > 0) edit.provider = preset.provider;
+			if (typeof preset.model === "string" && preset.model.length > 0) edit.model = preset.model;
+			if (isThinkingLevel(preset.thinkingLevel)) edit.thinkingLevel = preset.thinkingLevel;
+			if (edit.provider || edit.model || edit.thinkingLevel) fallbackEdits[role] = edit;
+		}
+	}
+
+	// Preserve a reference to the loaded effective agents/fallbacks so the
+	// UI can display "current effective value" for roles the user has not
+	// staged an edit for. The draft itself remains pure config data.
+	void loadedEffectiveAgents;
+	void loadedEffectiveFallbacks;
+
+	return {
+		profile,
+		runtime: {},
+		customEdits,
+		fallbackEdits,
+	};
+}
+
 /** True when the draft has any staged change that would write to disk. */
 export function isWorkflowDraftEmpty(draft: WorkflowConfigDraft): boolean {
 	const runtimeEmpty =

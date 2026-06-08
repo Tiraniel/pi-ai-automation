@@ -9,6 +9,7 @@ import {
 	buildWorkflowLocalPreviewText,
 	collectWorkflowModelChoices,
 	getSupportedWorkflowThinkingLevels,
+	hydrateProfileConfigDraft,
 	isGonkaAvailable,
 	isWorkflowDraftEmpty,
 	summarizeWorkflowDraft,
@@ -435,6 +436,181 @@ function readSource(rel: string): string {
 	// Read-only built-in field views use DEFAULT_CONFIG and GONKA_HYBRID_PROFILE_APPLY
 	check(overlay.includes("DEFAULT_CONFIG.agents"), "dbg003: read-only fields use DEFAULT_CONFIG");
 	check(overlay.includes("GONKA_HYBRID_PROFILE_APPLY"), "dbg003: read-only fields use GONKA_HYBRID_PROFILE_APPLY");
+}
+
+{
+	// DBG-004 Profile config hydration helper (pure)
+	const loadedAgents = {
+		brain: { provider: "openai-codex", model: "gpt-5.5", thinkingLevel: "xhigh" },
+		coder: { provider: "openai-codex", model: "gpt-5.3-codex", thinkingLevel: "medium" },
+		reviewer: { provider: "openai-codex", model: "gpt-5.5", thinkingLevel: "high" },
+	};
+	const loadedFallbacks = undefined;
+	// Case 1: no local override => use loaded profile id
+	{
+		const d = hydrateProfileConfigDraft(loadedAgents, loadedFallbacks, undefined, undefined, "default");
+		check(d.profile === "default" && Object.keys(d.customEdits).length === 0, "dbg004: no local override => profile=default, empty customEdits");
+	}
+	{
+		const d = hydrateProfileConfigDraft(loadedAgents, loadedFallbacks, undefined, undefined, "gonka");
+		check(d.profile === "gonka" && Object.keys(d.customEdits).length === 0, "dbg004: no local override => profile=gonka, empty customEdits");
+	}
+	// Case 2: local agent override => profile flips to custom and edits are seeded
+	{
+		const localAgents = { coder: { provider: "minimax", model: "MiniMax-M3", thinkingLevel: "off" } };
+		const d = hydrateProfileConfigDraft(loadedAgents, loadedFallbacks, localAgents, undefined, "default");
+		check(d.profile === "custom", "dbg004: local agents => profile=custom");
+		check(d.customEdits.coder?.provider === "minimax" && d.customEdits.coder?.model === "MiniMax-M3" && d.customEdits.coder?.thinkingLevel === "off", "dbg004: local agents => coder edit seeded from local");
+		check(d.customEdits.brain === undefined, "dbg004: local agents => roles not in local override are not seeded");
+	}
+	// Case 3: local override is loaded profile id (e.g. default) but has agents => still custom
+	{
+		const localAgents = { brain: { provider: "x", model: "y" } };
+		const d = hydrateProfileConfigDraft(loadedAgents, loadedFallbacks, localAgents, undefined, "default");
+		check(d.profile === "custom" && d.customEdits.brain?.model === "y", "dbg004: local agents even when loaded id is default => custom");
+	}
+	// Case 4: local fallbacks are seeded when present
+	{
+		const localFallbacks = { reviewer: { provider: "gonka", model: "m", thinkingLevel: "off" } };
+		const d = hydrateProfileConfigDraft(loadedAgents, loadedFallbacks, undefined, localFallbacks, "default");
+		check(d.fallbackEdits?.reviewer?.provider === "gonka" && d.fallbackEdits?.reviewer?.thinkingLevel === "off", "dbg004: local fallbacks => reviewer edit seeded");
+		check(d.fallbackEdits?.coder === undefined, "dbg004: local fallbacks => unfilled roles not seeded");
+	}
+	// Case 5: empty local override objects are not treated as having overrides
+	{
+		const d = hydrateProfileConfigDraft(loadedAgents, loadedFallbacks, {}, {}, "default");
+		check(d.profile === "default" && Object.keys(d.customEdits).length === 0 && Object.keys(d.fallbackEdits ?? {}).length === 0, "dbg004: empty local objects => profile=default");
+	}
+	// Case 6: thinkingLevel that is not a valid ThinkingLevel is dropped
+	{
+		const localAgents = { coder: { provider: "minimax", model: "m", thinkingLevel: "bogus" } };
+		const d = hydrateProfileConfigDraft(loadedAgents, loadedFallbacks, localAgents, undefined, "default");
+		check(d.customEdits.coder?.thinkingLevel === undefined, "dbg004: invalid thinkingLevel is dropped from seeded edit");
+	}
+	// Case 7: preset with only provider is seeded (matches buildWorkflowLocalPayload tolerance)
+	{
+		const localAgents = { coder: { provider: "minimax", instructions: "x" } };
+		const d = hydrateProfileConfigDraft(loadedAgents, loadedFallbacks, localAgents, undefined, "default");
+		check(d.customEdits.coder?.provider === "minimax", "dbg004: preset with provider-only is seeded to match payload builder tolerance");
+	}
+}
+
+{
+	// DBG-004 source checks: submenu loops, read-only Esc UX, no useless Enter
+	const overlay = readSource("extensions/workflow/configure-overlay.ts");
+
+	// Import Key and matchesKey from pi-tui
+	check(overlay.includes('Key,') && overlay.includes("matchesKey") && overlay.includes('from "@earendil-works/pi-tui"'), "dbg004: overlay imports Key and matchesKey from pi-tui");
+
+	// Read-only overlay uses matchesKey(Key.escape) and does not advertise Enter
+	const roStart = overlay.indexOf("function runReadonlyFieldsOverlay");
+	const roEnd = overlay.indexOf("\n}\n", roStart);
+	const roSection = roStart > 0 && roEnd > 0 ? overlay.slice(roStart, roEnd) : "";
+	check(roSection.includes("matchesKey") && roSection.includes("Key.escape"), "dbg004: read-only overlay uses matchesKey + Key.escape");
+	check(!roSection.includes('input === "\\r"') && !roSection.includes('input === "\\n"'), "dbg004: read-only overlay no longer checks raw enter string");
+	check(!roSection.includes("Press enter or esc"), "dbg004: read-only overlay no longer advertises enter as a dismiss action");
+	check(roSection.includes("esc to return"), "dbg004: read-only overlay footer mentions esc only");
+
+	// Custom fields overlay has internal loop
+	const customStart = overlay.indexOf("function runCustomFieldsOverlay");
+	const customEnd = overlay.indexOf("\n}\n", customStart);
+	const customSection = customStart > 0 && customEnd > 0 ? overlay.slice(customStart, customEnd) : "";
+	check(/while\s*\(\s*true\s*\)/.test(customSection), "dbg004: runCustomFieldsOverlay has an internal while(true) loop");
+	check(customSection.includes("applyModelPick") && customSection.includes("applyThinkingPick") && customSection.includes("applyClearRole"), "dbg004: runCustomFieldsOverlay still routes model/thinking/clear");
+	// The loop must re-show the submenu by calling ctx.ui.custom again inside the loop body
+	const innerCustomCalls = (customSection.match(/ctx\.ui\.custom/g) ?? []).length;
+	check(innerCustomCalls >= 1, "dbg004: runCustomFieldsOverlay shows the submenu via ctx.ui.custom inside the loop");
+
+	// Fallback submenu has internal loop
+	const fbStart = overlay.indexOf("function runFallbackSubmenu");
+	const fbEnd = overlay.indexOf("\n}\n", fbStart);
+	const fbSection = fbStart > 0 && fbEnd > 0 ? overlay.slice(fbStart, fbEnd) : "";
+	check(/while\s*\(\s*true\s*\)/.test(fbSection), "dbg004: runFallbackSubmenu has an internal while(true) loop");
+	// DBG-005: the pick route was upgraded to the chain helper. The clear
+	// route is preserved. Accept either helper name for the pick route so
+	// the DBG-004 invariant ("fallback submenu still routes to a pick
+	// helper and the clear helper") stays valid across the refactor.
+	check(
+		(fbSection.includes("applyFallbackPick") || fbSection.includes("applyFallbackModelAndThinkingPick")) && fbSection.includes("applyClearFallback"),
+		"dbg004: runFallbackSubmenu still routes pick/clear",
+	);
+
+	// runProfileConfigBlock uses the hydration helper and reads local override
+	const blkStart = overlay.indexOf("function runProfileConfigBlock");
+	const blkEnd = overlay.indexOf("\n}\n", blkStart);
+	const blkSection = blkStart > 0 && blkEnd > 0 ? overlay.slice(blkStart, blkEnd) : "";
+	check(blkSection.includes("hydrateProfileConfigDraft"), "dbg004: runProfileConfigBlock uses hydrateProfileConfigDraft");
+	check(blkSection.includes("getLatestExistingLocal") && blkSection.includes("localAgents") && blkSection.includes("localFallbacks"), "dbg004: runProfileConfigBlock reads the latest local override for agents/fallbacks");
+	check(blkSection.includes("loaded.config.agents") && blkSection.includes("runCustomFieldsOverlay"), "dbg004: runProfileConfigBlock passes effective agents into runCustomFieldsOverlay");
+
+	// Custom display helpers seed from effective values when no staged edit
+	const helpersSection = overlay;
+	check(helpersSection.includes("customRoleModelDisplay") && helpersSection.includes("customRoleThinkingDisplay"), "dbg004: custom display helpers seeded from effective agents");
+}
+
+{
+	// DBG-005 chain: model -> thinking for coder/reviewer and fallback
+	const overlay = readSource("extensions/workflow/configure-overlay.ts");
+
+	// Chain helpers exist and use the same pickers as the standalone flow
+	check(overlay.includes("async function applyRoleModelAndThinkingPick"), "dbg005: applyRoleModelAndThinkingPick helper exists");
+	check(overlay.includes("async function applyFallbackModelAndThinkingPick"), "dbg005: applyFallbackModelAndThinkingPick helper exists");
+
+	// The chain helpers must call BOTH the model picker and the thinking
+	// picker. Slice each helper's source to keep this local.
+	{
+		const start = overlay.indexOf("async function applyRoleModelAndThinkingPick");
+		const end = overlay.indexOf("\nasync function applyFallbackModelAndThinkingPick", start);
+		const sec = start > 0 && end > 0 ? overlay.slice(start, end) : "";
+		check(/showModelPickerOverlay/.test(sec), "dbg005: role chain calls showModelPickerOverlay");
+		check(/showThinkingPickerOverlay/.test(sec), "dbg005: role chain calls showThinkingPickerOverlay");
+		check(/while\s*\(\s*true\s*\)/.test(sec), "dbg005: role chain loops so Esc on thinking returns to model picker");
+	}
+	{
+		const start = overlay.indexOf("async function applyFallbackModelAndThinkingPick");
+		const end = overlay.indexOf("\nasync function applyModelPick", start);
+		const sec = start > 0 && end > 0 ? overlay.slice(start, end) : "";
+		check(/showModelPickerOverlay/.test(sec), "dbg005: fallback chain calls showModelPickerOverlay");
+		check(/showThinkingPickerOverlay/.test(sec), "dbg005: fallback chain calls showThinkingPickerOverlay");
+		check(/while\s*\(\s*true\s*\)/.test(sec), "dbg005: fallback chain loops so Esc on thinking returns to model picker");
+	}
+
+	// runCustomFieldsOverlay routes coder/reviewer to the chain helper
+	{
+		const start = overlay.indexOf("function runCustomFieldsOverlay");
+		const end = overlay.indexOf("\n}\n", start);
+		const sec = start > 0 && end > 0 ? overlay.slice(start, end) : "";
+		check(sec.includes("applyRoleModelAndThinkingPick"), "dbg005: runCustomFieldsOverlay routes to role chain helper");
+		// Brain stays on the standalone flow.
+		check(sec.includes("applyModelPick") && sec.includes("applyThinkingPick"), "dbg005: runCustomFieldsOverlay still has standalone brain pickers");
+		// Standalone thinking row is gated to brain only.
+		check(/if\s*\(\s*role\s*===\s*"brain"\s*\)\s*\{[\s\S]*thinking:\${role}/.test(sec), "dbg005: standalone thinking row is emitted only for brain");
+		// When thinking is selected, only brain may take the thinking: branch
+		check(/if\s*\(\s*role\s*!==\s*"brain"\s*\)\s*continue/.test(sec), "dbg005: thinking: branch in the action handler is gated to brain");
+		// Esc semantics: inner Esc (model picker) returns current unchanged.
+		// The chain helpers handle their own return so the action handler
+		// just assigns the result and continues. There must not be a
+		// throwaway staging of the model before the thinking picker opens
+		// in the action handler.
+		check(!/working\s*=\s*await\s+applyModelPick\([^)]*coder/.test(sec), "dbg005: coder is not routed through standalone applyModelPick");
+		check(!/working\s*=\s*await\s+applyModelPick\([^)]*reviewer/.test(sec), "dbg005: reviewer is not routed through standalone applyModelPick");
+	}
+
+	// runFallbackSubmenu routes both fallback roles to the chain helper
+	{
+		const start = overlay.indexOf("function runFallbackSubmenu");
+		const end = overlay.indexOf("\n}\n", start);
+		const sec = start > 0 && end > 0 ? overlay.slice(start, end) : "";
+		check(sec.includes("applyFallbackModelAndThinkingPick"), "dbg005: runFallbackSubmenu routes to fallback chain helper");
+		check(!sec.includes("working = await applyFallbackPick("), "dbg005: runFallbackSubmenu no longer uses standalone applyFallbackPick");
+	}
+
+	// Coder and reviewer display helper stays useful (model row description
+	// shows both model and thinking via formatRoleEditDisplay when a
+	// staged edit exists).
+	{
+		check(overlay.includes("formatRoleEditDisplay") && overlay.includes("customRoleModelDisplay"), "dbg005: customRoleModelDisplay still routes to formatRoleEditDisplay for staged edits");
+	}
 }
 
 if (failures > 0) {
