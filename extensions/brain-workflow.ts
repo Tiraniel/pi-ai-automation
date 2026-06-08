@@ -27,6 +27,11 @@ import {
 	loadWorkflowConfig,
 } from "./workflow/runtime/config";
 import {
+	getWorkflowStatusLabel,
+	setWorkflowStatusFromConfig,
+	showWorkflowConfigure,
+} from "./workflow/configure";
+import {
 	DELEGATE_DISPLAY_ENV,
 	getDelegateFailureReason,
 	isCmuxAvailable,
@@ -80,8 +85,28 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 
 	pi.registerCommand("workflow", {
 		description: "Show effective brain/coder/reviewer workflow presets",
-		handler: async (_args, ctx) => {
-			const loaded = loadWorkflowConfig(ctx.cwd, { cliProfile: pi.getFlag("workflow-profile") as string | undefined });
+		handler: async (rawArgs, ctx) => {
+			const args = Array.isArray(rawArgs)
+				? rawArgs.map((value) => String(value).trim()).filter(Boolean)
+				: typeof rawArgs === "string"
+					? rawArgs.trim().split(/\s+/).filter(Boolean)
+					: [];
+			const subcommand = args[0]?.trim().toLowerCase();
+			const cliProfile = pi.getFlag("workflow-profile") as string | undefined;
+
+			if (subcommand === "configure" || subcommand === "config") {
+				await showWorkflowConfigure(ctx);
+				const updated = loadWorkflowConfig(ctx.cwd, { cliProfile });
+				setWorkflowStatusFromConfig(ctx, updated);
+				return;
+			}
+
+			if (subcommand) {
+				ctx.ui.notify("Usage: /workflow | /workflow configure", "info");
+				return;
+			}
+
+			const loaded = loadWorkflowConfig(ctx.cwd, { cliProfile });
 			const reviewerSwarm = resolveReviewerSwarmConfig(loaded.config);
 			const profile = getWorkflowProfile(loaded.profileId);
 			const gonkaEnv = getGonkaEnvStatus();
@@ -110,12 +135,15 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 				.slice(0, 5)
 				.map((diagnostic) => `[${diagnostic.severity}] ${diagnostic.code}: ${diagnostic.message}`);
 			const deepPlanning = loaded.config.deepPlanning ?? {};
-			const plannerLabels = (deepPlanning.planners ?? []).map((planner, index) => `${planner.id ?? `planner-${index + 1}`}: ${planner.role ?? `planner-${index + 1}`}`).join(" | ") || "(none)";
+			const plannerLabels =
+				(deepPlanning.planners ?? []).map((planner, index) => `${planner.id ?? `planner-${index + 1}`}: ${planner.role ?? `planner-${index + 1}`}`).join(" | ") || "(none)";
 			const lines = [
-				"Pi workflow: brain -> coder -> reviewer",
+				"Pi workflow status",
+				`workflow label: ${getWorkflowStatusLabel(loaded)}`,
 				`global: ${loaded.globalPath}`,
 				`global preset source: ${globalWorkflowState.state}`,
 				`project override: ${loaded.projectPath ?? "(none)"}`,
+				`project local override: ${loaded.projectOverridePath ?? "(none)"}`,
 				`config diagnostics: errors=${errorCount} warnings=${warningCount}`,
 				"",
 				"loaded.sources:",
@@ -155,6 +183,10 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		if (pi.getFlag("workflow-agent") === "none") return;
 		await applyBrainPreset(pi, ctx);
+
+		const cliProfile = pi.getFlag("workflow-profile") as string | undefined;
+		const loaded = loadWorkflowConfig(ctx.cwd, { cliProfile });
+		setWorkflowStatusFromConfig(ctx, loaded);
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {

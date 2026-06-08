@@ -250,7 +250,7 @@ The v1 `profile` mechanism (built-in `default`, `gonka-hybrid`,
   `workflow.quality-gates.json` nearby.
 - `package.json` and the dependency set are untouched. No new dependencies,
   no `pnpm install`.
-- `.pi/workflow.json` behavior is unchanged for override handling.
+- `loadWorkflowConfig` now also loads nearest `.pi/workflow.local.json` after `.pi/workflow.json`; this optional file is a local-only runtime override (fields like `profile`, `agents`, `delegateDisplay`, etc.) and is applied before CLI `--workflow-profile`.
 
 ## Example v2 file set
 

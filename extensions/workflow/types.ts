@@ -131,6 +131,7 @@ export interface LoadedWorkflowConfig {
 	config: WorkflowConfig;
 	globalPath: string;
 	projectPath: string | null;
+	projectOverridePath: string | null;
 	projectSettingsPath: string | null;
 	projectSettings: Record<string, unknown> | undefined;
 	profileId: WorkflowProfileId;

@@ -43,12 +43,28 @@ Config is deep-merged in this order:
 1. Package defaults
 2. Global `~/.pi/agent/workflow.json`
 3. Nearest project `.pi/workflow.json`
-4. Optional built-in workflow profile layer, applied at the source that selected it:
+4. Nearest project `.pi/workflow.local.json` (runtime override, not a managed catalog)
+5. Optional built-in workflow profile layer, applied at the source that selected it:
    - global `profile`: package defaults → profile → global → project
    - project `profile`: package defaults → global → profile → project
-   - CLI `--workflow-profile`: package defaults → global → project → profile
+   - local override `profile`: package defaults → global → project → local override profile
+   - CLI `--workflow-profile`: package defaults → global → project → local override → profile
 
-That means a profile selected in `.pi/workflow.json` can override older global defaults, while fields in the same project file still win over the profile. See [`examples/workflow.json`](./examples/workflow.json).
+That means a profile selected in `.pi/workflow.json` can override older global defaults, while fields in the same project file still win over the profile. A `.pi/workflow.local.json` file then applies on top of project config for project-local runtime overrides and is intended for local customization without mutating managed workflow sidecars. See [`examples/workflow.json`](./examples/workflow.json).
+
+### Interactive workflow configuration
+
+You can open a local workflow profile/runtime editor with `/workflow configure` in TUI mode. The picker shows friendly profile tiles:
+
+- `Default`
+- `Gonka` (maps to the existing `gonka-hybrid` profile)
+- `Custom per-role` (per-role model/thinking/runtime overrides)
+
+For `Custom per-role`, per-role models are sourced from Pi's available models list (`ctx.modelRegistry.getAvailable()`) and rendered as `provider/model` choices. If no model list is available, configure mode warns and exits without writing.
+
+The configure flow persists only runtime override fields to `.pi/workflow.local.json` and does not mutate `.pi/workflow.json` managed catalog sidecars. The file is loaded after nearest `.pi/workflow.json` and before profile flags so it stays project-local and persistent.
+
+When diagnostics exist, `/workflow` and the status line show a warning marker (`⚠`) in the friendly `wf:` label.
 
 Reviewer swarm behavior:
 - If `reviewerSwarm.enabled` is `true` (default), `delegate_to_reviewer` runs one read-only reviewer per goal.
@@ -360,7 +376,7 @@ If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the c
 Useful commands:
 
 ```bash
-/workflow
+/workflow [configure|config]
 /sprint init [--private] [--gitignore]
 /sprint new <name>
 /sprint status
@@ -391,7 +407,7 @@ Useful commands:
 - With `--auto-run`, a kickoff prompt is sent in the new session telling the agent to work the pinned task using the brain -> coder -> reviewer workflow. Without `--auto-run`, the new session is just opened and the user is notified.
 - If `<TASK-ID>` is omitted, the command falls back to the active task from `.sprints/current.json`.
 
-`/workflow` shows effective resolved presets, reviewer swarm settings, deep-planning state (`enabled`, `plannerCount`, `rounds`, `maxConcurrency`, `roomIdPrefix`, planner ids/roles), the active workflow profile, and the `GONKA_BROKER_URL` / `GONKA_BROKER_API_KEY` env status (set/default/unset, no values).
+`/workflow` shows effective resolved presets, reviewer swarm settings, deep-planning state (`enabled`, `plannerCount`, `rounds`, `maxConcurrency`, `roomIdPrefix`, planner ids/roles), a friendly workflow label (`wf:` with an optional warning marker when diagnostics exist), the active workflow profile, and the `GONKA_BROKER_URL` / `GONKA_BROKER_API_KEY` env status (set/default/unset, no values).
 
 ## Brain task markers
 

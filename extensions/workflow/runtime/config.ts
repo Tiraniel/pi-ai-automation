@@ -123,11 +123,19 @@ function resolveWorkflowProfileSelection(
 	cliProfile: string | undefined,
 	globalConfig: WorkflowConfig,
 	projectConfig: WorkflowConfig,
-): { id: WorkflowProfileId; source: WorkflowProfileSource } {
-	if (hasWorkflowProfileValue(cliProfile)) return { id: normalizeWorkflowProfileId(cliProfile), source: "cli" };
-	if (hasWorkflowProfileValue(projectConfig.profile)) return { id: normalizeWorkflowProfileId(projectConfig.profile), source: "project" };
-	if (hasWorkflowProfileValue(globalConfig.profile)) return { id: normalizeWorkflowProfileId(globalConfig.profile), source: "global" };
-	return { id: "default", source: "default" };
+	localConfig: WorkflowConfig,
+): { id: WorkflowProfileId; source: WorkflowProfileSource; selectedFromLocalOverride: boolean } {
+	if (hasWorkflowProfileValue(cliProfile)) return { id: normalizeWorkflowProfileId(cliProfile), source: "cli", selectedFromLocalOverride: false };
+	if (hasWorkflowProfileValue(localConfig.profile)) {
+		return { id: normalizeWorkflowProfileId(localConfig.profile), source: "project", selectedFromLocalOverride: true };
+	}
+	if (hasWorkflowProfileValue(projectConfig.profile)) {
+		return { id: normalizeWorkflowProfileId(projectConfig.profile), source: "project", selectedFromLocalOverride: false };
+	}
+	if (hasWorkflowProfileValue(globalConfig.profile)) {
+		return { id: normalizeWorkflowProfileId(globalConfig.profile), source: "global", selectedFromLocalOverride: false };
+	}
+	return { id: "default", source: "default", selectedFromLocalOverride: false };
 }
 
 export function getWorkflowProfile(id: WorkflowProfileId): WorkflowProfile {
@@ -311,46 +319,72 @@ function findNearestFile(cwd: string, relativePath: string): string | null {
 	}
 }
 
+function hasRuntimeConfigFields(config: WorkflowConfig): boolean {
+	const hasAgents = Boolean(config.agents && Object.keys(config.agents).length > 0);
+	const hasReviewerSwarm = Boolean(config.reviewerSwarm && Object.keys(config.reviewerSwarm).length > 0);
+	const hasDeepPlanning = Boolean(config.deepPlanning && Object.keys(config.deepPlanning).length > 0);
+	return Boolean(
+		config.profile
+		|| config.delegateDisplay
+		|| config.delegatePaneAutoClose !== undefined
+		|| hasReviewerSwarm
+		|| hasDeepPlanning
+		|| hasAgents,
+	);
+}
+
 export function loadWorkflowConfig(cwd: string, options?: { cliProfile?: string }): LoadedWorkflowConfig {
 	const globalPath = path.join(getAgentDir(), "workflow.json");
 	const projectPath = findNearestFile(cwd, path.join(".pi", "workflow.json"));
+	const projectOverridePath = findNearestFile(cwd, path.join(".pi", "workflow.local.json"));
 	const projectSettingsPath = findNearestFile(cwd, path.join(".pi", "settings.json"));
 
 	const globalLoaded = loadV2WorkflowConfig("global", globalPath);
 	const projectLoaded = projectPath ? loadV2WorkflowConfig("project", projectPath) : undefined;
+	const projectOverrideLoaded = projectOverridePath ? loadV2WorkflowConfig("project", projectOverridePath) : undefined;
 
 	const globalConfig = globalLoaded.config;
 	const projectConfig = projectLoaded?.config ?? {};
+	const projectOverrideConfig = projectOverrideLoaded?.config ?? {};
 	const projectSettings = projectSettingsPath ? readJsonFile<Record<string, unknown>>(projectSettingsPath) : undefined;
 
 	const cliProfile = options?.cliProfile ?? readWorkflowProfileFlagFromArgv();
-	const profileSelection = resolveWorkflowProfileSelection(cliProfile, globalConfig, projectConfig);
-	const { id: profileId, source: profileSource } = profileSelection;
+	const profileSelection = resolveWorkflowProfileSelection(cliProfile, globalConfig, projectConfig, projectOverrideConfig);
+	const { id: profileId, source: profileSource, selectedFromLocalOverride } = profileSelection;
 
 	let config = DEFAULT_CONFIG;
 	if (profileSource === "global") config = applyWorkflowProfile(config, profileId);
 	config = deepMerge(config, globalConfig);
-	if (profileSource === "project") config = applyWorkflowProfile(config, profileId);
+	if (profileSource === "project" && !selectedFromLocalOverride) config = applyWorkflowProfile(config, profileId);
 	config = deepMerge(config, projectConfig);
+	if (profileSource === "project" && selectedFromLocalOverride) config = applyWorkflowProfile(config, profileId);
+	config = deepMerge(config, projectOverrideConfig);
 	if (profileSource === "cli") config = applyWorkflowProfile(config, profileId);
 
 	const allSources: WorkflowConfigSourceInfo[] = [
 		globalLoaded.source,
 		...(projectLoaded ? [projectLoaded.source] : []),
+		...(projectOverrideLoaded ? [projectOverrideLoaded.source] : []),
 	];
 	for (const source of allSources) {
-		source.selected = source.scope === profileSource || (source.scope === "global" && source.version === 2) || (source.scope === "project" && source.path === projectLoaded?.source.path);
+		source.selected = source.scope === "global"
+			? profileSource === "global" || profileSource === "default"
+			: source.path === projectOverridePath
+				? hasRuntimeConfigFields(projectOverrideConfig)
+				: source.path === projectPath && profileSource === "project" && !selectedFromLocalOverride;
 	}
 
 	const configDiagnostics: WorkflowConfigLoadDiagnostic[] = [
 		...globalLoaded.diagnostics,
 		...(projectLoaded ? projectLoaded.diagnostics : []),
+		...(projectOverrideLoaded ? projectOverrideLoaded.diagnostics : []),
 	];
 
 	return {
 		config,
 		globalPath,
 		projectPath,
+		projectOverridePath,
 		projectSettingsPath,
 		projectSettings,
 		profileId,
@@ -408,7 +442,7 @@ export async function applyBrainPreset(pi: ExtensionAPI, ctx: ExtensionContext):
 	if (loaded.config.autoApplyBrain === false) return;
 
 	const brain = getAgentPreset(loaded.config, "brain");
-	const projectOverridesWorkflow = Boolean(loaded.projectPath);
+	const projectOverridesWorkflow = Boolean(loaded.projectPath || loaded.projectOverridePath);
 	const explicitModel = hasCliFlag(["--model", "--provider"]);
 	const explicitThinking = hasCliFlag(["--thinking"]);
 	const projectSettingsHasModel = projectSettingHas(loaded.projectSettings, ["defaultProvider", "defaultModel"]);
