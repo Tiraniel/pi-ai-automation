@@ -38,33 +38,7 @@ import {
 } from "./messages";
 import { runDelegateAgent } from "./runner";
 import { parseReviewerVerdict, resolveReviewerSwarmConfig, runReviewerSwarm } from "./swarm";
-
-interface DelegateManifest {
-	manifestVersion: number;
-	runId: string;
-	startedAt?: string;
-	updatedAt?: string;
-	agent: string;
-	task: string;
-	taskPreview?: string;
-	groupKey?: string;
-	tabTitle?: string;
-	surface?: string;
-	state?: "running" | "completed" | "failed" | "aborted";
-	exitCode?: number;
-	latestEvent?: string;
-	activity?: {
-		version?: number;
-		phase?: "starting" | "active" | "waiting" | "done";
-		lastEvent?: string;
-		updatedAt?: number;
-	};
-	roomContext?: {
-		roomId?: string;
-		agentId?: string;
-		role?: string;
-	};
-}
+import type { PaneManifest } from "./pane-status";
 
 function getToolResultText(result: any): string {
 	return (
@@ -76,10 +50,10 @@ function getToolResultText(result: any): string {
 	);
 }
 
-function safeReadManifest(filePath: string): DelegateManifest | undefined {
+function safeReadManifest(filePath: string): PaneManifest | undefined {
 	try {
 		const raw = fs.readFileSync(filePath, "utf8");
-		const parsed = JSON.parse(raw) as DelegateManifest;
+		const parsed = JSON.parse(raw) as PaneManifest;
 		if (!parsed || typeof parsed !== "object" || typeof parsed.runId !== "string") return undefined;
 		return parsed;
 	} catch {
@@ -87,7 +61,7 @@ function safeReadManifest(filePath: string): DelegateManifest | undefined {
 	}
 }
 
-function formatManifestLine(manifest: DelegateManifest): string {
+function formatManifestLine(manifest: PaneManifest): string {
 	const updated = manifest.updatedAt || manifest.startedAt || new Date().toISOString();
 	const updatedText = (() => {
 		try {
@@ -98,13 +72,24 @@ function formatManifestLine(manifest: DelegateManifest): string {
 	})();
 	const preview = manifest.taskPreview || manifest.task || "";
 	const room = manifest.roomContext?.roomId ? ` room=${manifest.roomContext.roomId}` : "";
+	const completion = manifest.done?.completion
+		? manifest.done.completion
+		: manifest.done?.from_exit
+			? "process_exit"
+			: manifest.done
+				? "legacy"
+				: "missing";
+	const completionSource = manifest.done?.source ? ` source=${manifest.done.source}` : "";
+	const completionWarn = manifest.done?.warning ? ` warn=${manifest.done.warning}` : "";
+	const completionStop = manifest.done?.stop_reason ? ` stop=${manifest.done.stop_reason}` : "";
 	const activityText = manifest.activity
 		? `${manifest.activity.phase ?? "waiting"}${manifest.activity.lastEvent ? `:${manifest.activity.lastEvent}` : ""}`
 		: "n/a";
 	const activityAgeMs = manifest.activity?.updatedAt ? Date.now() - manifest.activity.updatedAt : undefined;
 	const ageText = typeof activityAgeMs === "number" ? ` age=${Math.max(0, Math.floor(activityAgeMs / 1000))}s${activityAgeMs > DELEGATE_PANE_ACTIVITY_STALE_MS ? " STALE" : ""}` : "";
 	const activity = `${activityText}${ageText}`;
-	return `${manifest.runId} ${manifest.state ?? "running"} ${manifest.agent || "agent"} ${manifest.exitCode !== undefined ? `exit=${manifest.exitCode}` : ""} ${manifest.tabTitle ?? ""} @ ${updatedText}${room}\n  task: ${preview}\n  surface: ${manifest.surface || "-"} activity: ${activity}`;
+	const completionText = `completion=${completion}${completionSource}${completionWarn}${completionStop}`;
+	return `${manifest.runId} ${manifest.state ?? "running"} ${manifest.agent || "agent"} ${manifest.exitCode !== undefined ? `exit=${manifest.exitCode}` : ""} ${manifest.tabTitle ?? ""} @ ${updatedText}${room}\n  task: ${preview}\n  surface: ${manifest.surface || "-"} activity: ${activity} ${completionText}`;
 }
 
 function registerDelegateStatusTool(pi: ExtensionAPI): void {
@@ -139,7 +124,7 @@ function registerDelegateStatusTool(pi: ExtensionAPI): void {
 				manifestFiles = [];
 			}
 
-			const manifests: DelegateManifest[] = [];
+			const manifests: PaneManifest[] = [];
 			for (const name of manifestFiles) {
 				const manifest = safeReadManifest(path.join(manifestDir, name));
 				if (!manifest) continue;

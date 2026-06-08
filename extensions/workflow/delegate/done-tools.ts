@@ -24,9 +24,184 @@ import {
 import { makeActivityPayload, type ActivityPhase, writeActivitySidecar } from "./pane-status";
 
 const NOISY_ACTIVITY_EVENT_THROTTLE_MS = 1500;
+const AGENT_END_AUTO_EXIT_WARNING = "Pane delegate did not call sub_agent_done/workflow_delegate_done; auto-completing on normal agent_end.";
+const ABORTING_STOP_REASONS = new Set(["aborted", "interrupted", "cancelled", "canceled", "error"]);
 
 interface DelegateActivityHooksState {
 	lastWrite: number;
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
+}
+
+function toText(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed || undefined;
+}
+
+function asArray(value: unknown): unknown[] | undefined {
+	return Array.isArray(value) ? value : undefined;
+}
+
+function asAssistantMessagePayload(value: unknown): unknown | undefined {
+	const record = asObject(value);
+	if (!record) return undefined;
+	const role = toText(record.role);
+	if (role && role !== "assistant") return undefined;
+	return value;
+}
+
+function asAssistantRoleMessagePayload(value: unknown): unknown | undefined {
+	const record = asObject(value);
+	if (!record) return undefined;
+	if (toText(record.role) !== "assistant") return undefined;
+	return value;
+}
+
+function getStopReasonFromMessage(message: unknown, requireAssistantRole = false): string | undefined {
+	const record = asObject(message);
+	if (!record) return undefined;
+	if (requireAssistantRole) {
+		if (toText(record.role) !== "assistant") return undefined;
+	} else {
+		const role = toText(record.role);
+		if (role && role !== "assistant") return undefined;
+	}
+	return toText(record.stopReason) || toText(record.stop_reason);
+}
+
+function getErrorMessageFromMessage(message: unknown, requireAssistantRole = false): string | undefined {
+	const record = asObject(message);
+	if (!record) return undefined;
+	if (requireAssistantRole) {
+		if (toText(record.role) !== "assistant") return undefined;
+	} else {
+		const role = toText(record.role);
+		if (role && role !== "assistant") return undefined;
+	}
+	return toText(record.errorMessage);
+}
+
+function getLatestAssistantMessage(messages: unknown[]): unknown | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const record = asObject(messages[i]);
+		const role = toText(record?.role);
+		if (role === "assistant") return messages[i];
+	}
+	return undefined;
+}
+
+function getLatestAssistantPayload(input: unknown): unknown | undefined {
+	const messages = asArray(input);
+	if (messages) {
+		return getLatestAssistantMessage(messages);
+	}
+
+	const value = asObject(input);
+	if (!value) return undefined;
+
+	const valueMessages = asArray(value.messages);
+	if (valueMessages) {
+		return getLatestAssistantMessage(valueMessages);
+	}
+
+	return asAssistantMessagePayload(value.assistantMessage) || asAssistantRoleMessagePayload(value.message);
+}
+
+/**
+ * Find the latest assistant stop reason from an `agent_end` event object or
+ * session message list.
+ */
+export function findLatestAssistantStopReason(input: unknown): string | undefined {
+	const messages = asArray(input);
+	if (messages) {
+		const assistantMessage = getLatestAssistantMessage(messages);
+		return getStopReasonFromMessage(assistantMessage);
+	}
+
+	const value = asObject(input);
+	if (!value) return undefined;
+
+	const directStopReason = toText(value.stopReason) || toText(value.stop_reason);
+	if (directStopReason) return directStopReason;
+
+	const valueMessages = asArray(value.messages);
+	if (valueMessages) {
+		const assistantMessage = getLatestAssistantMessage(valueMessages);
+		const stopReason = getStopReasonFromMessage(assistantMessage);
+		if (stopReason) return stopReason;
+	}
+
+	return getStopReasonFromMessage(value.assistantMessage) || getStopReasonFromMessage(value.message, true);
+}
+
+function hasAssistantErrorMessage(input: unknown): boolean {
+	const messages = asArray(input);
+	if (messages) {
+		return Boolean(getErrorMessageFromMessage(getLatestAssistantMessage(messages)));
+	}
+
+	const value = asObject(input);
+	if (!value) return false;
+
+	if (toText(value.errorMessage)) return true;
+
+	const valueMessages = asArray(value.messages);
+	if (valueMessages) {
+		if (Boolean(getErrorMessageFromMessage(getLatestAssistantMessage(valueMessages)))) return true;
+	}
+
+	return Boolean(getErrorMessageFromMessage(value.assistantMessage) || getErrorMessageFromMessage(value.message, true));
+}
+
+function hasLatestAssistantPayload(input: unknown): boolean {
+	return Boolean(getLatestAssistantPayload(input));
+}
+
+/**
+ * Decide if the latest assistant turn appears to be a normal completion.
+ */
+export function shouldAutoCompleteOnAgentEnd(agentEndPayload: unknown): boolean {
+	const directErrorMessage = asObject(agentEndPayload)?.errorMessage;
+	if (toText(directErrorMessage)) return false;
+	if (!hasLatestAssistantPayload(agentEndPayload)) return false;
+	if (hasAssistantErrorMessage(agentEndPayload)) return false;
+	const stopReason = findLatestAssistantStopReason(agentEndPayload);
+	if (!stopReason) return true;
+	return !ABORTING_STOP_REASONS.has(stopReason.toLowerCase());
+}
+
+export interface AutoExitDoneWriteOptions {
+	summary?: string;
+	stopReason?: string;
+	warning?: string;
+}
+
+/**
+ * Write a durable sidecar from child `agent_end` using exclusive create
+ * semantics so explicit completion tool writes are never overwritten.
+ */
+export async function writeAutoExitDoneSidecar(doneFile: string, options: AutoExitDoneWriteOptions = {}): Promise<boolean> {
+	const payload = {
+		done: true as const,
+		completion: "auto_exit" as const,
+		source: "agent_end" as const,
+		from_auto_exit: true,
+		at: new Date().toISOString(),
+		summary: options.summary,
+		stop_reason: options.stopReason,
+		warning: options.warning ?? AGENT_END_AUTO_EXIT_WARNING,
+		exit_code: 0,
+	};
+	try {
+		await fs.promises.writeFile(doneFile, JSON.stringify(payload) + "\n", { encoding: "utf8", flag: "wx" });
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	}
 }
 
 function okTool(text: string, details: Record<string, unknown> = {}) {
@@ -74,6 +249,33 @@ function registerDelegateActivityHooks(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", () => writeActivity("session_shutdown", "done"));
 }
 
+function registerDelegateAutoExitHook(pi: ExtensionAPI, doneFile: string): void {
+	const runId = process.env[DELEGATE_RUN_ID_ENV_VAR] || "";
+	pi.on("agent_end", async (_event, ctx) => {
+		const rawEvent = _event as any;
+		if (!shouldAutoCompleteOnAgentEnd(rawEvent)) {
+			return;
+		}
+		const stopReason = findLatestAssistantStopReason(rawEvent);
+		const warning = AGENT_END_AUTO_EXIT_WARNING + (stopReason ? ` (stop_reason=${stopReason})` : "");
+		void writeAutoExitDoneSidecar(doneFile, {
+			stopReason,
+			warning,
+		}).then((didWrite) => {
+			if (!didWrite) return;
+			const activityFile = process.env[DELEGATE_ACTIVITY_ENV_VAR];
+			if (activityFile) {
+				void writeActivitySidecar(activityFile, makeActivityPayload(runId, "done", "agent_end"));
+			}
+			if (ctx && typeof ctx.shutdown === "function") {
+				setTimeout(() => ctx.shutdown(), 250);
+			}
+		}).catch(() => {
+			// best effort: explicit done sidecar should always win if present
+		});
+	});
+}
+
 function makeDoneToolExecute(toolName: string) {
 	return async (_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: ExtensionContext) => {
 		const doneFile = process.env[DELEGATE_DONE_ENV_VAR];
@@ -84,7 +286,15 @@ function makeDoneToolExecute(toolName: string) {
 		const runId = process.env[DELEGATE_RUN_ID_ENV_VAR] || "";
 		const now = new Date().toISOString();
 		try {
-			const data = { done: true, summary: summary || undefined, at: now, tool: toolName };
+			const data = {
+				done: true as const,
+				completion: "explicit" as const,
+				source: "tool" as const,
+				summary: summary || undefined,
+				at: now,
+				tool: toolName,
+				exit_code: 0,
+			};
 			fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
 			const activityFile = process.env[DELEGATE_ACTIVITY_ENV_VAR];
 			if (activityFile) {
@@ -94,16 +304,18 @@ function makeDoneToolExecute(toolName: string) {
 			return errTool(`Failed to write done file: ${error}`, { reason: "write_failed" });
 		}
 		setTimeout(() => ctx.shutdown(), 500);
-		return okTool("Delegate completion signaled. Shutting down.", { doneFile, tool: toolName });
+		return okTool("Delegate completion signaled. Shutting down.", { doneFile, tool: toolName, completion: "explicit", source: "tool" });
 	};
 }
 
 export function registerDelegateDoneTools(pi: ExtensionAPI): void {
 	// Child-only completion tools for pane delegates. Only registered when the
 	// env var is set (parent sets it before launching a pane delegate).
-	if (!process.env[DELEGATE_DONE_ENV_VAR]) return;
+	const doneFile = process.env[DELEGATE_DONE_ENV_VAR];
+	if (!doneFile) return;
 
 	registerDelegateActivityHooks(pi);
+	registerDelegateAutoExitHook(pi, doneFile);
 
 	pi.registerTool({
 		name: SUB_AGENT_DONE_TOOL_NAME,

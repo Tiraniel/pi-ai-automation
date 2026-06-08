@@ -174,7 +174,7 @@ Valid values: `headless`, `pane`, `auto`. The env var takes precedence over conf
 
 1. Parent creates a temp run directory with:
    - `session.jsonl` — child Pi session file written by `--session`
-   - `done.json` — sidecar written by the child when it calls `sub_agent_done`
+   - `done.json` — sidecar written by the child when it calls explicit completion tool, or by child auto-exit fallback on normal completion
    - `run.sh` — generated shell script that launches the child Pi session
 2. Parent opens a new cmux terminal surface in the **same workspace/pane** (`cmux new-surface --type terminal`, scoped by `cmux identify --json` context). If the delegate has `room` context (or a task id like `TASK-015`), the first surface is moved to a **new cmux workspace** (`move-tab-to-new-workspace`) named after the room/task id; subsequent delegates with the same group key reuse that workspace. Each agent gets a tab titled `{group}-{role}`, e.g. `auth-refactor-backend` or `TASK-015-coder`.
 3. Parent tails the session JSONL for finalized messages/tool calls (not streaming events) and polls `done.json` for completion.
@@ -189,7 +189,11 @@ Valid values: `headless`, `pane`, `auto`. The env var takes precedence over conf
 - **Surfaces auto-close by default** after the child finishes. Set `delegatePaneAutoClose: false` to keep them open for inspection.
 - **Initial support is cmux-only.** tmux/zellij are not implemented unless very cheap to add later.
 - **Reviewer swarm** works with pane mode too — each reviewer target may open its own pane when cmux is available.
-- **`sub_agent_done` is required** in pane mode. A child that exits without calling it is treated as a failure, even on exit code 0. The backward-compatible alias `workflow_delegate_done` is still registered, but prompts and system instructions prefer `sub_agent_done`.
+- `done.json` may be written either by explicit `sub_agent_done` / `workflow_delegate_done` (preferred) **or** by a child-side auto-exit fallback after a normal `agent_end` when the child forgot the tool call.
+  - Explicit completion is the preferred contract; final assistant text alone is not.
+  - Auto-exit fallback only applies to normal `agent_end` completion and succeeds by reading final assistant output from the session file.
+  - Shell/process exit without a completion sidecar is still treated as failure, including `shell` / `from_exit` / `error` / `interrupted` stop reasons.
+  - `workflow_delegate_status` includes completion metadata (for example `explicit` vs `auto_exit`) and warning text, so room-scoped workers that skipped `room_job_done` remain visible instead of being silently synthesized as success.
 
 ## Opt-in Gonka hybrid profile
 

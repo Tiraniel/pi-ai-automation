@@ -150,7 +150,7 @@ export async function runDelegateAgentPane(
 	scriptLines.push(
 		piCmd,
 		`EXIT_CODE=$?`,
-		`if [ ! -f ${shellEscape(doneFile)} ]; then printf '{\"done\":true,\"from_exit\":true,\"exit_code\":%s}\\n' "$EXIT_CODE" > ${shellEscape(doneFile)}; fi`,
+		`if [ ! -f ${shellEscape(doneFile)} ]; then printf '{\"done\":true,\"from_exit\":true,\"completion\":\"process_exit\",\"source\":\"shell_exit\",\"exit_code\":%s}\\n' "$EXIT_CODE" > ${shellEscape(doneFile)}; fi`,
 		`exit $EXIT_CODE`,
 	);
 	const scriptPath = path.join(runDir, "run.sh");
@@ -422,7 +422,12 @@ export async function runDelegateAgentPane(
 		manifest.exitCode = exitCode;
 		manifest.updatedAt = new Date().toISOString();
 		await writeManifest(manifestPath, manifest);
-		const finalStatus = normalizeFinalStatus({ aborted: state.aborted, stopReason: state.stopReason, exitCode });
+		const completionFailed = completionOutcome?.status === "failed";
+		const finalStatus = completionFailed
+			? state.aborted || state.stopReason === "aborted"
+				? "aborted"
+				: "failed"
+			: normalizeFinalStatus({ aborted: state.aborted, stopReason: state.stopReason, exitCode });
 		return {
 			agent,
 			task,
@@ -441,6 +446,8 @@ export async function runDelegateAgentPane(
 			progress: state.progress,
 			finalOutput: finalOutput || getFinalAssistantText(state.messages) || ((typeof finalDoneData?.summary === "string" ? finalDoneData.summary.trim() : "")) || "",
 			thinkingChars: countThinkingChars(state.messages),
+			completionSource: completionOutcome?.completionSource,
+			completionWarning: completionOutcome?.warning,
 			display: "pane",
 			runId,
 			surface: surfaceId,

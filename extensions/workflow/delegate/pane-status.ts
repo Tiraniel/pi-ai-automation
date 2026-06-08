@@ -6,6 +6,9 @@ import { DELEGATE_MANIFEST_DIR } from "./constants";
 
 export type ActivityPhase = "starting" | "active" | "waiting" | "done";
 
+export type DoneCompletionKind = "explicit" | "auto_exit" | "process_exit";
+export type DoneSidecarSource = "tool" | "agent_end" | "shell_exit";
+
 export interface DoneSidecar {
 	done?: boolean;
 	summary?: string;
@@ -13,6 +16,11 @@ export interface DoneSidecar {
 	exit_code?: number;
 	from_exit?: boolean;
 	tool?: string;
+	completion?: DoneCompletionKind;
+	source?: DoneSidecarSource;
+	from_auto_exit?: boolean;
+	stop_reason?: string;
+	warning?: string;
 }
 
 export interface ActivitySidecar {

@@ -165,6 +165,8 @@ export interface DelegateProgressItem {
 	text: string;
 }
 
+export type DelegateCompletionSource = "explicit" | "auto_exit" | "process_exit" | "missing" | "legacy";
+
 export interface DelegateRunResult {
 	agent: string;
 	task: string;
@@ -183,6 +185,8 @@ export interface DelegateRunResult {
 	progress?: DelegateProgressItem[];
 	finalOutput?: string;
 	thinkingChars?: number;
+	completionSource?: DelegateCompletionSource;
+	completionWarning?: string;
 	/** Display/transport mode used: "headless" or "pane". */
 	display?: string;
 	/** cmux surface id when pane mode was used. */
