@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { DelegateRunResult, UsageStats } from "../types";
+import type { DelegateAgentName, DelegateRunResult, UsageStats } from "../types";
 import { getWorkflowRunsRoot, resolveRoomContextFromDelegateParams, type ResolvedRoomContext } from "../rooms";
 import { loadWorkflowConfig } from "../runtime/config";
 import {
@@ -38,6 +38,7 @@ import {
 } from "./messages";
 import { runDelegateAgent } from "./runner";
 import { parseReviewerVerdict, resolveReviewerSwarmConfig, runReviewerSwarm } from "./swarm";
+import { makeDelegateGuardFailure, resolveDelegatePresetWithFallback } from "./model-guard";
 import type { PaneManifest } from "./pane-status";
 
 function getToolResultText(result: any): string {
@@ -351,16 +352,35 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					};
 				}
 			}
+
+			const loadedForGuard = loadWorkflowConfig(ctx.cwd);
+			const guard = resolveDelegatePresetWithFallback(ctx, loadedForGuard.config, agent as DelegateAgentName);
+			const guardCwd = requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd;
+			if (!guard.ok) {
+				if (typeof (ctx as any).ui?.notify === "function") {
+					(ctx as any).ui.notify(guard.message, "warning");
+				}
+				const failure = makeDelegateGuardFailure(agent as DelegateAgentName, delegatedTask, guardCwd, guard.message);
+				return {
+					content: [{ type: "text", text: `[${agent}] failed\n\n${guard.message}` }],
+					details: failure,
+					isError: true,
+				};
+			}
+			if (guard.warning && typeof (ctx as any).ui?.notify === "function") {
+				(ctx as any).ui.notify(guard.warning, "warning");
+			}
+
 			if (agent === "reviewer") {
 				const goals = Array.isArray((params as any).goals)
 					? (params as any).goals.map((goal: unknown) => String(goal).trim()).filter((goal: string) => goal.length > 0)
 					: undefined;
-				const swarmConfig = resolveReviewerSwarmConfig(loadWorkflowConfig(ctx.cwd).config);
+				const swarmConfig = resolveReviewerSwarmConfig(loadedForGuard.config);
 				if (!swarmConfig.enabled) {
 					const singleTask = goals?.length
 						? `${delegatedTask}\n\nReview goals:\n${goals.map((goal: string) => `- ${goal}`).join("\n")}`
 						: delegatedTask;
-					const result = await runDelegateAgent(ctx, "reviewer", singleTask, requestedCwd, signal, onUpdate, roomContext);
+					const result = await runDelegateAgent(ctx, "reviewer", singleTask, requestedCwd, signal, onUpdate, roomContext, guard.preset);
 					const status = normalizeFinalStatus(result);
 					const finalOutput = getToolResultText(result);
 					const verdict = parseReviewerVerdict(finalOutput);
@@ -388,7 +408,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					};
 				}
 
-				const swarm = await runReviewerSwarm(ctx, delegatedTask, requestedCwd, goals, signal, onUpdate, roomContext);
+				const swarm = await runReviewerSwarm(ctx, delegatedTask, requestedCwd, goals, signal, onUpdate, roomContext, guard.preset);
 				const lines = swarm.results.map((item, index) => {
 					const detail = item.result ? getToolResultText(item.result) : "(no output)";
 					return `[${index + 1}] ${item.target}\n${item.verdict} (${item.status})\n${detail}`;
@@ -434,7 +454,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 				};
 			}
 
-			const result = await runDelegateAgent(ctx, agent, delegatedTask, requestedCwd, signal, onUpdate, roomContext);
+			const result = await runDelegateAgent(ctx, agent, delegatedTask, requestedCwd, signal, onUpdate, roomContext, guard.preset);
 			const status = normalizeFinalStatus(result);
 			const finalOutput = getToolResultText(result);
 			const failed = status !== "completed";

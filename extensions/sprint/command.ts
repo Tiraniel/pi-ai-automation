@@ -11,26 +11,20 @@
 
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readBrainMarkersForTaskFile } from "./markers";
-import { buildTaskSessionKickoff } from "./prompt";
+import { startSprintTaskSession } from "./start-session";
 import {
-	activeSprintAbs,
-	appendProgress,
 	createEpic,
 	createSprint,
 	createTask,
-	findTaskFileInSprint,
 	initSprints,
 	loadCurrent,
-	nowIso,
 	parseArgs,
 	rootPaths,
-	saveCurrent,
 	setActiveTask,
 	updateTaskStatus,
 } from "./store";
 import { appendDebugNote, completeDebugItem, createDebugItem, promoteDebugItem, readDebugLaneSummary } from "./debug";
-import { SPRINT_BINDING_CUSTOM_TYPE, SPRINTS_DIR, type SessionBinding, type SprintCurrent } from "./types";
+import { SPRINTS_DIR } from "./types";
 
 export function registerSprintCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("sprint", {
@@ -161,53 +155,8 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					}
 					if (!taskId) throw new Error("Usage: /sprint task start <TASK-ID> [--auto-run]");
 
-					const sprintAbs = activeSprintAbs(ctx.cwd);
-					if (!sprintAbs) throw new Error("No active sprint.");
-					const taskInfo = findTaskFileInSprint(sprintAbs, taskId);
-					if (!taskInfo) throw new Error(`Task not found: ${taskId}`);
-
-					const cwd = ctx.cwd;
-					const sprintRel = path.relative(cwd, sprintAbs);
-					const taskRel = path.relative(cwd, taskInfo.file);
-					const title = String(taskInfo.frontmatter.title ?? taskId);
-					const binding: SessionBinding = { sprintPath: sprintRel, taskPath: taskRel, taskId, title, boundAt: nowIso() };
-					const sessionName = `Sprint: ${taskId} ${title}`.slice(0, 80);
-					const markers = readBrainMarkersForTaskFile(taskInfo.file);
-					const kickoff = buildTaskSessionKickoff(binding, autoRun, markers);
-					const parentSession = (ctx.sessionManager && typeof ctx.sessionManager.getSessionFile === "function")
-						? ctx.sessionManager.getSessionFile()
-						: undefined;
-					const newSession = (ctx as any).newSession;
-					if (typeof newSession !== "function") {
-						throw new Error("ctx.newSession is not available in this context.");
-					}
-
-					const result = await newSession.call(ctx, {
-						parentSession,
-						setup: async (sm: any) => {
-							sm.appendCustomEntry(SPRINT_BINDING_CUSTOM_TYPE, binding);
-							sm.appendSessionInfo(sessionName);
-							sm.appendCustomMessageEntry(
-								SPRINT_BINDING_CUSTOM_TYPE,
-								`Sprint task session bound to ${taskId}: ${title}\nSprint: ${sprintRel}\nTask: ${taskRel}`,
-								true,
-								binding,
-							);
-							updateTaskStatus(cwd, taskId, "in_progress", "session started");
-							const current = loadCurrent(cwd) ?? { activeSprintPath: null, activeTaskPath: null, updatedAt: nowIso() } satisfies SprintCurrent;
-							current.activeSprintPath = sprintRel;
-							current.activeTaskPath = taskRel;
-							current.updatedAt = nowIso();
-							saveCurrent(cwd, current);
-							appendProgress(cwd, `task session started ${taskId}${autoRun ? " (auto-run)" : ""}`);
-						},
-						withSession: async (newCtx: any) => {
-							if (autoRun && kickoff) await newCtx.sendUserMessage(kickoff);
-							else newCtx.ui.notify(`Sprint task session started: ${taskId} ${title}`, "info");
-						},
-					});
-
-					if (result?.cancelled) {
+					const result = await startSprintTaskSession(ctx, taskId, { autoRun });
+					if (result.cancelled) {
 						ctx.ui.notify("Sprint task session creation cancelled", "warning");
 					}
 					return;

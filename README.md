@@ -54,17 +54,38 @@ That means a profile selected in `.pi/workflow.json` can override older global d
 
 ### Interactive workflow configuration
 
-You can open a local workflow profile/runtime editor with `/workflow configure` in TUI mode. The picker shows friendly profile tiles:
+You can open a local workflow profile/runtime editor with `/workflow_cfg` in TUI mode. It opens a centered overlay configurator with a searchable model picker, a constrained thinking-level picker, runtime settings (delegate display/pane auto-close, reviewer swarm, deep planning), and a preview/confirm step that atomically writes `.pi/workflow.local.json` on Apply. Cancel/back paths never write. `/workflow configure` and `/workflow config` remain compatibility aliases for the same overlay, so existing command bindings keep working.
+
+The picker shows friendly profile tiles:
 
 - `Default`
-- `Gonka` (maps to the existing `gonka-hybrid` profile)
+- `Gonka` (maps to the existing `gonka-hybrid` profile; only selectable when the current model registry exposes an available `gonka` provider)
 - `Custom per-role` (per-role model/thinking/runtime overrides)
 
-For `Custom per-role`, per-role models are sourced from Pi's available models list (`ctx.modelRegistry.getAvailable()`) and rendered as `provider/model` choices. If no model list is available, configure mode warns and exits without writing.
+For `Custom per-role`, per-role models are sourced from Pi's available models list (`ctx.modelRegistry.getAvailable()`) and rendered as `provider/model` choices. The overlay also exposes coder and reviewer **fallback model** rows so you can set a backup provider/model for each delegate role. If the model registry is empty or unavailable, the overlay warns and continues in a limited mode: built-in profile and runtime settings remain available, custom model picking and fallback model picking are unavailable, and any disk write still requires the Preview/Apply confirmation.
 
 The configure flow persists only runtime override fields to `.pi/workflow.local.json` and does not mutate `.pi/workflow.json` managed catalog sidecars. The file is loaded after nearest `.pi/workflow.json` and before profile flags so it stays project-local and persistent.
 
 When diagnostics exist, `/workflow` and the status line show a warning marker (`⚠`) in the friendly `wf:` label.
+
+### Delegation guard and fallback models
+
+Before spawning a coder or reviewer delegate, the workflow validates the configured primary model against Pi's current model registry. If the primary model is unavailable, the guard tries the role's configured fallback from `delegateFallbacks` (if any). If neither primary nor fallback is available, the delegate flow exits with a warning/error result and no child process is spawned.
+
+Fallback settings are optional and none are configured by default. They can be set or cleared via `/workflow_cfg`. Fallback selection preserves the role's existing tools, instructions, and `includeKarpathyGuidelines`; only provider, model, and thinking level are overridden.
+
+Example fallback configuration in `.pi/workflow.local.json`:
+
+```json
+{
+  "delegateFallbacks": {
+    "coder": { "provider": "gonka", "model": "moonshotai/Kimi-K2.6", "thinkingLevel": "off" },
+    "reviewer": { "provider": "openai-codex", "model": "gpt-5.5", "thinkingLevel": "high" }
+  }
+}
+```
+
+`/workflow_cfg` can set or clear these fallbacks independently; cancel/back/preview-only paths never write.
 
 Reviewer swarm behavior:
 - If `reviewerSwarm.enabled` is `true` (default), `delegate_to_reviewer` runs one read-only reviewer per goal.
@@ -507,8 +528,8 @@ Lightweight debug/hotfix lane:
 Default session-per-task flow:
 
 - For concrete sprint-tracked tasks, the project supports one dedicated Pi session per task. The Brain default instructions tell the Brain agent to invoke the `/sprint task start <TASK-ID> --auto-run` slash command (or call the `sprint_start_task_session` tool as a fallback) before implementation when the current session is not already pinned to that task.
-- Only the `/sprint task start <TASK-ID> --auto-run` command performs the actual session switch by calling `ctx.newSession()`. It is available to the user directly and to any agent that can issue slash commands.
-- `sprint_start_task_session` is an AI-callable tool that prepares the `/sprint task start <TASK-ID> --auto-run` command for the user to run. It places the command in the editor (when UI is available) and notifies the user. It exists because tools cannot call `ctx.newSession()` directly — only commands can — so the tool does NOT switch sessions; it only presents the command. After calling it, stop and wait for the user to run the command.
+- The `/sprint task start <TASK-ID> --auto-run` slash command performs the actual session switch by calling `ctx.newSession()`. It is available to the user directly and to any agent that can issue slash commands.
+- `sprint_start_task_session` is an AI-callable tool that also starts the session automatically when `ctx.newSession` is available in the tool context. It creates the new session, binds it to the task, and sends the auto-run kickoff prompt directly. Only when automatic session creation is unavailable does the tool fall back to placing the `/sprint task start <TASK-ID> --auto-run` command in the editor for the user to run. In that fallback case, stop and wait for the user to run the command.
 - Once a session is pinned, the binding is stored inside the session file itself as a `sprintBinding` custom entry, and `sprint_read_context`, `sprint_update_task`, `sprint_log_progress`, and `before_agent_start` all prefer the binding over `.sprints/current.json`. This means a pinned session remains bound to its task even if `.sprints/current.json` is changed by other sessions or commands. `sprint_update_task` also refuses to update a `taskId` that does not match the bound task, so a pinned session cannot accidentally write to a different task.
 
 See [`examples/sprints-config.json`](./examples/sprints-config.json).

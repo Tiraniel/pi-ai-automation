@@ -59,9 +59,14 @@ runtime.
 v2 workflows remain catalog-driven for identities (`agents`, models,
 `toolProfiles`, `promptPacks`, `qualityGates`), but the loader keeps a
 small compatibility/runtime overlay on top-level for the most common legacy knobs:
-`autoApplyBrain`, `profile`, `reviewerSwarm.{enabled,maxConcurrency}`, `delegateDisplay`, and
-`delegatePaneAutoClose`. These fields are validated and merged by
+`autoApplyBrain`, `profile`, `reviewerSwarm.{enabled,maxConcurrency}`, `delegateDisplay`,
+`delegatePaneAutoClose`, and `delegateFallbacks`. These fields are validated and merged by
 `loadWorkflowConfig` after catalog adaptation.
+
+`delegateFallbacks` is a v1-compatible local override for the delegate model guard:
+it carries optional `coder` and `reviewer` agent presets (provider, model, thinkingLevel)
+that the guard tries when the primary model for that role is unavailable. It is a
+runtime safety override, not a v2 catalog identity.
 
 - `deepPlanning` remains the explicit runtime-wired planning exception and is
   resolved through the model preset catalog via `loadV2Workflow` + adapter.
@@ -251,6 +256,7 @@ The v1 `profile` mechanism (built-in `default`, `gonka-hybrid`,
 - `package.json` and the dependency set are untouched. No new dependencies,
   no `pnpm install`.
 - `loadWorkflowConfig` now also loads nearest `.pi/workflow.local.json` after `.pi/workflow.json`; this optional file is a local-only runtime override (fields like `profile`, `agents`, `delegateDisplay`, etc.) and is applied before CLI `--workflow-profile`.
+- `/workflow_cfg` is the interactive editor for that local override: it stages profile/runtime/per-role changes in memory, shows a preview, and writes `.pi/workflow.local.json` atomically on Apply. It also exposes coder and reviewer fallback model rows using the existing searchable model picker. Catalog files (`.pi/workflow.json` and the v2 catalog sidecars) are never mutated, and cancel/back paths never write.
 
 ## Example v2 file set
 

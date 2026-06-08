@@ -2,18 +2,13 @@
 // Extracted from extensions/sprint-system.ts as part of TASK-018 Slice 4.
 //
 // `registerSprintTools(pi)` registers AI-facing tools the agent uses
-// to read/write the .sprints substrate and lightweight debug lane:
-//   - sprint_read_context: read config/current/binding/effective pointer
-//   - sprint_create: init + create + activate a sprint
-//   - sprint_create_task: append a TASK file under the active sprint
-//   - sprint_create_epic: append an EPIC dir under .sprints/epics
-//   - sprint_set_active: mutate .sprints/current.json (sprint and/or task)
-//   - sprint_update_task: change task status; refuses cross-task edits when bound
-//   - sprint_log_progress: append a line to active sprint PROGRESS.md
-//   - sprint_start_task_session: prepare the /sprint task start command
-//   - sprint_get_session_binding: read the current session's binding
-//   - sprint_debug: lightweight debug/hotfix item helpers
-// Tool bodies delegate fs/pointer work to helpers in ./store and the debug lane helpers in ./debug.
+// to read/write the .sprints substrate and lightweight debug lane.
+// Key tools:
+//   - sprint_start_task_session: auto-starts a task session when ctx.newSession
+//     is available; falls back to preparing the /sprint task start command
+//     in the editor when automatic start is unavailable.
+// Tool bodies delegate fs/pointer work to helpers in ./store and the debug
+// lane helpers in ./debug.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -36,6 +31,7 @@ import {
 	setActiveTask,
 	updateTaskStatus,
 } from "./store";
+import { startSprintTaskSession } from "./start-session";
 import { appendDebugNote, completeDebugItem, createDebugItem, readDebugLaneSummary, promoteDebugItem } from "./debug";
 import type { SprintConfig, SprintCurrent } from "./types";
 
@@ -342,19 +338,37 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "sprint_start_task_session",
-		label: "Sprint: Prepare Task Session Command",
-		description: "Prepare the /sprint task start <TASK-ID> --auto-run command for the user to run. This tool does NOT switch sessions: only the /sprint task start command (invoked by the user) performs the actual session switch. Use as a fallback when the agent cannot issue slash commands directly.",
-		promptSnippet: "Prepare a /sprint task start command for the user to run.",
+		label: "Sprint: Start Task Session",
+		description: "Start a dedicated sprint task session for the given TASK-ID with --auto-run. When ctx.newSession is available, the session is created automatically and the kickoff is sent. When automatic session creation is unavailable, the tool falls back to placing the /sprint task start command in the editor for the user to run.",
+		promptSnippet: "Start a sprint task session automatically when possible.",
 		promptGuidelines: [
-			"Prefer running the /sprint task start <TASK-ID> --auto-run slash command directly when the agent can issue slash commands. The command performs the actual session switch.",
-			"Use sprint_start_task_session only as a fallback to present the command to the user (via the editor and a notification) when no slash command can be issued. It does not switch sessions itself.",
+			"Use sprint_start_task_session to start a task session automatically when ctx.newSession is available. The tool creates the session and sends the auto-run kickoff without requiring a slash command.",
+			"When automatic session creation is unavailable, the tool falls back to placing the /sprint task start command in the editor. In that case, the user must run the command to switch sessions.",
 			"Do not call this when the current session is already pinned to the same task.",
-			"After calling, stop and wait: the user must run the command to actually create the task session.",
 		],
 		parameters: Type.Object({ taskId: Type.String({ description: "TASK-ID (e.g. TASK-001) to bind the new session to" }) }),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const taskId = String((params as any).taskId || "").trim();
 			if (!taskId) return { isError: true, content: [{ type: "text", text: "Missing taskId" }] };
+			const newSession = (ctx as any).newSession;
+			if (typeof newSession === "function") {
+				try {
+					const result = await startSprintTaskSession(ctx, taskId, { autoRun: true });
+					return {
+						content: [{
+							type: "text",
+							text: result.message,
+						}],
+					};
+				} catch (error) {
+					return {
+						isError: true,
+						content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+					};
+				}
+			}
+
+			// Fallback: automatic session start unavailable; prepare slash command in editor
 			const command = `/sprint task start ${taskId} --auto-run`;
 			const ui = (ctx as any).ui;
 			let placedInEditor = false;
@@ -369,14 +383,14 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			if (ui && typeof ui.notify === "function") {
 				const where = placedInEditor ? "Editor now contains" : "Run";
 				ui.notify(
-					`${where} ${command} to switch to a dedicated session for ${taskId}. sprint_start_task_session does not switch sessions itself; the /sprint task start command does.`,
+					`${where} ${command} to switch to a dedicated session for ${taskId}. Automatic session start is unavailable in this context; the user must run the command to switch sessions.`,
 					"info",
 				);
 			}
 			return {
 				content: [{
 					type: "text",
-					text: `Prepared command: ${command}. The user must run it to switch sessions. This tool did not switch sessions.`,
+					text: `Automatic session start unavailable. Prepared command: ${command}. The user must run it to switch sessions.`,
 				}],
 			};
 		},

@@ -11,6 +11,7 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
 	"xhigh",
 ] as const;
 export type AgentName = "brain" | "coder" | "reviewer";
+export type DelegateAgentName = "coder" | "reviewer";
 /** v2 alias for `AgentName`. The two are structurally identical; v2 code
  *  uses `AgentRole` for clarity while v1 callers keep using `AgentName`. */
 export type AgentRole = AgentName;
@@ -85,6 +86,11 @@ export interface DeepPlanningConfig {
 	planners?: DeepPlanningPlannerConfig[];
 }
 
+export interface DelegateFallbacksConfig {
+	coder?: AgentPreset;
+	reviewer?: AgentPreset;
+}
+
 export interface WorkflowConfig {
 	autoApplyBrain?: boolean;
 	/** Built-in workflow profile id (e.g. "default" or "gonka-hybrid"). */
@@ -98,6 +104,8 @@ export interface WorkflowConfig {
 	/** When pane mode is used, auto-close the cmux surface/tab when the sub-agent finishes.
 	 *  Default: true. Set to false to leave the surface open for inspection. */
 	delegatePaneAutoClose?: boolean;
+	/** Optional fallback model overrides used when a coder/reviewer delegate's primary model is unavailable. */
+	delegateFallbacks?: DelegateFallbacksConfig;
 }
 
 /** v1 aliases used by the v2 normalizer. The v1 shape is intentionally

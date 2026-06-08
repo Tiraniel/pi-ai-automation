@@ -102,7 +102,7 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 			}
 
 			if (subcommand) {
-				ctx.ui.notify("Usage: /workflow | /workflow configure", "info");
+				ctx.ui.notify("Usage: /workflow | /workflow configure | /workflow_cfg", "info");
 				return;
 			}
 
@@ -168,6 +168,16 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 				`env override: ${DELEGATE_DISPLAY_ENV}=${process.env[DELEGATE_DISPLAY_ENV] ?? "(not set)"}`,
 			];
 			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
+
+	pi.registerCommand("workflow_cfg", {
+		description: "Open the workflow configuration overlay (centered, searchable model picker, safe preview/apply)",
+		handler: async (_rawArgs, ctx) => {
+			await showWorkflowConfigure(ctx);
+			const cliProfile = pi.getFlag("workflow-profile") as string | undefined;
+			const updated = loadWorkflowConfig(ctx.cwd, { cliProfile });
+			setWorkflowStatusFromConfig(ctx, updated);
 		},
 	});
 

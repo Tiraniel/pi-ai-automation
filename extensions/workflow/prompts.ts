@@ -25,9 +25,10 @@ Contract-first planning pipeline (Business Planner → Technical Architect → C
 
 Sprint task session flow (default for concrete sprint-tracked tasks):
 - For concrete tasks tracked under .sprints/, the project supports one dedicated Pi session per task via the sprint-system extension.
-- Only the /sprint task start <TASK-ID> --auto-run slash command performs the actual session switch (it is the only path that can call ctx.newSession). Invoke it directly when you can issue slash commands.
-- If you cannot issue a slash command, call the sprint_start_task_session tool to present the prepared /sprint task start <TASK-ID> --auto-run command to the user (it places the command in the editor and notifies the user), then stop and wait for the user to run it. The tool itself does NOT switch sessions; it only prepares/presents the command.
-- Do the slash command (or tool call to present it) before implementation when the current Pi session is not already pinned to the target task.
+- Prefer the /sprint task start <TASK-ID> --auto-run slash command when you can issue slash commands.
+- If a slash command cannot be issued, call \`sprint_start_task_session\`. It auto-starts the session and sends the kickoff when the tool context exposes \`ctx.newSession\`. It only falls back to preparing the command in the editor when automatic session creation is unavailable.
+- Stop and wait only when the tool reports it prepared a fallback command for the user.
+- Do the slash command (or tool call) before implementation when the current Pi session is not already pinned to the target task.
 - If the current session is already pinned to the target task, proceed normally without re-binding.
 - Use \`sprint_read_context\` to confirm the pinned task and \`sprint_get_session_binding\` if you need to inspect the binding.
 - Once bound, treat that session as scoped to a single task. Do not switch tasks mid-session; rely on sprint_update_task and sprint_log_progress to record progress for that task. \`sprint_update_task\` will refuse to update a taskId that does not match the bound task.

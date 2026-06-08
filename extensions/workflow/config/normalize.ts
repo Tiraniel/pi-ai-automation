@@ -87,6 +87,17 @@ function normalizeV1ReviewerSwarm(value: unknown): V1ReviewerSwarmConfig | undef
 	return out;
 }
 
+function normalizeV1DelegateFallbacks(value: unknown): V1WorkflowConfig["delegateFallbacks"] | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const out: NonNullable<V1WorkflowConfig["delegateFallbacks"]> = {};
+	const coder = normalizeV1AgentPreset(record.coder);
+	if (coder) out.coder = coder;
+	const reviewer = normalizeV1AgentPreset(record.reviewer);
+	if (reviewer) out.reviewer = reviewer;
+	return out.coder || out.reviewer ? out : undefined;
+}
+
 /**
  * Normalize a v1 workflow config. Pass-through: every preserved field keeps
  * its v1 meaning so the resolved effective config is identical to what
@@ -112,6 +123,8 @@ export function normalizeV1Config(input: unknown): V1WorkflowConfig | undefined 
 	}
 	const reviewer = normalizeV1ReviewerSwarm(record.reviewerSwarm);
 	if (reviewer) out.reviewerSwarm = reviewer;
+	const delegateFallbacks = normalizeV1DelegateFallbacks(record.delegateFallbacks);
+	if (delegateFallbacks) out.delegateFallbacks = delegateFallbacks;
 	const deepPlanning = readDeepPlanningConfig(record);
 	if (deepPlanning) out.deepPlanning = deepPlanning;
 	const display = asDelegateDisplayMode(record.delegateDisplay);

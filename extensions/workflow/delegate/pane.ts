@@ -92,9 +92,10 @@ export async function runDelegateAgentPane(
 	signal: AbortSignal | undefined,
 	onUpdate: ((partial: any) => void) | undefined,
 	roomContext?: ResolvedRoomContext,
+	presetOverride?: AgentPreset,
 ): Promise<DelegateRunResult> {
 	const loaded = loadWorkflowConfig(ctx.cwd);
-	const preset = getAgentPreset(loaded.config, agent);
+	const preset = presetOverride ?? getAgentPreset(loaded.config, agent);
 	const cwd = requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd;
 	const autoClose = loaded.config.delegatePaneAutoClose !== false;
 	const runDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-workflow-pane-"));

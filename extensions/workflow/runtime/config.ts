@@ -195,6 +195,7 @@ function extractV2RuntimeOverrides(rawConfig: unknown): WorkflowConfig {
 	}
 	if (normalized.delegateDisplay !== undefined) runtime.delegateDisplay = normalized.delegateDisplay;
 	if (normalized.delegatePaneAutoClose !== undefined) runtime.delegatePaneAutoClose = normalized.delegatePaneAutoClose;
+	if (normalized.delegateFallbacks !== undefined) runtime.delegateFallbacks = normalized.delegateFallbacks;
 	return runtime;
 }
 

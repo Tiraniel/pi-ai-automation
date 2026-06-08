@@ -12,6 +12,7 @@ import * as path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONFIG } from "../defaults";
 import type {
+	AgentPreset,
 	ReviewerSwarmConfig,
 	ReviewerTargetResult,
 	WorkflowConfig,
@@ -65,6 +66,7 @@ export async function runReviewerSwarm(
 	signal: AbortSignal | undefined,
 	onUpdate: ((partial: any) => void) | undefined,
 	roomContext?: ResolvedRoomContext,
+	presetOverride?: AgentPreset,
 ): Promise<{ results: ReviewerTargetResult[]; failed: boolean; aborted: boolean }> {
 	const swarm = resolveReviewerSwarmConfig(loadWorkflowConfig(ctx.cwd).config);
 	const targets = goals && goals.length ? goals : swarm.targets;
@@ -117,7 +119,7 @@ export async function runReviewerSwarm(
 			const perReviewerContext: ResolvedRoomContext | undefined = roomContext
 				? { ...roomContext, agentId: appendAgentIdSuffix(baseRoomAgentId ?? "reviewer", String(index + 1)) }
 				: roomContext;
-			const result = await runDelegateAgent(ctx, "reviewer", buildReviewerGoalTask(task, target), requestedCwd, signal, undefined, perReviewerContext);
+			const result = await runDelegateAgent(ctx, "reviewer", buildReviewerGoalTask(task, target), requestedCwd, signal, undefined, perReviewerContext, presetOverride);
 			if (result.aborted || signal?.aborted) aborted = true;
 			const verdict = parseReviewerVerdict(result.finalOutput ?? "");
 			results[index] = {

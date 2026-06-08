@@ -138,8 +138,9 @@ export async function runDelegateAgentHeadless(
 	signal: AbortSignal | undefined,
 	onUpdate: ((partial: any) => void) | undefined,
 	roomContext?: ResolvedRoomContext,
+	presetOverride?: AgentPreset,
 ): Promise<DelegateRunResult> {
 	const loaded = loadWorkflowConfig(ctx.cwd);
-	const preset = getAgentPreset(loaded.config, agent);
+	const preset = presetOverride ?? getAgentPreset(loaded.config, agent);
 	return runAgentPresetHeadless(ctx, agent, preset, task, requestedCwd, signal, onUpdate, roomContext);
 }
