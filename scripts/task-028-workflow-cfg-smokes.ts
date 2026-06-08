@@ -417,7 +417,10 @@ function readSource(rel: string): string {
 	// Custom fields overlay under profile config
 	check(overlay.includes("function runCustomFieldsOverlay"), "dbg003: custom fields overlay exists");
 	check(overlay.includes('value: `model:${role}`'), "dbg003: custom fields has model: rows");
-	check(overlay.includes('value: `thinking:${role}`'), "dbg003: custom fields has thinking: rows");
+	// DBG-006: standalone thinking rows are removed (model row chains
+	// into the thinking picker for every role). The model row's
+	// description still surfaces the staged/effective thinking level.
+	check(!overlay.includes('value: `thinking:${role}`'), "dbg006: custom fields no longer emits standalone thinking: rows");
 	check(overlay.includes('value: `clear:${role}`'), "dbg003: custom fields has clear: rows");
 
 	// Profile selection overlay: checked in-place, Apply/Back, env-gated Gonka
@@ -516,7 +519,9 @@ function readSource(rel: string): string {
 	const customEnd = overlay.indexOf("\n}\n", customStart);
 	const customSection = customStart > 0 && customEnd > 0 ? overlay.slice(customStart, customEnd) : "";
 	check(/while\s*\(\s*true\s*\)/.test(customSection), "dbg004: runCustomFieldsOverlay has an internal while(true) loop");
-	check(customSection.includes("applyModelPick") && customSection.includes("applyThinkingPick") && customSection.includes("applyClearRole"), "dbg004: runCustomFieldsOverlay still routes model/thinking/clear");
+	// DBG-006: every role routes through the model->thinking chain helper,
+	// so the section references the chain helper and the clear helper only.
+	check(customSection.includes("applyRoleModelAndThinkingPick") && customSection.includes("applyClearRole"), "dbg004: runCustomFieldsOverlay still routes model/clear");
 	// The loop must re-show the submenu by calling ctx.ui.custom again inside the loop body
 	const innerCustomCalls = (customSection.match(/ctx\.ui\.custom/g) ?? []).length;
 	check(innerCustomCalls >= 1, "dbg004: runCustomFieldsOverlay shows the submenu via ctx.ui.custom inside the loop");
@@ -545,7 +550,12 @@ function readSource(rel: string): string {
 
 	// Custom display helpers seed from effective values when no staged edit
 	const helpersSection = overlay;
-	check(helpersSection.includes("customRoleModelDisplay") && helpersSection.includes("customRoleThinkingDisplay"), "dbg004: custom display helpers seeded from effective agents");
+	// DBG-006: brain no longer has a standalone thinking row, so the
+	// thinking-only display helper is gone. Only the model-row helper
+	// remains and it surfaces the staged/effective thinking level in
+	// the description (via formatRoleEditDisplay).
+	check(helpersSection.includes("customRoleModelDisplay"), "dbg004: customRoleModelDisplay still seeds from effective agents");
+	check(!helpersSection.includes("customRoleThinkingDisplay"), "dbg006: standalone brain thinking display helper is removed");
 }
 
 {
@@ -568,32 +578,36 @@ function readSource(rel: string): string {
 	}
 	{
 		const start = overlay.indexOf("async function applyFallbackModelAndThinkingPick");
-		const end = overlay.indexOf("\nasync function applyModelPick", start);
+		// DBG-006: applyModelPick is gone; the next top-level helper is
+		// applyClearRole. Use that as the slice boundary.
+		const end = overlay.indexOf("\nfunction applyClearRole", start);
 		const sec = start > 0 && end > 0 ? overlay.slice(start, end) : "";
 		check(/showModelPickerOverlay/.test(sec), "dbg005: fallback chain calls showModelPickerOverlay");
 		check(/showThinkingPickerOverlay/.test(sec), "dbg005: fallback chain calls showThinkingPickerOverlay");
 		check(/while\s*\(\s*true\s*\)/.test(sec), "dbg005: fallback chain loops so Esc on thinking returns to model picker");
 	}
 
-	// runCustomFieldsOverlay routes coder/reviewer to the chain helper
+	// runCustomFieldsOverlay routes every role to the chain helper
 	{
 		const start = overlay.indexOf("function runCustomFieldsOverlay");
 		const end = overlay.indexOf("\n}\n", start);
 		const sec = start > 0 && end > 0 ? overlay.slice(start, end) : "";
-		check(sec.includes("applyRoleModelAndThinkingPick"), "dbg005: runCustomFieldsOverlay routes to role chain helper");
-		// Brain stays on the standalone flow.
-		check(sec.includes("applyModelPick") && sec.includes("applyThinkingPick"), "dbg005: runCustomFieldsOverlay still has standalone brain pickers");
-		// Standalone thinking row is gated to brain only.
-		check(/if\s*\(\s*role\s*===\s*"brain"\s*\)\s*\{[\s\S]*thinking:\${role}/.test(sec), "dbg005: standalone thinking row is emitted only for brain");
-		// When thinking is selected, only brain may take the thinking: branch
-		check(/if\s*\(\s*role\s*!==\s*"brain"\s*\)\s*continue/.test(sec), "dbg005: thinking: branch in the action handler is gated to brain");
-		// Esc semantics: inner Esc (model picker) returns current unchanged.
-		// The chain helpers handle their own return so the action handler
-		// just assigns the result and continues. There must not be a
-		// throwaway staging of the model before the thinking picker opens
-		// in the action handler.
-		check(!/working\s*=\s*await\s+applyModelPick\([^)]*coder/.test(sec), "dbg005: coder is not routed through standalone applyModelPick");
-		check(!/working\s*=\s*await\s+applyModelPick\([^)]*reviewer/.test(sec), "dbg005: reviewer is not routed through standalone applyModelPick");
+		check(sec.includes("applyRoleModelAndThinkingPick"), "dbg006: runCustomFieldsOverlay routes to role chain helper");
+		// DBG-006: every role uses the chain; the standalone model and
+		// thinking pickers are gone from the custom fields overlay.
+		check(!sec.includes("applyModelPick"), "dbg006: runCustomFieldsOverlay no longer calls standalone applyModelPick");
+		check(!sec.includes("applyThinkingPick"), "dbg006: runCustomFieldsOverlay no longer calls standalone applyThinkingPick");
+		// The action handler must not emit or accept a standalone
+		// `${role} thinking` row. The thinking row literal must be
+		// absent and the `thinking:` action branch must be gone.
+		check(!/thinking:\${role}/.test(sec), "dbg006: no standalone `${role} thinking` row is emitted");
+		check(!sec.includes('startsWith("thinking:")'), "dbg006: no standalone `thinking:` action branch in handler");
+		// The model row is emitted for every role and routed through the
+		// chain helper unconditionally.
+		check(/value:\s*`model:\${role}`/.test(sec), "dbg006: model row emitted for every role");
+		check(/working\s*=\s*await\s+applyRoleModelAndThinkingPick\(\s*ctx,\s*working,\s*role,\s*choices\s*\)/.test(sec), "dbg006: all roles route through applyRoleModelAndThinkingPick");
+		// The clear route is preserved.
+		check(/working\s*=\s*applyClearRole\(\s*working,\s*role\s*\)/.test(sec), "dbg006: clear route for every role preserved");
 	}
 
 	// runFallbackSubmenu routes both fallback roles to the chain helper
@@ -610,6 +624,48 @@ function readSource(rel: string): string {
 	// staged edit exists).
 	{
 		check(overlay.includes("formatRoleEditDisplay") && overlay.includes("customRoleModelDisplay"), "dbg005: customRoleModelDisplay still routes to formatRoleEditDisplay for staged edits");
+	}
+}
+
+{
+	// DBG-006 profile current-selection derivation
+	const overlay = readSource("extensions/workflow/configure-overlay.ts");
+
+	// Helper exists and reads the latest local config to detect a
+	// non-empty `agents` override; falls back to profileFromLoaded
+	// otherwise.
+	check(overlay.includes("function currentProfileForProfileBlock"), "dbg006: currentProfileForProfileBlock helper exists");
+	{
+		const start = overlay.indexOf("function currentProfileForProfileBlock");
+		const end = overlay.indexOf("\n}\n", start);
+		const sec = start > 0 && end > 0 ? overlay.slice(start, end) : "";
+		check(sec.includes("getLatestExistingLocal"), "dbg006: currentProfileForProfileBlock reads the latest local config");
+		check(/agents/.test(sec) && /Object\.keys/.test(sec), "dbg006: currentProfileForProfileBlock inspects a non-empty agents object");
+		check(sec.includes('"custom"'), "dbg006: currentProfileForProfileBlock returns 'custom' when local agents are present");
+		check(sec.includes("profileFromLoaded"), "dbg006: currentProfileForProfileBlock falls back to profileFromLoaded");
+	}
+
+	// The Profile block call site uses the helper, not the bare
+	// profileFromLoaded, so the in-place check marker reflects the
+	// latest local override.
+	{
+		const idx = overlay.indexOf("await runProfileBlock(");
+		const end = overlay.indexOf(")", idx);
+		const callExpr = idx > 0 && end > 0 ? overlay.slice(idx, end + 1) : "";
+		check(callExpr.includes("currentProfileForProfileBlock"), "dbg006: runProfileBlock is invoked with currentProfileForProfileBlock");
+	}
+
+	// Profile config block and Runtime block still use profileFromLoaded
+	// directly. They were intentionally left untouched in DBG-006: those
+	// blocks already read the latest local override via getLatestExistingLocal
+	// before staging, so the 'custom' state is seeded by the hydration
+	// helper rather than derived here.
+	{
+		const start = overlay.indexOf("function runProfileConfigBlock");
+		const end = overlay.indexOf("\n}\n", start);
+		const sec = start > 0 && end > 0 ? overlay.slice(start, end) : "";
+		check(sec.includes("profileFromLoaded"), "dbg006: runProfileConfigBlock still uses profileFromLoaded for initial draft profile");
+		check(sec.includes("hydrateProfileConfigDraft"), "dbg006: runProfileConfigBlock still uses hydrateProfileConfigDraft to seed the draft");
 	}
 }
 

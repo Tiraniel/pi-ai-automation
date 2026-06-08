@@ -71,6 +71,22 @@ function profileFromLoaded(profileId: string | undefined): WorkflowDraftProfile 
 	return profileId === "gonka-hybrid" || profileId === "premium-brain-gonka-workers" ? "gonka" : "default";
 }
 
+/** DBG-006: derive the Profile block's current selection.
+ *  The Profile block represents what the user actually has on disk, not
+ *  just the loaded built-in profile id. When `.pi/workflow.local.json`
+ *  carries one or more explicit `agents` overrides the effective profile
+ *  is Custom, even if the built-in `loaded.profileId` is still default or
+ *  gonka. We re-read the latest local file each time so the Profile
+ *  overlay reflects whatever was just written by another block. */
+function currentProfileForProfileBlock(ctx: ExtensionContext, loadedProfileId: string | undefined): WorkflowDraftProfile {
+	const existingLocal = getLatestExistingLocal(ctx);
+	const localAgents = existingLocal.agents;
+	if (localAgents && typeof localAgents === "object" && !Array.isArray(localAgents) && Object.keys(localAgents).length > 0) {
+		return "custom";
+	}
+	return profileFromLoaded(loadedProfileId);
+}
+
 function labelForProfile(profile: WorkflowDraftProfile): string {
 	return profile === "default" ? "Default" : profile === "gonka" ? "Gonka" : "Custom";
 }
@@ -324,17 +340,6 @@ function customRoleModelDisplay(
 	return effective.thinkingLevel ? `${id}:${effective.thinkingLevel}` : id;
 }
 
-function customRoleThinkingDisplay(
-	role: AgentName,
-	draft: WorkflowConfigDraft,
-	effectiveAgents: LoadedWorkflowConfig["config"]["agents"] | undefined,
-): string {
-	const staged = draft.customEdits[role];
-	if (staged) return staged.thinkingLevel ?? "(default)";
-	const effective = effectiveAgents?.[role];
-	return effective?.thinkingLevel ?? "(default)";
-}
-
 async function runCustomFieldsOverlay(
 	ctx: ExtensionContext,
 	draft: WorkflowConfigDraft,
@@ -342,15 +347,15 @@ async function runCustomFieldsOverlay(
 	effectiveAgents: LoadedWorkflowConfig["config"]["agents"] | undefined,
 ): Promise<WorkflowConfigDraft> {
 	let working = draft;
-	// Internal loop: after a model/thinking/clear action we re-open the
-	// same submenu so the user can change several fields in one visit.
+	// Internal loop: after a model/clear action we re-open the same
+	// submenu so the user can change several fields in one visit.
 	// Esc/Back returns to the Profile config root without writing.
 	//
-	// DBG-005 chain: for coder/reviewer, the model row encapsulates the
+	// DBG-005/DBG-006 chain: every role's model row encapsulates the
 	// thinking-level selection (model picker -> thinking picker -> return
-	// to params) so we do not emit a standalone thinking row for those
-	// roles. Brain keeps its standalone model + thinking rows until Brain
-	// is later converted to the same chain.
+	// to params) via applyRoleModelAndThinkingPick, so no role emits a
+	// standalone thinking row. The model row's description shows the
+	// staged/effective thinking level via customRoleModelDisplay.
 	while (true) {
 		const items: SelectItem[] = [];
 		for (const role of AGENT_ROLES) {
@@ -359,17 +364,6 @@ async function runCustomFieldsOverlay(
 				label: `${role} model`,
 				description: customRoleModelDisplay(role, working, choices, effectiveAgents),
 			});
-			// Standalone thinking row: only brain in this scoped change.
-			// For coder/reviewer the model row chains into the thinking
-			// picker, so the model row's description already shows the
-			// staged/effective thinking level.
-			if (role === "brain") {
-				items.push({
-					value: `thinking:${role}`,
-					label: `${role} thinking`,
-					description: customRoleThinkingDisplay(role, working, effectiveAgents),
-				});
-			}
 			if (working.customEdits[role]) {
 				items.push({
 					value: `clear:${role}`,
@@ -411,22 +405,11 @@ async function runCustomFieldsOverlay(
 		if (sub.startsWith("model:")) {
 			const role = sub.slice("model:".length) as AgentName;
 			if (!AGENT_ROLES.includes(role)) continue;
-			// DBG-005: coder/reviewer chain model -> thinking in one nested
-			// flow. Brain keeps the existing single-pick behavior.
-			if (role === "coder" || role === "reviewer") {
-				working = await applyRoleModelAndThinkingPick(ctx, working, role, choices);
-			} else {
-				working = await applyModelPick(ctx, working, role, choices);
-			}
-			continue;
-		}
-		if (sub.startsWith("thinking:")) {
-			const role = sub.slice("thinking:".length) as AgentName;
-			// DBG-005: only brain exposes a standalone thinking row in this
-			// scoped change. Coder/reviewer are routed through the chain.
-			if (role !== "brain") continue;
-			if (!AGENT_ROLES.includes(role)) continue;
-			working = await applyThinkingPick(ctx, working, role, choices);
+			// DBG-005/DBG-006: every role uses the model -> thinking chain
+			// (model picker -> thinking picker -> return to params). Esc on
+			// the model picker returns the draft unchanged; Esc on the
+			// thinking picker returns to the model picker.
+			working = await applyRoleModelAndThinkingPick(ctx, working, role, choices);
 			continue;
 		}
 		if (sub.startsWith("clear:")) {
@@ -657,7 +640,7 @@ async function applyRoleModelAndThinkingPick(
 		const supported = getSupportedWorkflowThinkingLevels(modelResult.choice);
 		if (supported.length === 0) {
 			// No thinking levels advertised for this model -> commit model
-			// only, mirroring applyModelPick's no-think behavior.
+			// only and clear any prior thinking level on this edit.
 			const edit: WorkflowRoleEdit = { ...(existing ?? {}) };
 			delete edit.cleared;
 			edit.provider = modelResult.choice.provider;
@@ -740,55 +723,6 @@ async function applyFallbackModelAndThinkingPick(
 	}
 }
 
-async function applyModelPick(
-	ctx: ExtensionContext,
-	current: WorkflowConfigDraft,
-	role: AgentName,
-	choices: WorkflowModelChoice[],
-): Promise<WorkflowConfigDraft> {
-	const existing = current.customEdits[role];
-	const result = await showModelPickerOverlay(
-		ctx,
-		choices,
-		role,
-		existing?.provider,
-		existing?.model,
-	);
-	if (!result) return current;
-	const edit: WorkflowRoleEdit = { ...(existing ?? {}) };
-	delete edit.cleared;
-	edit.provider = result.choice.provider;
-	edit.model = result.choice.id;
-	const supported = getSupportedWorkflowThinkingLevels(result.choice);
-	if (supported.length === 0) {
-		delete edit.thinkingLevel;
-	} else if (supported.length === 1 && supported[0] === "off") {
-		edit.thinkingLevel = "off";
-	} else if (edit.thinkingLevel && !supported.includes(edit.thinkingLevel)) {
-		delete edit.thinkingLevel;
-	}
-	const customEdits: WorkflowCustomEdits = { ...current.customEdits, [role]: edit };
-	return { ...current, profile: "custom", customEdits };
-}
-
-async function applyThinkingPick(
-	ctx: ExtensionContext,
-	current: WorkflowConfigDraft,
-	role: AgentName,
-	choices: WorkflowModelChoice[],
-): Promise<WorkflowConfigDraft> {
-	const existing = current.customEdits[role];
-	const choice = findCurrentChoice(existing, choices);
-	const currentLevel: ThinkingLevel = existing?.thinkingLevel ?? "off";
-	const result = await showThinkingPickerOverlay(ctx, role, choice, currentLevel);
-	if (!result) return current;
-	const edit: WorkflowRoleEdit = { ...(existing ?? {}) };
-	delete edit.cleared;
-	edit.thinkingLevel = result.level;
-	const customEdits: WorkflowCustomEdits = { ...current.customEdits, [role]: edit };
-	return { ...current, profile: "custom", customEdits };
-}
-
 function applyClearRole(current: WorkflowConfigDraft, role: AgentName): WorkflowConfigDraft {
 	const customEdits: WorkflowCustomEdits = { ...current.customEdits, [role]: { cleared: true } };
 	return { ...current, profile: "custom", customEdits };
@@ -863,7 +797,7 @@ export async function showWorkflowConfigureOverlay(ctx: ExtensionContext): Promi
 			return { applied: false, cancelled: true };
 		}
 		if (action === "profile") {
-			const result = await runProfileBlock(ctx, profileFromLoaded(loaded.profileId));
+			const result = await runProfileBlock(ctx, currentProfileForProfileBlock(ctx, loaded.profileId));
 			if (result.applied) return result;
 			continue;
 		}
