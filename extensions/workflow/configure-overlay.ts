@@ -132,70 +132,143 @@ function buildDashboardItems(
 ): DashboardItem[] {
 	const items: DashboardItem[] = [
 		{
-			id: "profile",
-			label: `Profile: ${labelForProfile(draft.profile)}`,
+			id: "profile-models",
+			label: `Profile & agent models: ${labelForProfile(draft.profile)}`,
 			description: draft.profile === "custom"
-				? "Switch to a built-in profile (preserves existing custom role overrides)"
+				? "Switch profile or edit per-role models/thinking"
 				: "Switch to Custom per-role to edit per-role models and runtime fields",
 		},
 		{ id: "runtime", label: "Runtime settings", description: "delegate display / pane auto-close / reviewer swarm / deep planning" },
+		{ id: "fallbacks", label: "Delegate fallback models", description: "coder/reviewer fallback model overrides" },
+		{ id: "preview", label: "Preview & apply", description: "Show the staged payload and write `.pi/workflow.local.json`" },
+		{ id: "cancel", label: "Cancel", description: "Back out without writing" },
+	];
+	return items;
+}
+
+function formatRoleModelDescription(role: AgentName, draft: WorkflowConfigDraft, choices: WorkflowModelChoice[]): string {
+	const edit = draft.customEdits[role];
+	if (!edit) return "(default)";
+	return formatRoleEditDisplay(edit, choices);
+}
+
+function formatRoleThinkingDescription(role: AgentName, draft: WorkflowConfigDraft): string {
+	const edit = draft.customEdits[role];
+	if (!edit?.thinkingLevel) return "(default)";
+	return `${edit.thinkingLevel}${edit.provider ? ` (${edit.provider}/${edit.model ?? "?"})` : ""}`;
+}
+
+async function runProfileModelsOverlay(
+	ctx: ExtensionContext,
+	draft: WorkflowConfigDraft,
+	choices: WorkflowModelChoice[],
+	gonkaAvailable: boolean,
+): Promise<string | null> {
+	const items: SelectItem[] = [
+		{ value: "switch-profile", label: "Switch profile", description: "Change the active workflow profile" },
 	];
 
+	if (draft.profile === "custom") {
+		for (const role of AGENT_ROLES) {
+			items.push({
+				value: `model:${role}`,
+				label: `${role} model`,
+				description: formatRoleModelDescription(role, draft, choices),
+			});
+			items.push({
+				value: `thinking:${role}`,
+				label: `${role} thinking`,
+				description: formatRoleThinkingDescription(role, draft),
+			});
+			if (draft.customEdits[role]) {
+				items.push({
+					value: `clear:${role}`,
+					label: `Clear ${role} override`,
+					description: "Drop the staged edit for this role",
+				});
+			}
+		}
+	}
+
+	items.push({ value: "back", label: "Back", description: "Return to dashboard" });
+
+	return ctx.ui.custom<string | null>((_tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Profile & agent models")), 1, 0));
+		container.addChild(new Text(theme.fg("dim", `Current profile: ${labelForProfile(draft.profile)}`), 1, 0));
+
+		const selectList = new SelectList(items, Math.min(items.length, 16), getSelectListTheme(), {
+			minPrimaryColumnWidth: 22,
+			maxPrimaryColumnWidth: 50,
+		});
+		selectList.onSelect = (item) => done(item.value);
+		selectList.onCancel = () => done("back");
+
+		container.addChild(selectList);
+		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc/back"), 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (input: string) => {
+				selectList.handleInput(input);
+				_tui.requestRender();
+			},
+		};
+	}, { overlay: true, overlayOptions: { anchor: "center", width: 92, maxHeight: "85%" } });
+}
+
+async function runFallbackOverlay(
+	ctx: ExtensionContext,
+	draft: WorkflowConfigDraft,
+	choices: WorkflowModelChoice[],
+	effectiveFallbacks: Partial<Record<DelegateAgentName, AgentPreset>> | undefined,
+): Promise<string | null> {
+	const items: SelectItem[] = [];
 	for (const role of DELEGATE_AGENT_ROLES) {
 		items.push({
-			id: `fallback:${role}`,
+			value: `fallback:${role}`,
 			label: `${role} fallback model`,
 			description: formatFallbackDisplay(role, draft, effectiveFallbacks, choices),
 		});
 		if (draft.fallbackEdits?.[role] || effectiveFallbacks?.[role]) {
 			items.push({
-				id: `fallback-clear:${role}`,
+				value: `fallback-clear:${role}`,
 				label: `Clear ${role} fallback`,
 				description: "Remove this local fallback override on apply",
 			});
 		}
 	}
+	items.push({ value: "back", label: "Back", description: "Return to dashboard" });
 
-	for (const role of AGENT_ROLES) {
-		const edit = draft.customEdits[role];
-		if (draft.profile === "custom") {
-			items.push({
-				id: `model:${role}`,
-				label: `${role} model`,
-				description: edit ? formatRoleEditDisplay(edit, choices) : "(default)",
-			});
-			items.push({
-				id: `thinking:${role}`,
-				label: `${role} thinking`,
-				description: edit?.thinkingLevel
-					? `${edit.thinkingLevel}${edit.provider ? ` (${edit.provider}/${edit.model ?? "?"})` : ""}`
-					: "(default)",
-			});
-			if (edit) {
-				items.push({
-					id: `clear:${role}`,
-					label: `Clear ${role} override`,
-					description: "Drop the staged edit for this role (existing local override will also be removed on apply)",
-				});
-			}
-		} else {
-			// Built-in profile: read-only preserved summary (if any). The
-			// actual preserved override is read from `existingLocal` by
-			// `summarizeWorkflowDraft` in the preview; here we just mirror
-			// the staged view for the user.
-			if (edit) {
-				items.push({
-					id: `summary:${role}`,
-					label: `${role} (preserved)`,
-					description: formatRoleEditDisplay(edit, choices),
-				});
-			}
-		}
-	}
+	return ctx.ui.custom<string | null>((_tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Delegate fallback models")), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "Pick a fallback model or clear an existing override."), 1, 0));
 
-	items.push({ id: "preview", label: "Preview & apply", description: "Show the staged payload and write `.pi/workflow.local.json`" });
-	items.push({ id: "cancel", label: "Cancel", description: "Back out without writing" });
-	return items;
+		const selectList = new SelectList(items, Math.min(items.length, 12), getSelectListTheme(), {
+			minPrimaryColumnWidth: 24,
+			maxPrimaryColumnWidth: 50,
+		});
+		selectList.onSelect = (item) => done(item.value);
+		selectList.onCancel = () => done("back");
+
+		container.addChild(selectList);
+		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc/back"), 1, 0));
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => container.invalidate(),
+			handleInput: (input: string) => {
+				selectList.handleInput(input);
+				_tui.requestRender();
+			},
+		};
+	}, { overlay: true, overlayOptions: { anchor: "center", width: 92, maxHeight: "85%" } });
 }
 
 async function runDashboardOverlay(
@@ -248,7 +321,7 @@ async function applyProfileChoice(
 	current: WorkflowConfigDraft,
 	gonkaAvailable: boolean,
 ): Promise<WorkflowConfigDraft> {
-	const choice = await runProfileOverlay(ctx, { gonkaAvailable });
+	const choice = await runProfileOverlay(ctx, { gonkaAvailable, currentProfile: current.profile });
 	if (choice === "back") return current;
 	return buildInitialDraft(choice);
 }
@@ -395,46 +468,58 @@ export async function showWorkflowConfigureOverlay(ctx: ExtensionContext): Promi
 		if (action === "preview") {
 			break;
 		}
-		if (action === "profile") {
-			draft = await applyProfileChoice(ctx, draft, gonkaAvailable);
+		if (action === "profile-models") {
+			const sub = await runProfileModelsOverlay(ctx, draft, collection.choices, gonkaAvailable);
+			if (sub === "back" || sub === null) {
+				continue;
+			}
+			if (sub === "switch-profile") {
+				draft = await applyProfileChoice(ctx, draft, gonkaAvailable);
+				continue;
+			}
+			if (sub.startsWith("model:")) {
+				const role = sub.slice("model:".length) as AgentName;
+				if (!AGENT_ROLES.includes(role)) continue;
+				draft = await applyModelPick(ctx, draft, role, collection.choices);
+				continue;
+			}
+			if (sub.startsWith("thinking:")) {
+				const role = sub.slice("thinking:".length) as AgentName;
+				if (!AGENT_ROLES.includes(role)) continue;
+				draft = await applyThinkingPick(ctx, draft, role, collection.choices);
+				continue;
+			}
+			if (sub.startsWith("clear:")) {
+				const role = sub.slice("clear:".length) as AgentName;
+				if (!AGENT_ROLES.includes(role)) continue;
+				draft = applyClearRole(draft, role);
+				continue;
+			}
 			continue;
 		}
 		if (action === "runtime") {
 			draft = await applyRuntimeEdit(ctx, draft);
 			continue;
 		}
-		if (action.startsWith("model:")) {
-			const role = action.slice("model:".length) as AgentName;
-			if (!AGENT_ROLES.includes(role)) continue;
-			draft = await applyModelPick(ctx, draft, role, collection.choices);
+		if (action === "fallbacks") {
+			const sub = await runFallbackOverlay(ctx, draft, collection.choices, loaded.config.delegateFallbacks);
+			if (sub === "back" || sub === null) {
+				continue;
+			}
+			if (sub.startsWith("fallback:")) {
+				const role = sub.slice("fallback:".length) as DelegateAgentName;
+				if (!DELEGATE_AGENT_ROLES.includes(role)) continue;
+				draft = await applyFallbackPick(ctx, draft, role, collection.choices);
+				continue;
+			}
+			if (sub.startsWith("fallback-clear:")) {
+				const role = sub.slice("fallback-clear:".length) as DelegateAgentName;
+				if (!DELEGATE_AGENT_ROLES.includes(role)) continue;
+				draft = applyClearFallback(draft, role);
+				continue;
+			}
 			continue;
 		}
-		if (action.startsWith("thinking:")) {
-			const role = action.slice("thinking:".length) as AgentName;
-			if (!AGENT_ROLES.includes(role)) continue;
-			draft = await applyThinkingPick(ctx, draft, role, collection.choices);
-			continue;
-		}
-		if (action.startsWith("clear:")) {
-			const role = action.slice("clear:".length) as AgentName;
-			if (!AGENT_ROLES.includes(role)) continue;
-			draft = applyClearRole(draft, role);
-			continue;
-		}
-		if (action.startsWith("fallback:")) {
-			const role = action.slice("fallback:".length) as DelegateAgentName;
-			if (!DELEGATE_AGENT_ROLES.includes(role)) continue;
-			draft = await applyFallbackPick(ctx, draft, role, collection.choices);
-			continue;
-		}
-		if (action.startsWith("fallback-clear:")) {
-			const role = action.slice("fallback-clear:".length) as DelegateAgentName;
-			if (!DELEGATE_AGENT_ROLES.includes(role)) continue;
-			draft = applyClearFallback(draft, role);
-			continue;
-		}
-		// Built-in profile summary rows are display-only; ignore any other
-		// ids (future-proof) by re-showing the dashboard.
 	}
 
 	return runPreviewOverlay(ctx, existingLocal, draft, collection.warning);

@@ -330,6 +330,7 @@ function readSource(rel: string): string {
 	check(thinking.includes("getSupportedWorkflowThinkingLevels") && !thinking.includes("for (const level of THINKING_LEVELS)"), "phaseB source: thinking picker constrained by helper");
 	const picker = readSource("extensions/workflow/configure-model-picker.ts");
 	check(picker.includes("Input") && picker.includes("getValue()") && !picker.includes("getText()") && picker.includes("truncateToWidth") && picker.includes("visibleWidth"), "phaseB source: model picker is searchable and width-safe");
+	check(picker.includes("matchesKey") && picker.includes("Key.up") && picker.includes("Key.down") && picker.includes("Key.enter") && picker.includes("Key.escape") && picker.includes('Key.ctrl("c")'), "phaseB source: model picker uses Pi TUI key matching for navigation/confirm/cancel");
 	const runtime = readSource("extensions/workflow/configure-overlay-runtime.ts");
 	check(runtime.includes("__save") && runtime.includes("__discard"), "phaseB source: runtime overlay has explicit save/discard actions");
 	for (const id of ["delegateDisplay", "delegatePaneAutoClose", "reviewerSwarm.enabled", "reviewerSwarm.maxConcurrency", "deepPlanning.enabled", "deepPlanning.plannerCount", "deepPlanning.rounds", "deepPlanning.maxConcurrency"]) {
@@ -377,6 +378,49 @@ function readSource(rel: string): string {
 	check(readme.includes("delegateFallbacks") && readme.includes("/workflow_cfg") && (readme.includes("exits with warning") || readme.includes("no child")), "slice5 docs: README documents delegate fallbacks and guard exit");
 	const prompts = readSource("extensions/workflow/prompts.ts");
 	check(!prompts.includes("tool itself does NOT switch sessions") && (prompts.includes("auto-starts") || prompts.includes("automatic session")), "slice5 prompts: auto-start wording present and stale wording removed");
+}
+
+{
+	// Menu-cleanup grouping/current-awareness checks (DBG-002)
+	const overlay = readSource("extensions/workflow/configure-overlay.ts");
+	const profileOverlay = readSource("extensions/workflow/configure-overlay-profile.ts");
+
+	// Root dashboard: only high-level groups + preview/cancel
+	check(overlay.includes('id: "profile-models"'), "menu cleanup: root has profile-models group");
+	check(overlay.includes('id: "fallbacks"'), "menu cleanup: root has fallbacks group");
+	check(overlay.includes('id: "runtime"'), "menu cleanup: root has runtime group");
+	check(overlay.includes('id: "preview"'), "menu cleanup: root has preview");
+	check(overlay.includes('id: "cancel"'), "menu cleanup: root has cancel");
+	// Root must not expose fallback leaf rows directly
+	const rootEnd = overlay.indexOf("function runProfileModelsOverlay");
+	const rootSection = rootEnd > 0 ? overlay.slice(0, rootEnd) : overlay;
+	check(!rootSection.includes('id: "fallback:'), "menu cleanup: root does not expose fallback: leaf rows");
+	check(!rootSection.includes('id: "fallback-clear:'), "menu cleanup: root does not expose fallback-clear: leaf rows");
+
+	// Fallback submenu exists with Back
+	check(overlay.includes("function runFallbackOverlay"), "menu cleanup: fallback submenu overlay exists");
+	check(overlay.includes('value: `fallback:${role}`'), "menu cleanup: fallback submenu has fallback: rows");
+	check(overlay.includes('value: `fallback-clear:${role}`'), "menu cleanup: fallback submenu has fallback-clear: rows");
+	check(overlay.includes('value: "back"') && overlay.includes("function runFallbackOverlay"), "menu cleanup: fallback submenu has Back row");
+
+	// Profile/models submenu exists with switch-profile, per-role rows, Back
+	check(overlay.includes("function runProfileModelsOverlay"), "menu cleanup: profile-models submenu overlay exists");
+	check(overlay.includes('value: "switch-profile"'), "menu cleanup: profile-models submenu has switch-profile");
+	check(overlay.includes('value: `model:${role}`'), "menu cleanup: profile-models submenu has model: rows");
+	check(overlay.includes('value: `thinking:${role}`'), "menu cleanup: profile-models submenu has thinking: rows");
+	check(overlay.includes('value: `clear:${role}`'), "menu cleanup: profile-models submenu has clear: rows");
+
+	// Profile picker: current-aware, omits current profile from selectable rows, omits unavailable Gonka
+	check(profileOverlay.includes("currentProfile"), "menu cleanup: profile overlay accepts currentProfile");
+	check(profileOverlay.includes('if (options.currentProfile !== "default")'), "menu cleanup: profile picker omits current default");
+	check(profileOverlay.includes('if (options.currentProfile !== "gonka")'), "menu cleanup: profile picker omits current gonka");
+	check(profileOverlay.includes('if (options.currentProfile !== "custom")'), "menu cleanup: profile picker omits current custom");
+	check(profileOverlay.includes("Current profile:") && profileOverlay.includes("currentLabel"), "menu cleanup: profile picker shows current in header text");
+	check(profileOverlay.includes('!options.gonkaAvailable && options.currentProfile !== "gonka"'), "menu cleanup: profile picker gates unavailable Gonka hint");
+	// Gonka unavailable should not appear as a selectable row (no label with "unavailable")
+	check(!profileOverlay.includes("Gonka (unavailable)"), "menu cleanup: no selectable unavailable Gonka row");
+	// Back instead of Cancel label
+	check(profileOverlay.includes('label: "Back"'), "menu cleanup: profile picker uses Back label");
 }
 
 if (failures > 0) {

@@ -10,7 +10,9 @@ import { type ExtensionContext, DynamicBorder } from "@earendil-works/pi-coding-
 import {
 	Container,
 	Input,
+	Key,
 	Text,
+	matchesKey,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -169,12 +171,12 @@ class ModelPicker {
 			invalidate: () => container.invalidate(),
 			handleInput: (data: string) => {
 				if (this.disposed) return;
-				if (data === "\x1b" || data === "\x1b\x1b") {
+				if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
 					this.disposed = true;
 					this.opts.onCancel();
 					return;
 				}
-				if (data === "\x1b[A" || data === "k") {
+				if (matchesKey(data, Key.up) || data === "k") {
 					if (this.filtered.length === 0) return;
 					this.selectedIndex = this.selectedIndex === 0 ? this.filtered.length - 1 : this.selectedIndex - 1;
 					this.adjustScroll();
@@ -182,7 +184,7 @@ class ModelPicker {
 					this.opts.tui.requestRender();
 					return;
 				}
-				if (data === "\x1b[B" || data === "j") {
+				if (matchesKey(data, Key.down) || data === "j") {
 					if (this.filtered.length === 0) return;
 					this.selectedIndex = this.selectedIndex === this.filtered.length - 1 ? 0 : this.selectedIndex + 1;
 					this.adjustScroll();
@@ -190,7 +192,7 @@ class ModelPicker {
 					this.opts.tui.requestRender();
 					return;
 				}
-				if (data === "\r" || data === "\n") {
+				if (matchesKey(data, Key.enter)) {
 					const choice = this.filtered[this.selectedIndex];
 					if (choice) {
 						this.disposed = true;
