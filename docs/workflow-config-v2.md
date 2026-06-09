@@ -301,6 +301,17 @@ docs/
   workflow-config-v2.md   (this file)
 ```
 
+## Runtime contract: architecture evidence matrix
+
+Brain architecture plans carry an optional per-criterion `acceptanceEvidenceMatrix` (typed in `extensions/workflow/architecture/types.ts`; normalized/validated in `extensions/workflow/architecture/evidence-matrix.ts`; enforced in `extensions/workflow/architecture/store.ts` and `extensions/workflow/architecture/gate.ts`). The matrix is part of the workflow contract, not a free-form note, so the Brain -> coder -> reviewer chain is anchored in concrete proof obligations.
+
+- `draft` plans may omit the matrix. The hard lock only applies once a plan is marked `ready` or once delegation is requested.
+- `ready` plans must include a matrix that covers every acceptance criterion exactly once, with non-empty `enforcementLevel`, `requiredEvidence`, `reviewerRoles`, and `blockingConditions` per entry. Duplicate or extra matrix entries are rejected; structural issues produce matrix-specific rejection codes.
+- A matrix entry whose only `enforcementLevel` is `prompt-only` is rejected when `criterionKind === "runtime-behavior"`. Any entry that uses `prompt-only` (including `documentation` / `planning-artifact` / `manual-process` criteria) must also set `promptOnlyCaveat`. This keeps docs/admin fixes lightweight while preventing prompt-only mitigations from being misrepresented as runtime enforcement.
+- `validatePhaseGate` returns matrix-specific rejection codes (`acceptance_matrix_missing`, `acceptance_matrix_incomplete`, `acceptance_matrix_invalid`, `acceptance_matrix_prompt_only_invalid`) for ready-looking plans that are missing coverage, malformed, or legacy. Legacy plans without a matrix remain readable so existing plan files do not break, but delegation is blocked until they are updated.
+- `buildArchitectureContext` renders the matrix in the delegated coder/reviewer context and adds role-specific instructions (coder maps completion evidence back to matrix entries; reviewer verifies per-entry required evidence and reviewer-role coverage). Coder and reviewer tools receive the same matrix via `buildArchitectureContext`, so a reviewer cannot approve a phase whose matrix entries have not been satisfied.
+- Tiny admin / debug entries and docs-only criteria remain lightweight: they may use `prompt-only` with a caveat and skip behavior tests. The hard lock is on the *content* of the matrix, not on the existence of behavior tests for non-runtime criteria.
+
 ## v2 loader contract
 
 `extensions/workflow/config/load.ts` provides `loadV2Workflow(workflowFilePath)`:

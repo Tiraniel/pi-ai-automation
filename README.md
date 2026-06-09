@@ -19,6 +19,7 @@ The extensions auto-apply the Brain preset (unless disabled), inject Brain orche
 Workflow tools:
 - `delegate_to_coder`
 - `delegate_to_reviewer` (supports optional `goals` for targeted reviewer swarm)
+- `workflow_record_architecture_plan`, `workflow_read_architecture_plan`, `workflow_update_architecture_plan` (architecture-plan persistence; `ready` plans require the per-criterion `acceptanceEvidenceMatrix` — see [Architecture evidence matrix](#architecture-evidence-matrix))
 - `room_create`, `room_job_start`, `room_send`, `room_read`, `room_job_done`, `room_status`
 - `workflow_deep_plan` (optional planning-only deep-planning pass; planning-only delegates, no code edits)
 
@@ -405,6 +406,17 @@ What the child sub-agent sees:
 - **Per-agent routing is by `agentId` only.** `to` matches an exact `agentId`; there is no role-based broadcast fan-out. Use broadcast (omit `to`) if you want a "to anyone in role X" message and have consumers filter by their own role.
 - **Project-local only.** Rooms live in `.pi/workflow-runs/` of the cwd where the workflow runs. When a delegate is launched with `room` context, the parent exports `PI_WORKFLOW_ROOM_ROOT` so a child running in a sub-`cwd` still reads/writes the same room store. They are not synced or aggregated across machines.
 - **Reviewer swarm + room context.** When `delegate_to_reviewer` runs the reviewer swarm with `room` context, each parallel reviewer gets a unique `agentId` of the form `<baseAgentId>-<index+1>` (e.g. `reviewer-1`, `reviewer-2`) so they don't share one read cursor / status row.
+
+### Architecture evidence matrix
+
+Brain architecture plans carry an optional per-criterion `acceptanceEvidenceMatrix` (see [`docs/workflow-config-v2.md` runtime contract note](./docs/workflow-config-v2.md#runtime-contract-architecture-evidence-matrix) for the canonical contract). Behaviour:
+
+- `draft` plans may omit the matrix; `ready` plans require one that covers every acceptance criterion exactly once, with non-empty `enforcementLevel`, `requiredEvidence`, `reviewerRoles`, and `blockingConditions` per entry.
+- A ready-plan entry whose only enforcement level is `prompt-only` is rejected for `runtime-behavior` criteria; any other entry that uses `prompt-only` must include `promptOnlyCaveat`.
+- Delegation (coder/reviewer) calls `validatePhaseGate`, which returns matrix-specific rejection codes (`acceptance_matrix_missing`, `acceptance_matrix_incomplete`, `acceptance_matrix_invalid`, `acceptance_matrix_prompt_only_invalid`) when coverage is incomplete, invalid, or dropped on a legacy plan. Legacy plans without a matrix remain readable, but delegation is blocked until they are updated.
+- Simple/tiny admin and docs/planning entries may legitimately use `prompt-only` with a caveat (no behavior tests required) so the workflow does not overburden small fixes; runtime-behavior criteria cannot.
+
+This keeps the Brain -> coder -> reviewer chain anchored in concrete proof obligations per acceptance criterion instead of prompt-only mitigations or hand-wavy "covered" claims.
 
 ### Existing delegation stays the same
 

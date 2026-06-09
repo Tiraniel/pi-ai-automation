@@ -40,6 +40,81 @@ function asPhaseStatus(value: unknown): PhaseGateStatus | undefined {
 	return undefined;
 }
 
+const matrixEntryParameters = {
+	criterion: Type.String({ minLength: 1, description: "Exact acceptance-criterion text this entry covers." }),
+	criterionKind: Type.Union(
+		[
+			Type.Literal("runtime-behavior"),
+			Type.Literal("planning-artifact"),
+			Type.Literal("documentation"),
+			Type.Literal("configuration"),
+			Type.Literal("test-infrastructure"),
+			Type.Literal("manual-process"),
+		],
+		{ description: "Kind of criterion this entry describes." },
+	),
+	businessRiskIfWrong: Type.String({ minLength: 1, description: "Why the criterion matters to the business." }),
+	enforcementLevel: Type.Array(
+		Type.Union([
+			Type.Literal("prompt-only"),
+			Type.Literal("config-default"),
+			Type.Literal("runtime-gate"),
+			Type.Literal("behavior-test"),
+			Type.Literal("manual-validation"),
+			Type.Literal("regression-proof"),
+		]),
+		{ minItems: 1, description: "How the criterion is enforced." },
+	),
+	requiredEvidence: Type.Array(
+		Type.Object({
+			kind: Type.Union([
+				Type.Literal("artifact"),
+				Type.Literal("diff"),
+				Type.Literal("static-check"),
+				Type.Literal("unit-test"),
+				Type.Literal("behavior-test"),
+				Type.Literal("regression-test"),
+				Type.Literal("runtime-gate-test"),
+				Type.Literal("manual-validation"),
+				Type.Literal("reviewer-approval"),
+			], { description: "Evidence kind for this row." }),
+			description: Type.String({ minLength: 1, description: "What the evidence shows." }),
+			command: Type.Optional(Type.String({ description: "Optional command that produces the evidence." })),
+		}),
+		{ minItems: 1, description: "Concrete evidence that proves the criterion." },
+	),
+	reviewerRoles: Type.Array(
+		Type.Union([
+			Type.Literal("implementation"),
+			Type.Literal("evidence-test"),
+			Type.Literal("behavior"),
+			Type.Literal("regression"),
+			Type.Literal("maintainability"),
+			Type.Literal("docs-config"),
+		]),
+		{ minItems: 1, description: "Reviewer roles that must sign off on this criterion." },
+	),
+	blockingConditions: Type.Array(Type.String({ minLength: 1 }), {
+		minItems: 1,
+		description: "Concrete failure modes that must block delegation/finalization.",
+	}),
+	promptOnlyCaveat: Type.Optional(Type.String({ description: "Required when any enforcementLevel is prompt-only." })),
+	manualValidationPlan: Type.Optional(Type.String({ description: "Optional manual validation steps." })),
+} as const;
+
+const acceptanceEvidenceMatrixParameters = Type.Optional(
+	Type.Array(
+		Type.Object(matrixEntryParameters, {
+			description:
+				"Acceptance/evidence matrix entry. Required when recording/updating a `ready` plan that has non-trivial acceptance criteria; optional for `draft` plans.",
+		}),
+		{
+			description:
+				"Per-criterion evidence matrix. Required for ready plans; draft plans may omit it. Must cover every acceptance criterion exactly once.",
+		},
+	),
+);
+
 function okTool(text: string, details: Record<string, unknown> = {}) {
 	return {
 		content: [{ type: "text" as const, text }],
@@ -76,6 +151,7 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 			parallelAssessment: Type.String(),
 			contractBlockPlan: Type.String(),
 			acceptanceCriteria: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+			acceptanceEvidenceMatrix: acceptanceEvidenceMatrixParameters,
 			files: Type.Optional(Type.Array(Type.String())),
 			openQuestions: Type.Optional(Type.Array(Type.String())),
 		}),
@@ -108,6 +184,7 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 					parallelAssessment,
 					contractBlockPlan,
 					acceptanceCriteria,
+					acceptanceEvidenceMatrix: (params as any).acceptanceEvidenceMatrix,
 					files: normalizeArray((params as any).files),
 					openQuestions: normalizeArray((params as any).openQuestions),
 					sessionManager: (ctx as any).sessionManager,
@@ -182,6 +259,7 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 			parallelAssessment: Type.Optional(Type.String()),
 			contractBlockPlan: Type.Optional(Type.String()),
 			acceptanceCriteria: Type.Optional(Type.Array(Type.String())),
+			acceptanceEvidenceMatrix: acceptanceEvidenceMatrixParameters,
 			files: Type.Optional(Type.Array(Type.String())),
 			openQuestions: Type.Optional(Type.Array(Type.String())),
 		}),
@@ -216,10 +294,6 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 					phaseStatus: (params as any).phaseStatus,
 				});
 			}
-			if (phase && phaseStatus) {
-				updatePlanPhase(ctx.cwd, planId, phase, phaseStatus, "Updated by architecture helper", (ctx as any).sessionManager);
-			}
-
 			const patch: ArchitecturePlanPatch = {};
 			if (Object.prototype.hasOwnProperty.call(params as any, "status")) patch.status = asStatus((params as any).status);
 			if (Object.prototype.hasOwnProperty.call(params as any, "businessPlan")) {
@@ -241,6 +315,9 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 			if (Object.prototype.hasOwnProperty.call(params as any, "acceptanceCriteria")) {
 				patch.acceptanceCriteria = normalizeArray((params as any).acceptanceCriteria);
 			}
+			if (Object.prototype.hasOwnProperty.call(params as any, "acceptanceEvidenceMatrix")) {
+				patch.acceptanceEvidenceMatrix = (params as any).acceptanceEvidenceMatrix as any;
+			}
 			if (Object.prototype.hasOwnProperty.call(params as any, "files")) {
 				patch.files = normalizeArray((params as any).files);
 			}
@@ -255,7 +332,33 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 				}
 			}
 			if (hasPatch) {
-				updatePlanRecord(ctx.cwd, planId, patch, (ctx as any).sessionManager);
+				try {
+					// Apply the metadata patch (including acceptanceEvidenceMatrix) BEFORE
+					// the phase status update. This lets a legacy ready plan be repaired
+					// (matrix fixed) and then have its phase status updated in the same
+					// call. updatePlanRecord validates the patch and rejects with the
+					// matrix hard-lock; updatePlanPhase re-checks the ready matrix hard-lock
+					// after every patch.
+					updatePlanRecord(ctx.cwd, planId, patch, (ctx as any).sessionManager);
+				} catch (error) {
+					return errTool(`Failed to update plan: ${error instanceof Error ? error.message : String(error)}`, {
+						reason: "patch_failed",
+						planId,
+					});
+				}
+			}
+
+			if (phase && phaseStatus) {
+				try {
+					updatePlanPhase(ctx.cwd, planId, phase, phaseStatus, "Updated by architecture helper", (ctx as any).sessionManager);
+				} catch (error) {
+					return errTool(`Failed to update plan phase: ${error instanceof Error ? error.message : String(error)}`, {
+						reason: "phase_update_failed",
+						planId,
+						phase,
+						phaseStatus,
+					});
+				}
 			}
 
 			const updated = readArchitecturePlanWithIssueStatus(ctx.cwd, planId, (ctx as any).sessionManager);

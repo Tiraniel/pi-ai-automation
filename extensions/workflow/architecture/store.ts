@@ -1,46 +1,42 @@
 import * as path from "node:path";
 import { resolveSprintPathForStore } from "./sprint-path";
 
+import {
+	formatMatrixValidationIssues,
+	normalizeMatrix,
+	validateEvidenceMatrix,
+} from "./evidence-matrix";
+import {
+	attachMatrixReadIssues,
+	getMatrixReadIssues,
+	isPlainObject,
+	normalizeStringArray,
+	stripMatrixReadIssues,
+	toIsoDate,
+	trimString,
+} from "./plan-helpers";
+import {
+	buildArchitectureContext,
+	buildContextForPhase,
+	validatePhaseGate,
+} from "./gate";
 import type {
 	WorkflowArchitecturePlan,
 	WorkflowPhaseId,
 	PlanLifecycleStatus,
 	PhaseEvidence,
 	PhaseGateStatus,
-	PlanGateResult,
 	ArchitecturePlanPatch,
 	ArchitecturePlanReadResult,
-	ArchitecturePlanReadIssue,
 	ArchitecturePlanPhases,
 	PlanStoragePath,
-	PlanGateRejection,
+	AcceptanceEvidenceMatrixEntry,
 } from "./types";
 import type { PlanStorageLookupError } from "./storage";
 import { planStorageError, readJson, writeJson } from "./storage";
 
 const PLAN_ID_SAFE_RE = /^[a-z0-9](?:[a-z0-9_-]{0,38}[a-z0-9])?$/;
 const DEFAULT_PLAN_ROOT = path.join(".pi", "workflow-architecture", "plans");
-
-function toIsoDate(): string {
-	return new Date().toISOString();
-}
-
-function normalizeString(value: unknown): string {
-	if (typeof value === "string") return value.trim();
-	return "";
-}
-
-function normalizeStringArray(value: unknown): string[] {
-	if (!Array.isArray(value)) return [];
-	const out: string[] = [];
-	for (const entry of value) {
-		const v = normalizeString(entry);
-		if (!v) continue;
-		out.push(v);
-	}
-	return out;
-}
-
 
 function defaultPhase(status: PhaseGateStatus = "not_started"): {
 	status: PhaseGateStatus;
@@ -54,18 +50,41 @@ function defaultPhase(status: PhaseGateStatus = "not_started"): {
 	};
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+function assertReadyMatrix(plan: {
+	status: PlanLifecycleStatus;
+	acceptanceCriteria: string[];
+	acceptanceEvidenceMatrix?: AcceptanceEvidenceMatrixEntry[];
+}): void {
+	if (plan.status !== "ready") return;
+	const matrix = plan.acceptanceEvidenceMatrix ?? [];
+	if (matrix.length === 0) {
+		throw new Error(
+			"acceptanceEvidenceMatrix is invalid: ready plans require a non-empty acceptanceEvidenceMatrix.",
+		);
+	}
+	const validation = validateEvidenceMatrix(
+		{ acceptanceCriteria: plan.acceptanceCriteria, acceptanceEvidenceMatrix: matrix },
+		{ isReadyPlan: true },
+	);
+	if (!validation.ok) {
+		throw new Error(`acceptanceEvidenceMatrix is invalid: ${formatMatrixValidationIssues(validation.issues)}`);
+	}
+	// Read-time issues from the on-disk file (e.g. malformed rows that normalizePlan
+	// attached via attachMatrixReadIssues) must also fail the ready hard-lock so a
+	// ready plan that lost rows during normalization cannot slip through.
+	const readIssues = getMatrixReadIssues(plan);
+	if (readIssues.length > 0) {
+		throw new Error(`acceptanceEvidenceMatrix is invalid: ${formatMatrixValidationIssues(readIssues)}`);
+	}
 }
 
 function isPlanIdSafe(planId: string): boolean {
 	return PLAN_ID_SAFE_RE.test(planId);
 }
 
-
 function normalizePhase(value: unknown): ReturnType<typeof defaultPhase> | undefined {
 	if (!isPlainObject(value)) return undefined;
-	const statusValue = normalizeString(value.status);
+	const statusValue = trimString(value.status);
 	if (
 		statusValue !== "not_started" &&
 		statusValue !== "coder_completed" &&
@@ -73,17 +92,17 @@ function normalizePhase(value: unknown): ReturnType<typeof defaultPhase> | undef
 		statusValue !== "changes_requested"
 	) return undefined;
 
-	const updatedAt = normalizeString(value.updatedAt);
+	const updatedAt = trimString(value.updatedAt);
 	if (!updatedAt) return undefined;
 
 	const evidence: PhaseEvidence[] = [];
 	if (Array.isArray((value as { evidence?: unknown }).evidence)) {
 		for (const item of (value as { evidence?: unknown }).evidence as unknown[]) {
 			if (!isPlainObject(item)) continue;
-			const note = normalizeString(item.note);
-			const at = normalizeString(item.at);
+			const note = trimString(item.note);
+			const at = trimString(item.at);
 			if (!note || !at) continue;
-			evidence.push({ at, note, source: normalizeString(item.source) || undefined });
+			evidence.push({ at, note, source: trimString(item.source) || undefined });
 		}
 	}
 
@@ -97,24 +116,30 @@ function normalizePhase(value: unknown): ReturnType<typeof defaultPhase> | undef
 function normalizePlan(input: unknown): WorkflowArchitecturePlan | null {
 	if (!isPlainObject(input)) return null;
 
-	const planId = normalizeString(input.planId).toLowerCase();
+	const planId = trimString(input.planId).toLowerCase();
 	if (!isPlanIdSafe(planId)) return null;
 
-	const status = normalizeString(input.status) as PlanLifecycleStatus;
+	const status = trimString(input.status) as PlanLifecycleStatus;
 	if (status !== "ready" && status !== "draft") return null;
 
-	const createdAt = normalizeString(input.createdAt);
-	const updatedAt = normalizeString(input.updatedAt);
+	const createdAt = trimString(input.createdAt);
+	const updatedAt = trimString(input.updatedAt);
 	if (!createdAt || !updatedAt) return null;
 
-	const businessPlan = normalizeString(input.businessPlan);
-	const technicalPlan = normalizeString(input.technicalPlan);
-	const parallelAssessment = normalizeString(input.parallelAssessment);
-	const contractBlockPlan = normalizeString(input.contractBlockPlan);
+	const businessPlan = trimString(input.businessPlan);
+	const technicalPlan = trimString(input.technicalPlan);
+	const parallelAssessment = trimString(input.parallelAssessment);
+	const contractBlockPlan = trimString(input.contractBlockPlan);
 	if (!businessPlan || !technicalPlan || !parallelAssessment || !contractBlockPlan) return null;
 
 	const acceptanceCriteria = normalizeStringArray(input.acceptanceCriteria);
 	if (!acceptanceCriteria.length) return null;
+
+	const matrixResult = normalizeMatrix((input as { acceptanceEvidenceMatrix?: unknown }).acceptanceEvidenceMatrix);
+	// Lenient read: drop structurally invalid matrix entries from disk so historical
+	// plans remain readable. Validation for create/update lives in those code paths.
+	// Read issues are attached to the returned plan (Symbol-keyed) so assertReadyMatrix
+	// and validatePhaseGate can still reject the plan with acceptance_matrix_invalid.
 
 	const phasesValue = input.phases;
 	if (!isPlainObject(phasesValue)) return null;
@@ -136,14 +161,20 @@ function normalizePlan(input: unknown): WorkflowArchitecturePlan | null {
 			phaseA,
 			phaseB,
 		},
-		taskId: normalizeString(input.taskId) || undefined,
-		title: normalizeString(input.title) || undefined,
+		taskId: trimString(input.taskId) || undefined,
+		title: trimString(input.title) || undefined,
 		files: normalizeStringArray(input.files),
 		openQuestions: normalizeStringArray(input.openQuestions),
 	};
 
+	if (matrixResult.value !== undefined && matrixResult.value.length > 0) {
+		plan.acceptanceEvidenceMatrix = matrixResult.value;
+	}
 	if (plan.files?.length === 0) delete (plan as { files?: string[] }).files;
 	if (plan.openQuestions?.length === 0) delete (plan as { openQuestions?: string[] }).openQuestions;
+	// Surface read-time matrix issues so assertReadyMatrix / validatePhaseGate can
+	// reject this plan even though we kept it readable for legacy/malformed cases.
+	attachMatrixReadIssues(plan, matrixResult.issues);
 	return plan;
 }
 
@@ -241,6 +272,7 @@ export function createArchitecturePlanRecord(input: {
 	parallelAssessment: string;
 	contractBlockPlan: string;
 	acceptanceCriteria: string[];
+	acceptanceEvidenceMatrix?: unknown;
 	files?: string[];
 	openQuestions?: string[];
 	sessionManager?: any;
@@ -252,15 +284,15 @@ export function createArchitecturePlanRecord(input: {
 	const now = toIsoDate();
 	const plan: WorkflowArchitecturePlan = {
 		planId: input.planId,
-		taskId: normalizeString(input.taskId) || undefined,
-		title: normalizeString(input.title) || undefined,
+		taskId: trimString(input.taskId) || undefined,
+		title: trimString(input.title) || undefined,
 		createdAt: now,
 		updatedAt: now,
 		status: input.status ?? "draft",
-		businessPlan: normalizeString(input.businessPlan),
-		technicalPlan: normalizeString(input.technicalPlan),
-		parallelAssessment: normalizeString(input.parallelAssessment),
-		contractBlockPlan: normalizeString(input.contractBlockPlan),
+		businessPlan: trimString(input.businessPlan),
+		technicalPlan: trimString(input.technicalPlan),
+		parallelAssessment: trimString(input.parallelAssessment),
+		contractBlockPlan: trimString(input.contractBlockPlan),
 		acceptanceCriteria: normalizeStringArray(input.acceptanceCriteria),
 		files: normalizeStringArray(input.files),
 		openQuestions: normalizeStringArray(input.openQuestions),
@@ -276,8 +308,20 @@ export function createArchitecturePlanRecord(input: {
 	if (plan.acceptanceCriteria.length === 0) {
 		throw new Error("At least one acceptance criterion is required.");
 	}
+	const createMatrix = normalizeMatrix(input.acceptanceEvidenceMatrix);
+	if (createMatrix.issues.length > 0) {
+		throw new Error(`acceptanceEvidenceMatrix is invalid: ${formatMatrixValidationIssues(createMatrix.issues)}`);
+	}
+	if (createMatrix.value !== undefined && createMatrix.value.length > 0) {
+		plan.acceptanceEvidenceMatrix = createMatrix.value;
+	}
 	if (plan.files?.length === 0) delete (plan as { files?: string[] }).files;
 	if (plan.openQuestions?.length === 0) delete (plan as { openQuestions?: string[] }).openQuestions;
+
+	// Ready-plan hard-lock: status=ready must come with a structurally valid,
+	// fully covered acceptanceEvidenceMatrix. Draft plans are still allowed
+	// to omit the matrix so simple/admin/planning flows stay lightweight.
+	assertReadyMatrix(plan);
 
 	writeArchitecturePlan(input.cwd, plan, input.sessionManager);
 	return plan;
@@ -289,6 +333,9 @@ export function writeArchitecturePlan(cwd: string, plan: WorkflowArchitecturePla
 	}
 	const { file } = getPlanStoragePath(cwd, plan.planId, sessionManager);
 	plan.updatedAt = toIsoDate();
+	// Strip the symbol-keyed read-issue marker so the on-disk file never carries
+	// internal validation metadata (also forces JSON.stringify to behave the same).
+	stripMatrixReadIssues(plan);
 	writeJson(file, plan);
 }
 
@@ -303,7 +350,7 @@ export function updatePlanPhase(
 	const plan = readArchitecturePlan(cwd, planId, sessionManager);
 	if (!plan) throw new Error(`Plan not found: ${planId}`);
 
-	const safeNote = normalizeString(note);
+	const safeNote = trimString(note);
 	const evidence: PhaseEvidence | null = safeNote
 		? { at: toIsoDate(), note: safeNote }
 		: null;
@@ -318,6 +365,10 @@ export function updatePlanPhase(
 	};
 
 	const updated = { ...plan, phases: next };
+	// Ready-plan hard-lock: legacy/no-matrix or malformed-matrix plans must not be
+	// phase-mutated (the matrix on disk is invalid; the plan is still readable so
+	// Brain/coder can update the matrix via updatePlanRecord first).
+	assertReadyMatrix(updated);
 	writeArchitecturePlan(cwd, updated, sessionManager);
 	return updated;
 }
@@ -330,17 +381,18 @@ export function updatePlanRecord(
 ): WorkflowArchitecturePlan {
 	const plan = readArchitecturePlan(cwd, planId, sessionManager);
 	if (!plan) throw new Error(`Plan not found: ${planId}`);
+	const nextStatus = patch.status ?? plan.status;
 	const normalized: WorkflowArchitecturePlan = {
 		...plan,
-		status: patch.status ?? plan.status,
-		businessPlan: patch.businessPlan !== undefined ? normalizeString(patch.businessPlan) : plan.businessPlan,
-		technicalPlan: patch.technicalPlan !== undefined ? normalizeString(patch.technicalPlan) : plan.technicalPlan,
-		parallelAssessment: patch.parallelAssessment !== undefined ? normalizeString(patch.parallelAssessment) : plan.parallelAssessment,
-		contractBlockPlan: patch.contractBlockPlan !== undefined ? normalizeString(patch.contractBlockPlan) : plan.contractBlockPlan,
+		status: nextStatus,
+		businessPlan: patch.businessPlan !== undefined ? trimString(patch.businessPlan) : plan.businessPlan,
+		technicalPlan: patch.technicalPlan !== undefined ? trimString(patch.technicalPlan) : plan.technicalPlan,
+		parallelAssessment: patch.parallelAssessment !== undefined ? trimString(patch.parallelAssessment) : plan.parallelAssessment,
+		contractBlockPlan: patch.contractBlockPlan !== undefined ? trimString(patch.contractBlockPlan) : plan.contractBlockPlan,
 		acceptanceCriteria: patch.acceptanceCriteria !== undefined ? normalizeStringArray(patch.acceptanceCriteria) : plan.acceptanceCriteria,
 		files: patch.files !== undefined ? normalizeStringArray(patch.files) : (plan.files ?? []),
-		taskId: normalizeString(patch.taskId) || plan.taskId,
-		title: normalizeString(patch.title) || plan.title,
+		taskId: trimString(patch.taskId) || plan.taskId,
+		title: trimString(patch.title) || plan.title,
 		openQuestions: patch.openQuestions !== undefined
 			? normalizeStringArray(patch.openQuestions)
 			: (plan.openQuestions ?? []),
@@ -357,129 +409,31 @@ export function updatePlanRecord(
 	if (normalized.files?.length === 0) delete (normalized as { files?: string[] }).files;
 	if (normalized.openQuestions?.length === 0) delete (normalized as { openQuestions?: string[] }).openQuestions;
 
+	if (Object.prototype.hasOwnProperty.call(patch, "acceptanceEvidenceMatrix")) {
+		const updateMatrix = normalizeMatrix(patch.acceptanceEvidenceMatrix);
+		if (updateMatrix.issues.length > 0) {
+			throw new Error(`acceptanceEvidenceMatrix is invalid: ${formatMatrixValidationIssues(updateMatrix.issues)}`);
+		}
+		if (updateMatrix.value !== undefined && updateMatrix.value.length > 0) {
+			normalized.acceptanceEvidenceMatrix = updateMatrix.value;
+		} else {
+			delete (normalized as { acceptanceEvidenceMatrix?: AcceptanceEvidenceMatrixEntry[] }).acceptanceEvidenceMatrix;
+		}
+		// Successful matrix replacement: clear any Symbol-keyed read issues inherited
+		// from the malformed on-disk plan so assertReadyMatrix can pass on the
+		// repaired plan. If no replacement matrix is supplied, read issues are left
+		// intact so they continue to block ready plan updates/delegation.
+		stripMatrixReadIssues(normalized);
+	}
+
+	// Ready-plan hard-lock after all patches are applied: catches draft -> ready
+	// transitions that did not supply a matrix in the same patch, as well as
+	// updates that drop matrix entries from a plan that was already ready.
+	assertReadyMatrix(normalized);
+
 	writeArchitecturePlan(cwd, normalized, sessionManager);
 	return normalized;
 }
 
-function addGate(
-	rejections: PlanGateRejection[],
-	code: PlanGateRejection["code"],
-	reason: string,
-): void {
-	rejections.push({ code, reason });
-}
-
-export function validatePhaseGate(
-	plan: WorkflowArchitecturePlan | null,
-	phase: WorkflowPhaseId,
-	options?: { forAgent?: "coder" | "reviewer" },
-): PlanGateResult {
-	const rejections: PlanGateRejection[] = [];
-	if (!plan) {
-		addGate(rejections, "plan_missing", "No architecture plan is recorded.");
-		return { ok: false, rejections };
-	}
-	if (plan.status !== "ready") {
-		addGate(rejections, "plan_not_ready", "Plan status must be ready before delegation.");
-	}
-	const openQuestions = (plan.openQuestions ?? []).filter(Boolean);
-	if (openQuestions.length > 0) {
-		addGate(rejections, "plan_open_questions", "Plan has open questions and cannot be used for delegation.");
-	}
-	if (!plan.phases || !plan.phases.phaseA || !plan.phases.phaseB) {
-		addGate(rejections, "missing_phase", "Plan is missing phase A/B records.");
-		return { ok: false, rejections };
-	}
-	if (!plan.phases[phase]) {
-		addGate(rejections, "missing_phase", `Phase ${phase} is missing.`);
-		return { ok: false, rejections };
-	}
-	if (phase === "phaseB" && plan.phases.phaseA.status !== "review_approved") {
-		addGate(
-			rejections,
-			"phase_a_not_approved",
-			"Phase B cannot start before Phase A has review_approved status.",
-		);
-	}
-	if (options?.forAgent === "reviewer" && plan.phases[phase].status !== "coder_completed") {
-		addGate(
-			rejections,
-			"invalid_phase_status",
-			`Reviewer delegation for ${phase} requires phase status coder_completed; current status is ${plan.phases[phase].status}.`,
-		);
-	}
-	if (options?.forAgent === "coder" && plan.phases[phase].status === "review_approved") {
-		addGate(
-			rejections,
-			"invalid_phase_status",
-			`Coder delegation for ${phase} is blocked because phase already has review_approved status.`,
-		);
-	}
-	return { ok: rejections.length === 0, rejections };
-}
-
-export function buildArchitectureContext(plan: WorkflowArchitecturePlan, options: { phase: WorkflowPhaseId; forAgent?: "coder" | "reviewer" }): string {
-	const gate = validatePhaseGate(plan, options.phase, { forAgent: options.forAgent });
-	const lines: string[] = [];
-	lines.push(`# Architecture plan ${plan.planId}`);
-	if (plan.title) lines.push(`Title: ${plan.title}`);
-	if (plan.taskId) lines.push(`Task: ${plan.taskId}`);
-	lines.push(`Status: ${plan.status}`);
-	lines.push(`Current phase statuses: A=${plan.phases.phaseA.status}, B=${plan.phases.phaseB.status}`);
-	if (options.forAgent === "reviewer") {
-		lines.push("Reviewer context:");
-		lines.push("- Architecture plans are context for intended behavior and implementation scope only, not approval criteria.");
-		lines.push("- Review changed code, validation evidence, and behavior against this scope context.");
-		lines.push("- `review_approved` means implementation review passed for this phase, not that the Brain plan text was approved.");
-		lines.push("");
-	}
-	lines.push("");
-
-	if (!gate.ok) {
-		lines.push("Blocking checks:");
-		for (const issue of gate.rejections) {
-			lines.push(`- ${issue.code}: ${issue.reason}`);
-		}
-		lines.push("");
-	}
-
-	if (options.phase === "phaseA") {
-		lines.push("Phase A scope:");
-		lines.push("- Implement isolated architecture-contract blocks only.");
-		lines.push("- No runtime wiring in `extensions/brain-workflow.ts` or delegate transport.");
-		lines.push("- Do not alter runtime bootstrap, loader integration, or command wiring.");
-	} else {
-		lines.push("Phase B scope:");
-		lines.push("- Apply integration/composition updates after Phase A approval.");
-		lines.push("- Keep artifacts from Phase A unchanged except for approved updates.");
-		if (plan.phases.phaseA.status !== "review_approved") {
-			lines.push("- Blocked until Phase A is review_approved.");
-		}
-	}
-	lines.push("");
-
-	lines.push("Plan artifacts:");
-	lines.push(`- Business: ${plan.businessPlan}`);
-	lines.push(`- Technical: ${plan.technicalPlan}`);
-	lines.push(`- Parallel: ${plan.parallelAssessment}`);
-	lines.push(`- Contract/Block: ${plan.contractBlockPlan}`);
-	if (plan.files?.length) {
-		lines.push("- Files:");
-		for (const file of plan.files) lines.push(`  - ${file}`);
-	}
-	if (plan.openQuestions?.length) {
-		lines.push("- Open questions: ");
-		for (const q of plan.openQuestions) lines.push(`  - ${q}`);
-	}
-
-	lines.push("- Acceptance criteria:");
-	for (const criterion of plan.acceptanceCriteria) {
-		lines.push(`  - ${criterion}`);
-	}
-
-	return lines.join("\n");
-}
-
-export function buildContextForPhase(plan: WorkflowArchitecturePlan, phase: WorkflowPhaseId): string {
-	return buildArchitectureContext(plan, { phase });
-}
+// Re-export gate/context helpers so existing callers can keep importing from store.
+export { validatePhaseGate, buildArchitectureContext, buildContextForPhase };
