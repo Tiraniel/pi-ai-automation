@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { DelegateAgentName, DelegateRunResult, UsageStats } from "../types";
+import type { DelegateAgentName, DelegateRunResult } from "../types";
 import { getWorkflowRunsRoot, resolveRoomContextFromDelegateParams, type ResolvedRoomContext } from "../rooms";
 import { loadWorkflowConfig } from "../runtime/config";
 import {
@@ -38,7 +38,8 @@ import {
 	truncateText,
 } from "./messages";
 import { runDelegateAgent } from "./runner";
-import { parseReviewerVerdict, resolveReviewerSwarmConfig, runReviewerSwarm } from "./swarm";
+import { isMatrixGatedPlan, parseReviewerVerdict, resolveReviewerSwarmConfig, runReviewerSwarm } from "./swarm";
+import { buildReviewerToolResult } from "./reviewer-memo-file";
 import { makeDelegateGuardFailure, resolveDelegatePresetWithFallback } from "./model-guard";
 import type { PaneManifest } from "./pane-status";
 
@@ -377,7 +378,14 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					? (params as any).goals.map((goal: unknown) => String(goal).trim()).filter((goal: string) => goal.length > 0)
 					: undefined;
 				const swarmConfig = resolveReviewerSwarmConfig(loadedForGuard.config);
-				if (!swarmConfig.enabled) {
+				// TASK-004 Phase B fix: matrix-gated reviews must run through
+				// `runReviewerSwarm` (and therefore role mode) even when
+				// `reviewerSwarm.enabled === false`. The `enabled: false` flag
+				// only bypasses the swarm for legacy / no-matrix plans; a ready
+				// plan with `acceptanceEvidenceMatrix` rows still needs the
+				// fail-closed role evaluation and durable memo, so the
+				// single-reviewer fallback is gated on `!isMatrixGatedPlan`.
+				if (!swarmConfig.enabled && !isMatrixGatedPlan(architecture.plan)) {
 					const singleTask = goals?.length
 						? `${delegatedTask}\n\nReview goals:\n${goals.map((goal: string) => `- ${goal}`).join("\n")}`
 						: delegatedTask;
@@ -409,22 +417,22 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					};
 				}
 
-				const swarm = await runReviewerSwarm(ctx, delegatedTask, requestedCwd, goals, signal, onUpdate, roomContext, guard.preset);
-				const lines = swarm.results.map((item, index) => {
-					const detail = item.result ? getToolResultText(item.result) : "(no output)";
-					return `[${index + 1}] ${item.target}\n${item.verdict} (${item.status})\n${detail}`;
-				});
-				const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
-				for (const item of swarm.results) {
-					if (!item.result) continue;
-					usage.input += item.result.usage.input;
-					usage.output += item.result.usage.output;
-					usage.cacheRead += item.result.usage.cacheRead;
-					usage.cacheWrite += item.result.usage.cacheWrite;
-					usage.cost += item.result.usage.cost;
-					usage.contextTokens = Math.max(usage.contextTokens, item.result.usage.contextTokens);
-					usage.turns += item.result.usage.turns;
-				}
+				const swarm = await runReviewerSwarm(
+					ctx,
+					delegatedTask,
+					requestedCwd,
+					goals,
+					signal,
+					onUpdate,
+					roomContext,
+					guard.preset,
+					// TASK-004 Phase B: forward the architecture plan + phase so
+					// the swarm can enter role mode (matrix-derived required
+					// roles, fail-closed evaluation, durable memo). The
+					// swarm decides internally whether role mode is active
+					// based on `plan.acceptanceEvidenceMatrix` rows.
+					{ plan: architecture.plan, phase: architectureRequirement.phase },
+				);
 				const hasChangesRequested = swarm.results.some((item) => item.verdict === "CHANGES_REQUESTED");
 				const status = swarm.aborted ? "aborted" : swarm.failed ? "failed" : "completed";
 				const reviewerUpdate = markArchitecturePhaseUpdate(
@@ -434,25 +442,15 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					`Delegation ${agent} returned ${status}`,
 					(ctx as any).sessionManager,
 				);
-				const finalOutput = lines.join("\n\n");
-				return {
-					content: [{ type: "text", text: `[reviewer] ${status}\n\n${finalOutput}` }],
-					details: {
-						agent: "reviewer",
-						task: delegatedTask,
-						cwd: requestedCwd ? path.resolve(ctx.cwd, requestedCwd) : ctx.cwd,
-						status,
-						swarm: swarm.results,
-						progress: swarm.results.map((item, index) => ({ at: Date.now(), type: "status", text: `[${index + 1}] ${item.target} ${item.verdict} (${item.status})` })),
-						usage,
-						exitCode: swarm.failed ? 1 : 0,
-						finalOutput,
-						planId: architectureRequirement.planId,
-						phase: architectureRequirement.phase,
-						architectureGatePlanUpdateError: reviewerUpdate,
-					},
-					isError: status !== "completed",
-				};
+				return buildReviewerToolResult({
+					delegatedTask,
+					requestedCwd,
+					baseCwd: ctx.cwd,
+					planId: architectureRequirement.planId,
+					phase: architectureRequirement.phase,
+					swarm,
+					reviewerUpdate,
+				});
 			}
 
 			const result = await runDelegateAgent(ctx, agent, delegatedTask, requestedCwd, signal, onUpdate, roomContext, guard.preset);

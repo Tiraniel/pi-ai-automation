@@ -24,10 +24,12 @@
 			"toolProfile": "reviewer-readonly",
 			"promptPacks": ["reviewer-judge-core"],
 			"qualityGates": [
-				"review-goal-architecture",
-				"review-goal-correctness",
-				"review-goal-tests",
-				"review-goal-security"
+				"review-goal-behavior",
+				"review-goal-evidence-test",
+				"review-goal-implementation",
+				"review-goal-maintainability",
+				"review-goal-regression",
+				"review-goal-docs-config"
 			]
 		}
 	]

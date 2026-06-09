@@ -183,8 +183,10 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 `;
 
 export const DEFAULT_REVIEWER_SWARM_TARGETS = [
-	"Changed-code acceptance behavior",
-	"Implementation correctness and regressions",
-	"Test and validation evidence for implementation",
-	"Security, performance, and maintainability of changed code",
+	"Behavior reviewer — changed-code acceptance behavior",
+	"Evidence/test-adequacy reviewer — validation evidence for implementation",
+	"Implementation reviewer — implementation correctness",
+	"Maintainability/architecture reviewer — coupling, boundaries, and patterns",
+	"Regression reviewer — regressions introduced by the change",
+	"Docs/config reviewer — when README, docs/, examples/, or workflow config is in scope",
 ];

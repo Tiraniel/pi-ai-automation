@@ -250,7 +250,14 @@ function managedAgentCatalog(): JsonObject {
 				role: "reviewer",
 				modelPreset: "premium-reviewer",
 				toolProfile: "reviewer-readonly",
-				qualityGates: ["review-goal-architecture", "review-goal-correctness", "review-goal-tests", "review-goal-security"],
+				qualityGates: [
+					"review-goal-behavior",
+					"review-goal-evidence-test",
+					"review-goal-implementation",
+					"review-goal-maintainability",
+					"review-goal-regression",
+					"review-goal-docs-config",
+				],
 			},
 		],
 	};
@@ -302,10 +309,12 @@ function managedQualityGates(): JsonObject {
 		gates: [
 			{ id: "gate-typescript-strict", kind: "checks", command: "npx --no-install tsc --noEmit", description: "Run TypeScript type checks before considering work complete." },
 			{ id: "gate-git-diff-check", kind: "checks", command: "git diff --check", description: "Run git diff --check to avoid formatting and conflict-marker issues." },
-			{ id: "review-goal-architecture", kind: "review-goal", description: "Code-review goal: inspect changed modules for coupling, ownership, and architecture-boundary regressions." },
-			{ id: "review-goal-correctness", kind: "review-goal", description: "Code-review goal: validate implementation correctness and regression risk in changed behavior." },
-			{ id: "review-goal-tests", kind: "review-goal", description: "Code-review goal: verify test/check evidence for implemented changes." },
-			{ id: "review-goal-security", kind: "review-goal", description: "Code-review goal: review security, safety, and concurrency risks in changed implementation." },
+			{ id: "review-goal-behavior", kind: "review-goal", description: "Behavior reviewer — validate that changed-code acceptance behavior is satisfied. For TUI / runtime behavior, require runnable behavior test, runtime gate, or observed tool output; reject source-string / static-only / read-the-source / skipped-running evidence." },
+			{ id: "review-goal-evidence-test", kind: "review-goal", description: "Evidence/test-adequacy reviewer — validate that validation evidence is concrete and complete for each acceptance criterion. Reject prompt-only / instructions-only mitigations for runtime behavior." },
+			{ id: "review-goal-implementation", kind: "review-goal", description: "Implementation reviewer — validate the implementation diff matches the Brain-authored contract/block plan, with correct boundaries, imports, and behavior." },
+			{ id: "review-goal-maintainability", kind: "review-goal", description: "Maintainability/architecture reviewer — flag regressions in module ownership, coupling, runtime integration shape, and patterns introduced by implementation changes." },
+			{ id: "review-goal-regression", kind: "review-goal", description: "Regression reviewer — verify the change does not regress existing behavior; require runnable regression evidence for runtime-behavior criteria." },
+			{ id: "review-goal-docs-config", kind: "review-goal", description: "Docs/config reviewer (scoped) — validate README, docs/, examples/, and workflow config (workflow.json / workflow.quality-gates.json / settings.json) stay consistent with implementation. Active only when docs/config files are in the plan scope." },
 		],
 	};
 }

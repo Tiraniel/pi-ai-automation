@@ -96,7 +96,18 @@ Reviewer swarm behavior:
 - Pass `goals` to `delegate_to_reviewer` to review acceptance criteria explicitly.
 - Without `goals`, configured `reviewerSwarm.targets` are used.
 - If any target reviewer fails or returns `CHANGES_REQUESTED`, the delegation result is marked failed.
-- Set `reviewerSwarm.enabled: false` to keep single-reviewer behavior.
+- Set `reviewerSwarm.enabled: false` for legacy/no-matrix plans only; this keeps legacy single-reviewer behavior.
+  - Matrix-gated `ready` plans with `acceptanceEvidenceMatrix` still run role-based matrix reviewer coverage even when this flag is `false`.
+
+#### Role-based reviewer swarm (matrix-derived)
+
+For non-trivial `ready` architecture plans with an `acceptanceEvidenceMatrix`, the reviewer swarm enters role mode automatically:
+
+- Required reviewer roles are derived from each matrix entry's `reviewerRoles`, plus the default role set (behavior, evidence/test, implementation, maintainability, regression, docs-config when scoped). Explicit `goals` on the delegation call are supplemental and never replace required roles.
+- Each role is assigned its own reviewer; the per-role task embeds the matrix criteria, required evidence, blocking conditions, hard role rules (rejection of source-string / static-only / prompt-only evidence for behavior + evidence-test + regression), and the supplemental goals.
+- Results are evaluated with the fail-closed role evaluator: an `APPROVED` behavior / evidence-test / regression result that relies on source-string / static-only / read-the-source / skipped-running / prompt-only evidence is downgraded to `CHANGES_REQUESTED`; an `auto_exit` / `process_exit` / `missing` / `legacy` completion is provisional and blocks required approval unless explicit structured reviewer evidence is supplied.
+- A consolidated memo is written to `.pi/workflow-runs/reviewer-memos/<planId>-<phase>.md` covering approvals, changes requested, weak evidence, prompt-only caveats, unresolved risks, provisional caveats, unknown/failed, and a final recommendation. The tool output shows the memo path + memo before the per-target raw outputs.
+- Final approval is blocked whenever any required role returns `CHANGES_REQUESTED`, has an `UNKNOWN` verdict, is missing, or is still provisional. The phase is only marked `review_approved` when every required role clears the gate.
 
 ## Deep planning (opt-in)
 

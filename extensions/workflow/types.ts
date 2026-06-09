@@ -217,6 +217,28 @@ export interface ReviewerTargetResult {
 	verdict: "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN";
 	status: "running" | "completed" | "failed" | "aborted";
 	result?: DelegateRunResult;
+	// TASK-004 Phase A: role-based quality review metadata. All fields are
+	// optional to keep v1 callers (e.g. legacy swarm targets) backward
+	// compatible. Phase B wiring populates these; Phase A helper modules
+	// emit them on synthetic results.
+	/** Role id this target was derived for (e.g. "behavior", "docs-config"). */
+	role?: string;
+	/** True when the matrix/default role set requires this target. */
+	required?: boolean;
+	/** Effective verdict after role-aware evaluation (downgrades/blockers). */
+	effectiveVerdict?: "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN";
+	/** True when the role's review is provisional and must not satisfy final approval. */
+	provisional?: boolean;
+	/** Reasons this target blocks final approval, even if verdict === APPROVED. */
+	blockingReasons?: string[];
+	/** Criteria/evidence the role's review found weak or unsupported. */
+	weakEvidence?: string[];
+	/** Prompt-only mitigation caveats surfaced by the evaluator. */
+	promptOnlyCaveats?: string[];
+	/** Unresolved risks the role flagged for Brain to address. */
+	unresolvedRisks?: string[];
+	/** Reference to the matrix entry/role target descriptor driving this evaluation. */
+	roleTarget?: unknown;
 }
 
 // ---------- v2 catalog shapes (Slice 1, see docs/workflow-config-v2.md) ----------

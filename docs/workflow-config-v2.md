@@ -68,6 +68,9 @@ it carries optional `coder` and `reviewer` agent presets (provider, model, think
 that the guard tries when the primary model for that role is unavailable. It is a
 runtime safety override, not a v2 catalog identity.
 
+`reviewerSwarm.enabled` remains a compatibility switch only for legacy/no-matrix plans: setting it to `false` enables the legacy single-reviewer behavior there.
+For matrix-gated `ready` plans that carry an `acceptanceEvidenceMatrix`, role-based reviewer coverage remains required and still runs in role mode even when `reviewerSwarm.enabled` is `false`.
+
 - `deepPlanning` remains the explicit runtime-wired planning exception and is
   resolved through the model preset catalog via `loadV2Workflow` + adapter.
 - `loadWorkflowConfig` routes `version: 2` files through `loadV2Workflow` and
@@ -171,6 +174,58 @@ instructions first, then inline prompt-pack text in catalog order, then
 the Karpathy-guidelines block when the resolved tool profile (or override)
 opts in.
 
+### Role-based reviewer swarm (matrix-derived)
+
+For non-trivial `ready` architecture plans that carry an `acceptanceEvidenceMatrix`
+(see [Runtime contract: architecture evidence matrix](#runtime-contract-architecture-evidence-matrix)),
+the reviewer swarm enters role mode automatically:
+
+- **Required reviewer roles are derived from the matrix.** `deriveReviewerRoleTargets`
+  walks each `AcceptanceEvidenceMatrixEntry.reviewerRoles`, then layers in the
+  default role set (behavior, evidence/test, implementation, maintainability,
+  regression, and docs-config when scoped). Matrix-derived roles are the
+  single source of truth for required coverage.
+- **Explicit Brain `goals` are supplemental only.** Caller-supplied goals are
+  attached to every role's task as supplemental context and embedded in the
+  consolidated memo, but they never replace or weaken the required role set.
+- **Per-role task embeds the contract.** `buildReviewerRoleTask` injects the
+  matrix criteria, required evidence, blocking conditions, and hard role
+  rules (e.g. rejection of source-string / static-only / prompt-only evidence
+  for behavior, evidence-test, and regression) so each reviewer is graded
+  against the same rubric the matrix encodes.
+- **Fail-closed role evaluator.** Results are run through a fail-closed
+  evaluator: an `APPROVED` behavior / evidence-test / regression result that
+  relies on source-string / static-only / read-the-source / skipped-running
+  / prompt-only evidence is downgraded to `CHANGES_REQUESTED`; an `auto_exit`
+  / `process_exit` / `missing` / `legacy` completion is **provisional** and
+  blocks required approval unless explicit structured reviewer evidence
+  (typed criterion coverage rows, command outcomes, or an explicit reviewer
+  evidence declaration) is supplied. The evaluator also surfaces weak
+  evidence, prompt-only caveats, unresolved risks, and per-role blocking
+  reasons.
+- **Final approval is fail-closed on required roles.** A phase can only be
+  marked `review_approved` when every required role clears the gate. Any
+  required role that returns `CHANGES_REQUESTED`, has an `UNKNOWN` verdict,
+  is missing, or is still provisional blocks final approval.
+- **Durable consolidated memo.** A consolidated memo covering approvals,
+  changes requested, weak evidence, prompt-only caveats, unresolved risks,
+  provisional caveats, unknown/failed reviewers, and a final recommendation
+  is written to `.pi/workflow-runs/reviewer-memos/<planId>-<phase>.md`
+  (path exported as `REVIEWER_MEMO_DIRNAME` from
+  `extensions/workflow/delegate/reviewer-memo-file.ts`). The
+  `delegate_to_reviewer` tool result surfaces `reviewerMemoPath` and the
+  full memo in its details, and the tool's human-readable content reports
+  the memo path + decision before the per-target raw outputs.
+
+The role-based contract is implemented by the helpers in
+`extensions/workflow/delegate/reviewer-roles.ts`
+(`deriveReviewerRoleTargets`, `buildReviewerRoleTask`, the result
+evaluator, and `buildReviewerMemoForResults`) plus
+`extensions/workflow/delegate/reviewer-memo-file.ts` (memo path + disk
+write). The default reviewer target strings and the `review-goal-*`
+catalog entries in `examples/workflow.quality-gates.json` mirror the
+same role names so the workflow, the swarm, and the catalog stay aligned.
+
 ## Resolution and precedence
 
 The resolver takes a normalized `V2Workflow` and a `V2CatalogBundle` and
@@ -267,7 +322,7 @@ The v1 `profile` mechanism (built-in `default`, `gonka-hybrid`,
 
 See `examples/workflow.json` and the matching catalog files listed above.
 The example workflow is the default three-agent flow (brain -> coder ->
-reviewer) with a four-goal reviewer swarm.
+reviewer) with a role-based six-goal reviewer swarm.
 
 ## File layout
 

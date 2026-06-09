@@ -15,23 +15,33 @@
 			"command": "git diff --check"
 		},
 		{
-			"id": "review-goal-architecture",
-			"description": "Changed-code architecture boundary review: flag regressions in module ownership, coupling, and runtime integration shape introduced by implementation changes.",
+			"id": "review-goal-behavior",
+			"description": "Behavior reviewer — validate that changed-code acceptance behavior is satisfied. For TUI / runtime behavior, require runnable behavior test, runtime gate, or observed tool output; reject source-string / static-only / read-the-source / skipped-running evidence.",
 			"kind": "review-goal"
 		},
 		{
-			"id": "review-goal-correctness",
-			"description": "Changed-code correctness review: flag unsafe boundaries, broken imports, and behavior mismatches in implementation diffs.",
+			"id": "review-goal-evidence-test",
+			"description": "Evidence/test-adequacy reviewer — validate that validation evidence is concrete and complete for each acceptance criterion. Reject prompt-only / instructions-only mitigations for runtime behavior.",
 			"kind": "review-goal"
 		},
 		{
-			"id": "review-goal-tests",
-			"description": "Validation and evidence review for implementation changes: require concrete test/check output before marking complete.",
+			"id": "review-goal-implementation",
+			"description": "Implementation reviewer — validate the implementation diff matches the Brain-authored contract/block plan, with correct boundaries, imports, and behavior.",
 			"kind": "review-goal"
 		},
 		{
-			"id": "review-goal-security",
-			"description": "Security and concurrency review for implementation changes: flag secrets leakage, unsafe filesystem/process handling, and race/concurrency risk in modified code.",
+			"id": "review-goal-maintainability",
+			"description": "Maintainability/architecture reviewer — flag regressions in module ownership, coupling, runtime integration shape, and patterns introduced by implementation changes.",
+			"kind": "review-goal"
+		},
+		{
+			"id": "review-goal-regression",
+			"description": "Regression reviewer — verify the change does not regress existing behavior; require runnable regression evidence for runtime-behavior criteria.",
+			"kind": "review-goal"
+		},
+		{
+			"id": "review-goal-docs-config",
+			"description": "Docs/config reviewer (scoped) — validate README, docs/, examples/, and workflow config (workflow.json / workflow.quality-gates.json / settings.json) stay consistent with implementation. Active only when docs/config files are in the plan scope.",
 			"kind": "review-goal"
 		}
 	]
