@@ -1,5 +1,5 @@
 import { buildArchitectureContext, readArchitecturePlanWithIssueStatus, updatePlanPhase, validatePhaseGate, validatePlanId } from "../architecture";
-import type { WorkflowPhaseId } from "../architecture/types";
+import type { WorkflowArchitecturePlan, WorkflowPhaseId } from "../architecture/types";
 
 export type ArchitecturePhaseStatus = "coder_completed" | "review_approved" | "changes_requested";
 
@@ -13,6 +13,9 @@ export type ArchitectureRequirementResult =
 		ok: true;
 		requirement: ArchitectureRequirement;
 		delegatedTask: string;
+		// TASK-003 Phase B: surface the loaded plan so delegate_to_coder can
+		// pass it to the completion-evidence gate without re-reading disk.
+		plan: WorkflowArchitecturePlan;
 	}
 	| {
 		ok: false;
@@ -126,6 +129,7 @@ export function resolveArchitectureContext(
 		ok: true,
 		requirement,
 		delegatedTask: `${buildArchitectureContext(plan, { phase: requirement.phase, forAgent: agent })}\n\n${task}`,
+		plan,
 	};
 }
 

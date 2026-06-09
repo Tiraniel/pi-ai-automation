@@ -312,6 +312,16 @@ Brain architecture plans carry an optional per-criterion `acceptanceEvidenceMatr
 - `buildArchitectureContext` renders the matrix in the delegated coder/reviewer context and adds role-specific instructions (coder maps completion evidence back to matrix entries; reviewer verifies per-entry required evidence and reviewer-role coverage). Coder and reviewer tools receive the same matrix via `buildArchitectureContext`, so a reviewer cannot approve a phase whose matrix entries have not been satisfied.
 - Tiny admin / debug entries and docs-only criteria remain lightweight: they may use `prompt-only` with a caveat and skip behavior tests. The hard lock is on the *content* of the matrix, not on the existence of behavior tests for non-runtime criteria.
 
+## Runtime contract: coder completion evidence gate
+
+`delegate_to_coder` enforces a strict matrix-gated completion contract via `extensions/workflow/delegate/completion-evidence-gate.ts` (`evaluateCoderPhaseAdvancement` / `runCompletionEvidenceGate`). The gate runs after `runDelegateAgent` returns and before `markArchitecturePhaseUpdate(..., coder_completed)` so pane and headless transports share the same boundary.
+
+- A coder phase whose plan is `ready` and has an `acceptanceEvidenceMatrix` must include a structured `coderEvidence` packet — typically via the child `sub_agent_done` / `workflow_delegate_done` done sidecar, or via intentionally-supported structured result details for headless transports. The packet must contain `filesChanged`, `commandsRun` (each with `outcome` of `passed` / `failed` / `skipped` plus a short `summary`), and a `criterionCoverage` row per matrix entry keyed by the exact criterion text with `evidenceKind`, `strength`, `supportingFiles`, `supportingCommands`, and a one-line `summary`.
+- Free-form final assistant text — `auto_exit` (pane fallback), headless `legacy` / generic `completed`, or any free-form-only completion — is **diagnostic only** for ready matrix-gated plans and never advances the phase. The gate emits `free_form_only`, `auto_exit_incomplete`, `process_exit_incomplete`, or `missing_sidecar_incomplete` rejection codes so the diagnostics stay visible.
+- Evidence-source precedence: explicit structured completion evidence written by the completion tool / sidecar is preferred; intentionally supported structured result details may be accepted only if parsed by the same validator; free-form final assistant text is never sufficient.
+- Source-string / static-only / prompt-only evidence is not sufficient for `runtime-behavior` / `behavior-test` matrix rows — only runnable supporting commands that actually passed count. Failed / retry / auto-exit delegate history is preserved in the `delegateHistory` block and surfaced in the handoff / Brain pre-review summary.
+- Tiny / admin / debug lightweight exceptions remain available only for non-matrix-gated plans. A ready matrix-gated plan always refuses the lightweight bypass (`lightweight_bypass_refused`) so the strict gate cannot be silently bypassed.
+
 ## v2 loader contract
 
 `extensions/workflow/config/load.ts` provides `loadV2Workflow(workflowFilePath)`:

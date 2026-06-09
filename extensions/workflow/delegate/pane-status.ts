@@ -21,6 +21,11 @@ export interface DoneSidecar {
 	from_auto_exit?: boolean;
 	stop_reason?: string;
 	warning?: string;
+	// TASK-003 Phase B: optional structured coder completion evidence. The
+	// parent completion-evidence-gate reads this field via the done sidecar
+	// parser and feeds it to the matrix-gated evaluator. Backward-compat:
+	// tiny / non-matrix coder work may omit this field and complete normally.
+	coderEvidence?: unknown;
 }
 
 export interface ActivitySidecar {

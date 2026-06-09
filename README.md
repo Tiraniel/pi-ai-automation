@@ -418,6 +418,17 @@ Brain architecture plans carry an optional per-criterion `acceptanceEvidenceMatr
 
 This keeps the Brain -> coder -> reviewer chain anchored in concrete proof obligations per acceptance criterion instead of prompt-only mitigations or hand-wavy "covered" claims.
 
+### Coder completion evidence gate (TASK-003)
+
+`delegate_to_coder` enforces a strict matrix-gated completion contract via `extensions/workflow/delegate/completion-evidence-gate.ts` (`evaluateCoderPhaseAdvancement` / `runCompletionEvidenceGate`). The gate runs after `runDelegateAgent` returns and before `markArchitecturePhaseUpdate(..., coder_completed)` so pane and headless transports share the same boundary.
+
+- A coder phase whose plan is `ready` and has an `acceptanceEvidenceMatrix` must include a structured `coderEvidence` packet (typically via the child `sub_agent_done` sidecar, or via intentionally-supported structured result details for headless transports): `filesChanged`, `commandsRun` (each with `outcome` of `passed` / `failed` / `skipped`), and a `criterionCoverage` row per matrix entry keyed by the exact criterion text.
+- Free-form final assistant text (`auto_exit` / headless `legacy` / generic `completed`) is **diagnostic only** for ready matrix-gated plans and never advances the phase. The gate emits `free_form_only`, `auto_exit_incomplete`, `process_exit_incomplete`, or `missing_sidecar_incomplete` rejection codes so the diagnostics are visible.
+- Source-string / static-only / prompt-only evidence is not sufficient for `runtime-behavior` / `behavior-test` matrix rows; only runnable supporting commands that actually passed count. Failed/retry/auto-exit delegate history is preserved in the `delegateHistory` block and surfaced in the handoff / pre-review summary.
+- Tiny / admin / debug lightweight exceptions remain available only for non-matrix-gated plans; a ready matrix-gated plan always refuses the lightweight bypass (`lightweight_bypass_refused`).
+
+`extensions/workflow/prompts.ts` (`CODER_INSTRUCTIONS`) and `examples/prompt-packs/coder-implementer-core.md` describe the per-criterion `coderEvidence` packet the completion tool expects on matrix-gated work.
+
 ### Existing delegation stays the same
 
 If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the child receives no `PI_WORKFLOW_ROOM_*` env vars and no communication block, so normal delegation behavior is unchanged. The room tools are still registered, but resolve nothing without a `roomId` and will return a clear error prompting the user to call `room_create` first.

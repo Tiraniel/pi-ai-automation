@@ -283,10 +283,13 @@ function makeDoneToolExecute(toolName: string) {
 			return errTool("Done file path not set in env.", { reason: "missing_env" });
 		}
 		const summary = String(params?.summary ?? "").trim();
+		const coderEvidence = params && typeof params.coderEvidence === "object" && params.coderEvidence !== null
+			? params.coderEvidence
+			: undefined;
 		const runId = process.env[DELEGATE_RUN_ID_ENV_VAR] || "";
 		const now = new Date().toISOString();
 		try {
-			const data = {
+			const data: Record<string, unknown> = {
 				done: true as const,
 				completion: "explicit" as const,
 				source: "tool" as const,
@@ -295,6 +298,7 @@ function makeDoneToolExecute(toolName: string) {
 				tool: toolName,
 				exit_code: 0,
 			};
+			if (coderEvidence !== undefined) data.coderEvidence = coderEvidence;
 			fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
 			const activityFile = process.env[DELEGATE_ACTIVITY_ENV_VAR];
 			if (activityFile) {
@@ -304,9 +308,39 @@ function makeDoneToolExecute(toolName: string) {
 			return errTool(`Failed to write done file: ${error}`, { reason: "write_failed" });
 		}
 		setTimeout(() => ctx.shutdown(), 500);
-		return okTool("Delegate completion signaled. Shutting down.", { doneFile, tool: toolName, completion: "explicit", source: "tool" });
+		const details: Record<string, unknown> = { doneFile, tool: toolName, completion: "explicit", source: "tool" };
+		if (coderEvidence !== undefined) details.coderEvidenceProvided = true;
+		return okTool("Delegate completion signaled. Shutting down.", details);
 	};
 }
+
+// TASK-003 Phase B: optional structured coder completion evidence parameter.
+// Kept as a Type.Object (no required keys) so the parent completion-evidence
+// validator is the only source of truth for the shape. Tiny / non-matrix
+// coder work may omit it.
+const coderEvidenceParameters = Type.Optional(Type.Object({
+	filesChanged: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Files changed during the coder phase." })),
+	commandsRun: Type.Optional(Type.Array(Type.Object({
+		command: Type.String({ minLength: 1, description: "Command that produced evidence." }),
+		outcome: Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")], { description: "Command outcome." }),
+		summary: Type.Optional(Type.String({ description: "Optional short summary of the command output." })),
+		exitCode: Type.Optional(Type.Number({ description: "Optional exit code." })),
+	}), { description: "Commands run during the coder phase, with outcomes." })),
+	criterionCoverage: Type.Optional(Type.Array(Type.Object({
+		criterion: Type.String({ minLength: 1, description: "Exact acceptance-criterion text this row covers." }),
+		evidenceKind: Type.String({ minLength: 1, description: "Evidence kind (runnable-check, behavior-test, runtime-gate, etc.)." }),
+		strength: Type.String({ minLength: 1, description: "Evidence strength (sufficient, weak, insufficient, skipped, manual-caveat)." }),
+		supportingFiles: Type.Optional(Type.Array(Type.String())),
+		supportingCommands: Type.Optional(Type.Array(Type.String())),
+		summary: Type.String({ minLength: 1, description: "One-sentence description of what the evidence shows." }),
+		caveats: Type.Optional(Type.String()),
+		gaps: Type.Optional(Type.String()),
+	}), { description: "Per-criterion coverage rows mapped to the architecture plan's acceptanceEvidenceMatrix." })),
+	knownGaps: Type.Optional(Type.Array(Type.String())),
+	caveats: Type.Optional(Type.Array(Type.String())),
+	summary: Type.Optional(Type.String()),
+	delegateHistory: Type.Optional(Type.Object({}, { description: "Optional structured delegate history (attempts, retries, warnings)." })),
+}, { description: "Optional TASK-003 structured coder completion evidence. The parent completion-evidence-gate validates this packet against the architecture plan's matrix; tiny / non-matrix work may omit it." }));
 
 export function registerDelegateDoneTools(pi: ExtensionAPI): void {
 	// Child-only completion tools for pane delegates. Only registered when the
@@ -324,10 +358,12 @@ export function registerDelegateDoneTools(pi: ExtensionAPI): void {
 		promptSnippet: "Signal task completion and shut down.",
 		promptGuidelines: [
 			"Call this as your final action after producing your normal concise handoff to return control to Brain.",
+			"For matrix-gated architecture-plan work, also pass a `coderEvidence` object that maps your changed files and validation commands to the plan's acceptance criteria.",
 			"This tool writes the done sidecar and terminates the session.",
 		],
 		parameters: Type.Object({
 			summary: Type.Optional(Type.String({ description: "Optional one-line completion summary" })),
+			coderEvidence: coderEvidenceParameters,
 		}),
 		execute: makeDoneToolExecute(SUB_AGENT_DONE_TOOL_NAME),
 	});
@@ -341,6 +377,7 @@ export function registerDelegateDoneTools(pi: ExtensionAPI): void {
 		],
 		parameters: Type.Object({
 			summary: Type.Optional(Type.String({ description: "Optional one-line completion summary" })),
+			coderEvidence: coderEvidenceParameters,
 		}),
 		execute: makeDoneToolExecute(DELEGATE_DONE_TOOL_NAME),
 	});

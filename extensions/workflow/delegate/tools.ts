@@ -28,6 +28,7 @@ import {
 	markArchitecturePhaseUpdate,
 	resolveArchitectureContext,
 } from "./architecture-gate";
+import { evaluateCoderPhaseAdvancement } from "./completion-evidence-gate";
 import {
 	formatDelegateProgressLine,
 	formatUsage,
@@ -459,6 +460,15 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			const finalOutput = getToolResultText(result);
 			const failed = status !== "completed";
 			const usageText = formatUsage(result.usage);
+			const baseDetails: Record<string, unknown> = {
+				...result,
+				task: delegatedTask,
+				planId: architectureRequirement.planId,
+				phase: architectureRequirement.phase,
+			};
+			// TASK-003 Phase B: matrix-gated coder phases must pass the structured completion-evidence gate before `coder_completed` is recorded.
+			const advancement = failed ? undefined : evaluateCoderPhaseAdvancement(architecture.plan, result, baseDetails);
+			if (advancement?.kind === "block") return { content: advancement.content, details: advancement.details, isError: true };
 			const coderUpdate = failed
 				? undefined
 				: markArchitecturePhaseUpdate(
@@ -470,13 +480,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					);
 			return {
 				content: [{ type: "text", text: `[${agent}] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}` }],
-				details: {
-					...result,
-					task: delegatedTask,
-					planId: architectureRequirement.planId,
-					phase: architectureRequirement.phase,
-					architectureGatePlanUpdateError: coderUpdate,
-				},
+				details: { ...baseDetails, architectureGatePlanUpdateError: coderUpdate },
 				isError: failed,
 			};
 		},
