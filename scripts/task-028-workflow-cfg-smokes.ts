@@ -4,6 +4,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+// TASK-008: Secondary/static compatibility assertions only.
+// Primary /workflow_cfg behavior assertions now run from scripts/task-008-workflow-cfg-behavior-smokes.ts.
+
 import {
 	buildWorkflowLocalPayload,
 	buildWorkflowLocalPreviewText,

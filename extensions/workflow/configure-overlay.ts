@@ -31,6 +31,7 @@ import {
 } from "./types";
 import {
 	buildWorkflowLocalPayload,
+	buildWorkflowLocalRuntimePayload,
 	collectWorkflowModelChoices,
 	getSupportedWorkflowThinkingLevels,
 	hydrateProfileConfigDraft,
@@ -600,8 +601,7 @@ async function runRuntimeBlock(
 	}
 
 	const existingLocal = getLatestExistingLocal(ctx);
-	const draft: WorkflowConfigDraft = { profile: profileFromLoaded(loaded.profileId), runtime: result.runtime, customEdits: {} };
-	const payload = buildWorkflowLocalPayload(existingLocal, draft);
+	const payload = buildWorkflowLocalRuntimePayload(existingLocal, result.runtime);
 	try {
 		writeWorkflowLocalOverride(ctx.cwd, payload);
 		return notifySaved(ctx);

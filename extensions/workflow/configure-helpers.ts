@@ -302,12 +302,67 @@ function cloneExistingLocal(existingLocal: unknown): Record<string, unknown> {
 	return asPlainObject(existingLocal) ? { ...asPlainObject(existingLocal)! } : {};
 }
 
+/** Builds a `.pi/workflow.local.json` payload that applies runtime-only edits.
+ *  Useful for the runtime overlay so profile/agents/fallbacks stay untouched. */
+export function buildWorkflowLocalRuntimePayload(existingLocal: unknown, runtime: WorkflowRuntimeDraft): WorkflowConfig {
+	const base = cloneExistingLocal(existingLocal);
+
+	if (runtime.delegateDisplay !== undefined && isDelegateDisplayMode(runtime.delegateDisplay)) {
+		base.delegateDisplay = runtime.delegateDisplay;
+	}
+	if (runtime.delegatePaneAutoClose !== undefined) {
+		base.delegatePaneAutoClose = Boolean(runtime.delegatePaneAutoClose);
+	}
+
+	const existingReviewerSwarm = { ...(asPlainObject(base.reviewerSwarm) ?? {}) };
+	if (runtime.reviewerSwarmEnabled !== undefined) {
+		existingReviewerSwarm.enabled = Boolean(runtime.reviewerSwarmEnabled);
+	}
+	if (runtime.reviewerSwarmMaxConcurrency !== undefined) {
+		const value = Number(runtime.reviewerSwarmMaxConcurrency);
+		if (Number.isFinite(value)) {
+			existingReviewerSwarm.maxConcurrency = value;
+		}
+	}
+	if (Object.keys(existingReviewerSwarm).length > 0) {
+		base.reviewerSwarm = existingReviewerSwarm;
+	}
+
+	const existingDeepPlanning = { ...(asPlainObject(base.deepPlanning) ?? {}) };
+	if (runtime.deepPlanningEnabled !== undefined) {
+		existingDeepPlanning.enabled = Boolean(runtime.deepPlanningEnabled);
+	}
+	if (runtime.deepPlanningPlannerCount !== undefined) {
+		const value = Number(runtime.deepPlanningPlannerCount);
+		if (Number.isFinite(value)) {
+			existingDeepPlanning.plannerCount = value;
+		}
+	}
+	if (runtime.deepPlanningRounds !== undefined) {
+		const value = Number(runtime.deepPlanningRounds);
+		if (Number.isFinite(value)) {
+			existingDeepPlanning.rounds = value;
+		}
+	}
+	if (runtime.deepPlanningMaxConcurrency !== undefined) {
+		const value = Number(runtime.deepPlanningMaxConcurrency);
+		if (Number.isFinite(value)) {
+			existingDeepPlanning.maxConcurrency = value;
+		}
+	}
+	if (Object.keys(existingDeepPlanning).length > 0) {
+		base.deepPlanning = existingDeepPlanning;
+	}
+
+	return base as WorkflowConfig;
+}
+
 /** Builds the next `.pi/workflow.local.json` v1-compatible payload.
  *  Preservation: unknown top-level fields kept; `agents` preserved unless
  *  explicitly edited/cleared; `cleared: true` drops a role; absent roles
  *  stay untouched. */
 export function buildWorkflowLocalPayload(existingLocal: unknown, draft: WorkflowConfigDraft): WorkflowConfig {
-	const base = cloneExistingLocal(existingLocal);
+	const base = buildWorkflowLocalRuntimePayload(existingLocal, draft.runtime) as Record<string, unknown>;
 	const existingAgents = (asPlainObject(base.agents) ?? {}) as Record<string, unknown>;
 
 	// ---- profile ----
@@ -322,50 +377,6 @@ export function buildWorkflowLocalPayload(existingLocal: unknown, draft: Workflo
 		// saved file reflects that the user is no longer on a built-in
 		// profile.
 		delete base.profile;
-	}
-
-	// ---- runtime fields ----
-	if (draft.runtime.delegateDisplay !== undefined) {
-		if (isDelegateDisplayMode(draft.runtime.delegateDisplay)) {
-			base.delegateDisplay = draft.runtime.delegateDisplay;
-		}
-	}
-	if (draft.runtime.delegatePaneAutoClose !== undefined) {
-		base.delegatePaneAutoClose = Boolean(draft.runtime.delegatePaneAutoClose);
-	}
-
-	// Clone nested runtime objects before mutating; never reuse references
-	// from the caller-provided `existingLocal` (pure helper contract).
-	const existingReviewerSwarm = { ...(asPlainObject(base.reviewerSwarm) ?? {}) };
-	if (draft.runtime.reviewerSwarmEnabled !== undefined) {
-		existingReviewerSwarm.enabled = Boolean(draft.runtime.reviewerSwarmEnabled);
-	}
-	if (draft.runtime.reviewerSwarmMaxConcurrency !== undefined) {
-		const value = Number(draft.runtime.reviewerSwarmMaxConcurrency);
-		if (Number.isFinite(value)) existingReviewerSwarm.maxConcurrency = value;
-	}
-	if (Object.keys(existingReviewerSwarm).length > 0) {
-		base.reviewerSwarm = existingReviewerSwarm;
-	}
-
-	const existingDeepPlanning = { ...(asPlainObject(base.deepPlanning) ?? {}) };
-	if (draft.runtime.deepPlanningEnabled !== undefined) {
-		existingDeepPlanning.enabled = Boolean(draft.runtime.deepPlanningEnabled);
-	}
-	if (draft.runtime.deepPlanningPlannerCount !== undefined) {
-		const value = Number(draft.runtime.deepPlanningPlannerCount);
-		if (Number.isFinite(value)) existingDeepPlanning.plannerCount = value;
-	}
-	if (draft.runtime.deepPlanningRounds !== undefined) {
-		const value = Number(draft.runtime.deepPlanningRounds);
-		if (Number.isFinite(value)) existingDeepPlanning.rounds = value;
-	}
-	if (draft.runtime.deepPlanningMaxConcurrency !== undefined) {
-		const value = Number(draft.runtime.deepPlanningMaxConcurrency);
-		if (Number.isFinite(value)) existingDeepPlanning.maxConcurrency = value;
-	}
-	if (Object.keys(existingDeepPlanning).length > 0) {
-		base.deepPlanning = existingDeepPlanning;
 	}
 
 	// ---- agents: preserve existing unless explicit edit/clear ----
