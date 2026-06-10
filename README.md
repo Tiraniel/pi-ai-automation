@@ -569,9 +569,20 @@ AI-callable sprint tools:
 
 Lightweight debug/hotfix lane:
 
-- For tiny fixes, typos, one-liners, or few-line corrections that do not need full sprint commitment, use the debug lane under `.sprints/debug/` (with `LOG.md` plus `items/DBG-###-slug.md`).
-- Use `/sprint debug ...` slash commands or `sprint_debug` tool actions (`status`, `add`, `note`, `done`, `promote`) for minimal, low-friction tracking.
-- `sprint_debug promote` (or `/sprint debug promote`) moves a debug lane item into a normal `.sprints` task once scope grows; this does **not** start a session.
+- Use the debug lane under `.sprints/debug/` (with `LOG.md` plus `items/DBG-###-slug.md`) for tiny fixes, typos, one-liners, and other low-friction fixes that should not yet become full sprint tasks.
+- Use `/sprint debug ...` slash commands or `sprint_debug` tool actions (`status`, `add`, `note`, `done`, `promote`) for minimal tracking.
+- Debug escalation triggers (from rule thresholds or inference) include:
+  - >2 files changed (`coreFilesThreshold`) or >50 LOC (`locThreshold`)
+  - `state-machine` / `schema` / `persistence` / `architecture` / `refactor` / `redesign` wording in title/body/evidence (or `navigation` when paired with these structural/change terms)
+  - >1 behavior path (`behaviorPaths`)
+  - repeated same-area chain beyond threshold (`workflow_cfg`, etc.)
+  - missing reviewer-visible behavior evidence (`reviewerBehaviorEvidenceMissing`)
+- Default behavior: `sprint_debug done` is strict (`strict` mode) and blocks completion when escalation recommends promotion; `finalizationGateMode: "dry-run"` allows completion but emits escalation warnings.
+- Optional metadata can be provided via `sprint_debug` params to improve rule matching:
+  - `area` (or `featureArea` internally), `filesChanged`, `locChanged`, `behaviorPaths`, `stateMachineOrArchitectureChange`, `reviewerBehaviorEvidenceMissing`.
+- `sprint_debug promote` (or `/sprint debug promote`) is evaluated before conversion and passes the escalation context into the promoted normal-task body, including a **Debug Lane Context** section and generated acceptance criteria.
+- `sprint_debug promote` (and `/sprint debug promote`) moves a debug item into a normal `.sprints` task once scope grows; this does **not** start a session.
+- Repeated same-area escalations should suggest a root-cause stabilization task before continuing as tiny debug fixes.
 
 Default session-per-task flow:
 

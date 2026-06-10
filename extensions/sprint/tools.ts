@@ -32,8 +32,9 @@ import {
 	updateTaskStatus,
 } from "./store";
 import { startSprintTaskSession } from "./start-session";
-import { appendDebugNote, completeDebugItem, createDebugItem, readDebugLaneSummary, promoteDebugItem } from "./debug";
-import { evaluateDebugFinalization, evaluateSprintTaskFinalizationFromDisk } from "../workflow/finalization-runtime";
+import { appendDebugNote, createDebugItem, readDebugLaneSummary, promoteDebugItem } from "./debug";
+import { evaluateDebugEscalationForSprintDebug, runSprintDebugDone } from "./debug-tooling";
+import { evaluateSprintTaskFinalizationFromDisk } from "../workflow/finalization-runtime";
 import { isFinalizationStatus } from "../workflow/finalization-gate";
 import { gateSprintEntryPoint, sprintGateErrorResult } from "./planning-gate";
 import type { SprintConfig, SprintCurrent } from "./types";
@@ -199,6 +200,12 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			title: Type.Optional(Type.String()),
 			note: Type.Optional(Type.String()),
 			evidence: Type.Optional(Type.String()),
+			area: Type.Optional(Type.String({ description: "Optional explicit feature area label used for same-area repeat escalation analysis." })),
+			filesChanged: Type.Optional(Type.Number()),
+			locChanged: Type.Optional(Type.Number()),
+			behaviorPaths: Type.Optional(Type.Number()),
+			stateMachineOrArchitectureChange: Type.Optional(Type.Boolean()),
+			reviewerBehaviorEvidenceMissing: Type.Optional(Type.Boolean()),
 			limit: Type.Optional(Type.Number()),
 			finalizationGateMode: Type.Optional(Type.Union([Type.Literal("strict"), Type.Literal("dry-run")])),
 			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id for the sprint planning gate. Required when action=promote and the planning state is not on the active room pointer; ignored for add/note/done/status." })),
@@ -257,39 +264,31 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 				if (actionLower === "done") {
 					const itemId = String(p.itemId || "").trim();
 					if (!itemId) return { isError: true, content: [{ type: "text", text: "Missing itemId" }] };
-					const mode = p.finalizationGateMode === "dry-run" ? "dry-run" : "strict";
-					const finalization = evaluateDebugFinalization({
+					return runSprintDebugDone({
+						cwd,
 						itemId,
-						requestedStatus: "done",
-						mode,
-						finalNote: p.note ? String(p.note) : undefined,
-						finalEvidence: p.evidence ? String(p.evidence) : undefined,
-						debugChain: { repeatedInAreaCount: readDebugLaneSummary(cwd).doneCount },
+						area: p.area,
+						filesChanged: p.filesChanged,
+						locChanged: p.locChanged,
+						behaviorPaths: p.behaviorPaths,
+						stateMachineOrArchitectureChange: p.stateMachineOrArchitectureChange,
+						reviewerBehaviorEvidenceMissing: p.reviewerBehaviorEvidenceMissing,
+						evidence: p.evidence,
+						note: p.note,
+						finalizationGateMode: p.finalizationGateMode,
 					});
-					const updated = completeDebugItem(cwd, itemId, p.evidence ? String(p.evidence) : undefined);
-					const statusLine = finalization.allowed
-						? `Finalization gate allowed as ${finalization.recommendedStatus || "done"}.`
-						: `Finalization gate blocked completion; advisory only in ${mode === "dry-run" ? "dry-run" : "strict"} mode.`;
-					return {
-						content: [
-							{ type: "text", text: `Completed ${updated.id}` },
-							{ type: "text", text: statusLine },
-							...(finalization.blockers.length ? [{ type: "text", text: `Blockers: ${finalization.blockers.join("; ")}` }] : []),
-							...(finalization.warnings.length ? [{ type: "text", text: `Warnings: ${finalization.warnings.join("; ")}` }] : []),
-							{ type: "text", text: JSON.stringify({ item: updated, finalizationGate: finalization }) },
-						],
-					};
 				}
 				const itemId = String(p.itemId || "").trim();
 				if (!itemId) return { isError: true, content: [{ type: "text", text: "Missing itemId" }] };
 				const gate = gateSprintEntryPoint(cwd, p.planningRoomId, "sprint");
 				if (!gate.allowed) return sprintGateErrorResult(gate.details);
+				const escalation = evaluateDebugEscalationForSprintDebug(cwd, itemId, p);
 				const title = String(p.title || "").trim();
-				const result = promoteDebugItem(cwd, itemId, title ? { title } : undefined);
+				const result = promoteDebugItem(cwd, itemId, title ? { title, escalation } : { escalation });
 				return {
 					content: [
 						{ type: "text", text: `Promoted ${result.item.id} to ${result.task.id}` },
-						{ type: "text", text: JSON.stringify({ item: result.item, task: result.task }) },
+						{ type: "text", text: JSON.stringify({ item: result.item, task: result.task, escalation }) },
 					],
 				};
 			} catch (error) {

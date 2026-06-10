@@ -3,7 +3,26 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { appendFile as appendLaneLogLine, createTask, ensureFile, initSprints, nowIso, rootPaths, safeSlug } from "./store";
+import {
+	appendFile as appendLaneLogLine,
+	createTask,
+	ensureFile,
+	initSprints,
+	nowIso,
+	parseTaskFile,
+	rootPaths,
+	safeSlug,
+	writeTaskFile,
+} from "./store";
+import {
+	type DebugLaneHistoryItem,
+	evaluateDebugLaneEscalation,
+	inferDebugFeatureArea,
+	buildDebugPromotionAppendix,
+	type DebugEscalationInput,
+	type DebugEscalationResult,
+	type DebugEscalationRules,
+} from "./debug-escalation";
 
 export type DebugItemStatus = "open" | "done" | "promoted";
 
@@ -20,6 +39,12 @@ export type DebugItem = {
 	notePreview?: string;
 };
 
+export type DebugPromotionOptions = {
+	title?: string;
+	note?: string;
+	escalation?: DebugEscalationResult;
+};
+
 export type DebugLaneSummary = {
 	path: string;
 	exists: boolean;
@@ -28,6 +53,94 @@ export type DebugLaneSummary = {
 	promotedCount: number;
 	latest: DebugItem[];
 };
+
+export type DebugEscalationFromDebugItemInput = Omit<DebugEscalationInput, "itemTitle" | "itemBody" | "featureArea" | "history" | "repeatedSameAreaFixCount"> & {
+	itemTitle?: string;	itemBody?: string;	featureArea?: string;	area?: string;	evidenceText?: string;	filesChanged?: number;	locChanged?: number;	behaviorPaths?: number;	stateMachineOrArchitectureChange?: boolean;	reviewerBehaviorEvidenceMissing?: boolean;	rules?: Partial<DebugEscalationRules>;
+};
+
+export function readDebugLaneHistory(cwd: string): DebugLaneHistoryItem[] {
+	const { itemsPath } = debugPaths(cwd);
+	if (!fs.existsSync(itemsPath)) return [];
+	const files = fs.readdirSync(itemsPath).filter((file) => /^DBG-\d+-.+\.md$/.test(file)).sort();
+	const items: DebugLaneHistoryItem[] = [];
+	for (const file of files) {
+		try {
+			const item = readDebugItemWithBody(path.join(itemsPath, file));
+			items.push({
+				id: item.id,
+				title: item.title,
+				status: item.status,
+				body: item.body,
+			});
+		} catch {
+			continue;
+		}
+	}
+	return items;
+}
+
+const STATE_MACHINE_OR_ARCHITECTURE_HINT_RE = /\b(state\s*-?\s*machine|schema|persistence|architecture|refactor|redesign)\b/i;
+const NAVIGATION_WITH_STRUCTURAL_CONTEXT_HINT_RE = /\b(state\s*-?\s*machine|schema|persistence|architecture|refactor|redesign)\b/i;
+const REVIEWER_EVIDENCE_MISSING_PHRASES = [
+	"missing behavior evidence",
+	"behavior evidence missing",
+	"missing evidence",
+	"no behavior evidence",
+	"without behavior evidence",
+	"without validation",
+	"reviewer says behavior evidence missing",
+];
+
+function inferStateMachineOrArchitectureFromText(value: string): boolean {
+	const normalized = String(value || "").toLowerCase();
+	if (!normalized) return false;
+	if (STATE_MACHINE_OR_ARCHITECTURE_HINT_RE.test(normalized)) return true;
+	const chunks = normalized.split(/[.?!;\n\r]+/);
+	for (const chunk of chunks) {
+		if (!/\bnavigation\b/.test(chunk)) continue;
+		if (NAVIGATION_WITH_STRUCTURAL_CONTEXT_HINT_RE.test(chunk)) return true;
+	}
+	return false;
+}
+
+function inferReviewerEvidenceMissingFromEvidenceText(value: string): boolean {
+	const text = String(value || "").toLowerCase().trim();
+	if (!text) return false;
+	return REVIEWER_EVIDENCE_MISSING_PHRASES.some((phrase) => text.includes(phrase));
+}
+
+export function evaluateDebugLaneEscalationFromDisk(cwd: string, input: DebugEscalationFromDebugItemInput): DebugEscalationResult {
+	const itemId = String(input.itemId || "").trim().toUpperCase();
+	if (!itemId) throw new Error("Missing debug item id.");
+	const current = readDebugItemWithBody(resolveItemPath(cwd, itemId));
+	const rawEvidence = typeof input.evidenceText === "string" ? input.evidenceText : "";
+	const itemTitle = String(input.itemTitle || current.title);
+	const itemBody = String(input.itemBody || current.body);
+	const explicitFeatureArea = input.area || input.featureArea;
+	const featureArea = explicitFeatureArea ? explicitFeatureArea.trim() : inferDebugFeatureArea(itemTitle, itemBody);
+	const stateMachineOrArchitectureChange = input.stateMachineOrArchitectureChange === undefined
+		? inferStateMachineOrArchitectureFromText(`${itemTitle}
+${itemBody}
+${rawEvidence}`)
+		: input.stateMachineOrArchitectureChange;
+	const reviewerBehaviorEvidenceMissing = input.reviewerBehaviorEvidenceMissing === undefined
+		? inferReviewerEvidenceMissingFromEvidenceText(rawEvidence)
+		: input.reviewerBehaviorEvidenceMissing;
+	const history = readDebugLaneHistory(cwd);
+	return evaluateDebugLaneEscalation({
+		itemId: current.id,
+		itemTitle,
+		itemBody,
+		featureArea,
+		filesChanged: input.filesChanged,
+		locChanged: input.locChanged,
+		behaviorPaths: input.behaviorPaths,
+		stateMachineOrArchitectureChange,
+		reviewerBehaviorEvidenceMissing,
+		history,
+		rules: input.rules,
+	});
+}
 
 const DEBUG_DIR = "debug";
 const ITEMS_DIR = "items";
@@ -341,16 +454,29 @@ export function completeDebugItem(cwd: string, itemId: string, evidence?: string
 export function promoteDebugItem(
 	cwd: string,
 	itemId: string,
-	options?: { title?: string; note?: string },
+	options?: DebugPromotionOptions,
 ): { item: DebugItem; task: { id: string; filePath: string } } {
 	const filePath = resolveItemPath(cwd, itemId);
 	const current = readDebugItemWithBody(filePath);
 	if (current.status === "promoted") throw new Error(`Debug item already promoted: ${current.id}`);
 	const taskTitle = options?.title ? validateDebugTitle(options.title, "promote title") : `Debug: ${current.title}`;
+	const promotionNote = options?.note?.trim() || `Promoted from debug lane item ${current.id} for full-task treatment.`;
 	const task = createTask(cwd, taskTitle, {
 		humanSummary: `Promoted from debug lane item ${current.id}`,
-		aiContext: options?.note ? String(options.note).trim() : undefined,
+		aiContext: promotionNote,
 	});
+	const appendix = buildDebugPromotionAppendix({
+		itemId: current.id,
+		itemTitle: current.title,
+		itemStatus: current.status,
+		itemBody: noteLinesBody(current.body).join("\n"),
+		featureArea: options?.escalation?.featureArea,
+		promotionNote,
+		escalation: options?.escalation,
+	});
+	const taskFile = parseTaskFile(task.filePath);
+	taskFile.body = `${taskFile.body.trimEnd()}\n\n${appendix.contextSection}\n\n${appendix.acceptanceSection}\n`;
+	writeTaskFile(task.filePath, taskFile.frontmatter, taskFile.body);
 	const now = nowIso();
 	const frontmatter: Record<string, unknown> = {
 		id: current.id,

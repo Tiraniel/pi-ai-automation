@@ -24,7 +24,15 @@ import {
 	setActiveTask,
 	updateTaskStatus,
 } from "./store";
-import { appendDebugNote, completeDebugItem, createDebugItem, promoteDebugItem, readDebugLaneSummary } from "./debug";
+import {
+	appendDebugNote,
+	completeDebugItem,
+	createDebugItem,
+	evaluateDebugLaneEscalationFromDisk,
+	promoteDebugItem,
+	readDebugLaneSummary,
+} from "./debug";
+import { evaluateDebugFinalization } from "../workflow/finalization-runtime";
 import { gateSprintEntryPoint } from "./planning-gate";
 import { SPRINTS_DIR } from "./types";
 
@@ -107,10 +115,39 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					}
 					if (action === "done") {
 						const id = args[2];
-						if (!id) throw new Error("Usage: /sprint debug done <DBG-ID> [evidence]");
-						const evidence = args.slice(3).join(" ").trim();
+						if (!id) throw new Error("Usage: /sprint debug done <DBG-ID> [--dry-run] [evidence]");
+						const rawEvidence = args.slice(3);
+						const dryRun = rawEvidence[0] === "--dry-run";
+						const evidence = (dryRun ? rawEvidence.slice(1) : rawEvidence).join(" ").trim();
+						const mode: "strict" | "dry-run" = dryRun ? "dry-run" : "strict";
+						const escalation = evaluateDebugLaneEscalationFromDisk(ctx.cwd, {
+							itemId: id,
+							evidenceText: evidence,
+						});
+						const finalization = evaluateDebugFinalization({
+							itemId: id,
+							requestedStatus: "done",
+							mode,
+							finalEvidence: evidence,
+							finalNote: evidence,
+							debugChain: { repeatedInAreaCount: escalation.repeatedSameAreaFixCount },
+						});
+						if (escalation.needsEscalation && mode === "strict") {
+							ctx.ui.notify(`Debug completion blocked for ${id}; escalate rule requires ${escalation.suggestedAction}.`, "warning");
+							ctx.ui.notify(`Rule codes: ${escalation.ruleCodes.join("; ")}`, "warning");
+							ctx.ui.notify(`Summary: ${escalation.summary}`, "warning");
+							ctx.ui.notify("Promote to a normal sprint task now to avoid hidden repeated hotfix escalation.", "warning");
+							if (finalization.blockers.length) ctx.ui.notify(`Blockers: ${finalization.blockers.join("; ")}`, "warning");
+							if (finalization.warnings.length) ctx.ui.notify(`Warnings: ${finalization.warnings.join("; ")}`, "warning");
+							return;
+						}
 						const item = completeDebugItem(ctx.cwd, id, evidence || undefined);
+						if (escalation.needsEscalation) {
+							ctx.ui.notify(`Escalation signals present in strict/dry-run mode (${escalation.ruleCodes.join("; ")}).`, "warning");
+						}
 						ctx.ui.notify(`Completed ${item.id}${item.completedAt ? ` (${item.completedAt})` : ""}`, "info");
+						if (finalization.warnings.length) ctx.ui.notify(`Warnings: ${finalization.warnings.join("; ")}`, "warning");
+						if (finalization.blockers.length) ctx.ui.notify(`Blockers: ${finalization.blockers.join("; ")}`, "warning");
 						return;
 					}
 					if (action === "promote") {
@@ -123,7 +160,10 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 						const id = args[2];
 						if (!id) throw new Error("Usage: /sprint debug promote <DBG-ID> [task title]");
 						const taskTitle = args.slice(3).join(" ").trim();
-						const result = promoteDebugItem(ctx.cwd, id, taskTitle ? { title: taskTitle } : undefined);
+						const escalation = evaluateDebugLaneEscalationFromDisk(ctx.cwd, {
+							itemId: id,
+						});
+						const result = promoteDebugItem(ctx.cwd, id, taskTitle ? { title: taskTitle, escalation } : { escalation });
 						ctx.ui.notify(
 							`Promoted ${result.item.id} as ${result.task.id} at ${path.relative(ctx.cwd, result.task.filePath)}`,
 							"info",
@@ -131,7 +171,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 						return;
 					}
 					throw new Error(
-						"Usage: /sprint debug [status] | add <title> | note <DBG-ID> <note> | done <DBG-ID> [evidence] | promote <DBG-ID> [task title]",
+						"Usage: /sprint debug [status] | add <title> | note <DBG-ID> <note> | done <DBG-ID> [--dry-run] [evidence] | promote <DBG-ID> [task title]",
 					);
 				}
 				if (sub === "task" && args[1] === "add") {
@@ -208,7 +248,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					return;
 				}
 				ctx.ui.notify(
-					"Usage: /sprint init [--private] [--gitignore] | new <name> | status | debug|hotfix [status] | debug add <title> | debug note <DBG-ID> <note> | debug done <DBG-ID> [evidence] | debug promote <DBG-ID> [task title] | task add <title> | task active <TASK-ID> | task start <TASK-ID> [--auto-run] | task done <TASK-ID> | epic add <title> | log <message>",
+					"Usage: /sprint init [--private] [--gitignore] | new <name> | status | debug|hotfix [status] | debug add <title> | debug note <DBG-ID> <note> | debug done <DBG-ID> [--dry-run] [evidence] | debug promote <DBG-ID> [task title] | task add <title> | task active <TASK-ID> | task start <TASK-ID> [--auto-run] | task done <TASK-ID> | epic add <title> | log <message>",
 					"info",
 				);
 			} catch (error) {
