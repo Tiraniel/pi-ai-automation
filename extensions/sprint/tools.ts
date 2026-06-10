@@ -107,11 +107,11 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 		promptSnippet: "Create a sprint when non-trivial work starts without one.",
 		promptGuidelines: [
 			"Use sprint_create when there is no active sprint and work should be tracked in .sprints.",
-			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the active room pointer first. Tiny debug add/note/done are intentionally ungated; creation is gated.",
+			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the dedicated planning-current pointer first. Tiny debug add/note/done are intentionally ungated; creation is gated.",
 		],
 		parameters: Type.Object({
 			name: Type.String(),
-			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/current.json." })),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/planning-current.json first, then to .pi/workflow-runs/current.json for compatibility." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const cwd = ctx.cwd;
@@ -131,7 +131,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 		promptSnippet: "Create a task for concrete implementation work.",
 		promptGuidelines: [
 			"Use sprint_create_task for scoped units of work inside the active sprint.",
-			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the active room pointer first. Tiny debug add/note/done are intentionally ungated; task creation is gated.",
+			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the dedicated planning-current pointer first. Tiny debug add/note/done are intentionally ungated; task creation is gated.",
 		],
 		parameters: Type.Object({
 			title: Type.String(),
@@ -140,7 +140,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			acceptanceCriteria: Type.Optional(Type.String()),
 			epic: Type.Optional(Type.String()),
 			priority: Type.Optional(Type.String()),
-			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/current.json." })),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/planning-current.json first, then to .pi/workflow-runs/current.json for compatibility." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as any;
@@ -166,13 +166,13 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 		promptSnippet: "Create an epic for larger multi-task initiative context.",
 		promptGuidelines: [
 			"Use sprint_create_epic when work spans multiple tasks and needs durable shared context.",
-			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the active room pointer first. Tiny debug add/note/done are intentionally ungated; epic creation is gated.",
+			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the dedicated planning-current pointer first. Tiny debug add/note/done are intentionally ungated; epic creation is gated.",
 		],
 		parameters: Type.Object({
 			title: Type.String(),
 			humanSummary: Type.Optional(Type.String()),
 			aiContext: Type.Optional(Type.String()),
-			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/current.json." })),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/planning-current.json first, then to .pi/workflow-runs/current.json for compatibility." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as any;
@@ -192,7 +192,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 		promptSnippet: "Use sprint_debug for tiny debug/hotfix/few-line fixes without starting a full sprint task session.",
 		promptGuidelines: [
 			"Use sprint_debug for minimal debug/hotfix items with optional notes/evidence. For larger work, promote to a normal sprint task with `action: promote`.",
-			"When action is `promote`, the item is converted into a normal sprint task via `createTask` and does not start a session. The sprint planning gate runs before promote; pass `planningRoomId` or set the active room pointer first.",
+			"When action is `promote`, the item is converted into a normal sprint task via `createTask` and does not start a session. The sprint planning gate runs before promote; pass `planningRoomId` or set the dedicated planning-current pointer first.",
 		],
 		parameters: Type.Object({
 			action: Type.String(),
@@ -208,7 +208,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			reviewerBehaviorEvidenceMissing: Type.Optional(Type.Boolean()),
 			limit: Type.Optional(Type.Number()),
 			finalizationGateMode: Type.Optional(Type.Union([Type.Literal("strict"), Type.Literal("dry-run")])),
-			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id for the sprint planning gate. Required when action=promote and the planning state is not on the active room pointer; ignored for add/note/done/status." })),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id for the sprint planning gate. Required when action=promote and the planning state is not on the dedicated planning pointer; ignored for add/note/done/status." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as any;
@@ -426,11 +426,11 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use sprint_start_task_session to auto-start a task session; if ctx.newSession is unavailable it places the /sprint task start command in the editor for the user to run.",
 			"Do not call this when the current session is already pinned to the same task.",
-			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass `planningRoomId` or set the active room pointer first.",
+			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass `planningRoomId` or set the dedicated planning-current pointer first.",
 		],
 		parameters: Type.Object({
 			taskId: Type.String({ description: "TASK-ID (e.g. TASK-001) to bind the new session to" }),
-			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/current.json." })),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/planning-current.json first, then to .pi/workflow-runs/current.json for compatibility." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const taskId = String((params as any).taskId || "").trim();

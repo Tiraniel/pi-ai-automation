@@ -25,7 +25,6 @@ import {
 	invalidatePlanningState,
 	isExplicitStageConfirmation,
 	planningStatePathsFor,
-	readCurrentRoomPointer as readCurrentRoomPointerFromState,
 	readPlanningState,
 	setScopeClassification,
 	setStateFlag,
@@ -33,6 +32,13 @@ import {
 	stateFileExists,
 	validatePlanningRoomId,
 } from "./planning-state";
+import {
+	planningRoomHasStateFile,
+	planningCurrentRoomPointerPath,
+	readPlanningCurrentRoomPointer,
+	readPlanningCurrentRoomPointerResult,
+	readWorkflowCurrentRoomPointer,
+} from "./planning-pointer";
 import { evaluateSprintGateForCwd, evaluateImplementationGateForCwd } from "./planning-gate-runtime";
 
 const STATE_NAMES = PLANNING_STATE_NAMES;
@@ -88,22 +94,67 @@ function relativeFromCwd(cwd: string, target: string): string {
 	}
 }
 
-function resolveRoomForTool(cwd: string, params: any): { roomId: string; source: "params" | "activePointer" } {
+type PlanningToolAction = "create" | "evaluate_gates" | "read" | "set_flag" | "set_scope_classification" | "invalidate" | "artifacts";
+
+function resolveRoomForTool(
+	cwd: string,
+	params: any,
+	action: PlanningToolAction = "read",
+): { roomId: string; source: "params" | "activePointer" } {
 	const explicit = trimString(params?.roomId ?? params?.planningRoomId);
-	if (explicit) {
-		return { roomId: validatePlanningRoomId(explicit), source: "params" };
+	if (explicit) return { roomId: validatePlanningRoomId(explicit), source: "params" };
+
+	if (action === "create") {
+		const workflowPointer = readWorkflowCurrentRoomPointer(cwd);
+		if (workflowPointer) {
+			const roomId = validatePlanningRoomId(workflowPointer);
+			return { roomId, source: "activePointer" };
+		}
+		const fromPlanningPointer = readPlanningCurrentRoomPointer(cwd);
+		if (fromPlanningPointer) {
+			const roomId = validatePlanningRoomId(fromPlanningPointer);
+			return { roomId, source: "activePointer" };
+		}
+		throw new Error(
+			`No planningRoomId provided and no valid room id resolved; pass { roomId } explicitly or set the workflow room current pointer before create.`,
+		);
 	}
-	const fromStatePointer = readCurrentRoomPointerFromState(cwd);
-	if (fromStatePointer) {
-		return { roomId: validatePlanningRoomId(fromStatePointer), source: "activePointer" };
+
+	const fromPlanningPointer = readPlanningCurrentRoomPointerResult(cwd);
+	if (fromPlanningPointer.exists) {
+		if (!fromPlanningPointer.roomId) {
+			throw new Error(
+				`No planningRoomId provided and active planning-room pointer at ${planningCurrentRoomPointerPath(cwd)} is invalid: ${fromPlanningPointer.issue ?? "missing roomId"}.`,
+			);
+		}
+		try {
+			const roomId = validatePlanningRoomId(fromPlanningPointer.roomId);
+			if (planningRoomHasStateFile(cwd, roomId)) return { roomId, source: "activePointer" };
+		} catch (error) {
+			const issue = error instanceof Error ? error.message : String(error);
+			throw new Error(`No planningRoomId provided and active planning-room pointer at ${planningCurrentRoomPointerPath(cwd)} is invalid: ${issue}`);
+		}
+	}
+
+	const workflowPointer = readWorkflowCurrentRoomPointer(cwd);
+	if (workflowPointer) {
+		try {
+			const roomId = validatePlanningRoomId(workflowPointer);
+			if (stateFileExists(cwd, roomId)) return { roomId, source: "activePointer" };
+		} catch (error) {
+			throw new Error("No planningRoomId provided and active workflow-room pointer at .pi/workflow-runs/current.json is invalid.");
+		}
 	}
 	throw new Error(
-		`No planningRoomId provided and no active room pointer at .pi/workflow-runs/current.json; pass { roomId } explicitly or call room_create first.`,
+		`No planningRoomId provided and no active planning-room pointer at .pi/workflow-runs/planning-current.json (or workflow-room fallback); pass { roomId } explicitly or call room_create first.`,
 	);
 }
-
-function readStateByParams(cwd: string, params: any): { state: PlanningStateRecord | null; roomId: string; source: "params" | "activePointer"; issue?: string; } {
-	const resolved = resolveRoomForTool(cwd, params);
+function readStateByParams(
+	cwd: string,
+	params: any,
+	action: PlanningToolAction = "read",
+): { state: PlanningStateRecord | null; roomId: string; source: "params" | "activePointer"; issue?: string; } {
+	const resolved = resolveRoomForTool(cwd, params, action);
 	const result = readPlanningState(cwd, resolved.roomId);
 	return {
 		state: result.state,
@@ -125,7 +176,7 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 			"For non-trivial work: action=create with scopeClassification='non_trivial', then action=set_flag to record prd_started / prd_ready_for_sprint / sprint_confirmed in staged order. Recording sprint_confirmed or implementation_confirmed requires the user to issue an explicit stage confirmation; if the provided text is generic (e.g. 'approved'), the tool returns isError with code approval_classified_as_generic and does NOT set the flag.",
 			"For tiny debug: action=create with scopeClassification='tiny_debug'; add/note/done are intentionally ungated, while promotion or scope expansion re-triggers PRD/sprint/implementation gate checks.",
 			"Material PRD/scope changes should call action=invalidate with kind='prd_or_scope'; material architecture/evidence changes should call action=invalidate with kind='architecture_or_evidence' to clear implementation_confirmed.",
-			"Pass roomId explicitly when the active workflow room pointer is not yet set; the tool also accepts the active pointer as a fallback.",
+			"Pass roomId explicitly when the active planning-room pointer is not yet set; for create, legacy compatibility first uses workflow-room current as a fallback target, while non-create actions prefer the dedicated planning-room pointer and only fall back to workflow-room current when planning state already exists there."
 		],
 		parameters: Type.Object({
 			action: Type.Union([
@@ -136,7 +187,8 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 				Type.Literal("invalidate"),
 				Type.Literal("evaluate_gates"),
 			]),
-			roomId: Type.Optional(Type.String({ description: "Planning room id. Falls back to the active room pointer at .pi/workflow-runs/current.json." })),
+			roomId: Type.Optional(Type.String({ description: "Planning room id. For action=create, falls back to legacy workflow current at .pi/workflow-runs/current.json first; non-create actions prefer the dedicated planning pointer at .pi/workflow-runs/planning-current.json, then fallback to .pi/workflow-runs/current.json when planning state already exists there." })),
+
 			taskId: Type.Optional(Type.String()),
 			scopeId: Type.Optional(Type.String()),
 			scopeClassification: Type.Optional(Type.Union([Type.Literal("tiny_debug"), Type.Literal("non_trivial"), Type.Literal("expanded_from_tiny")])),
@@ -163,7 +215,7 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 			if (action === "read") {
 				let resolved: { state: PlanningStateRecord | null; roomId: string; source: "params" | "activePointer"; issue?: string };
 				try {
-					resolved = readStateByParams(cwd, params);
+					resolved = readStateByParams(cwd, params, "read");
 				} catch (error) {
 					return textResult(error instanceof Error ? error.message : String(error), true, { reason: "no_room_resolved" });
 				}
@@ -189,7 +241,7 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 			if (action === "create") {
 				let resolved: { roomId: string; source: "params" | "activePointer" };
 				try {
-					resolved = resolveRoomForTool(cwd, params);
+					resolved = resolveRoomForTool(cwd, params, "create");
 				} catch (error) {
 					return textResult(error instanceof Error ? error.message : String(error), true, { reason: "no_room_resolved" });
 				}
@@ -236,7 +288,7 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 			if (action === "set_flag") {
 				let resolved: { state: PlanningStateRecord | null; roomId: string; source: "params" | "activePointer"; issue?: string };
 				try {
-					resolved = readStateByParams(cwd, params);
+					resolved = readStateByParams(cwd, params, "set_flag");
 				} catch (error) {
 					return textResult(error instanceof Error ? error.message : String(error), true, { reason: "no_room_resolved" });
 				}
@@ -309,7 +361,7 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 			if (action === "set_scope_classification") {
 				let resolved: { state: PlanningStateRecord | null; roomId: string; source: "params" | "activePointer"; issue?: string };
 				try {
-					resolved = readStateByParams(cwd, params);
+					resolved = readStateByParams(cwd, params, "set_scope_classification");
 				} catch (error) {
 					return textResult(error instanceof Error ? error.message : String(error), true, { reason: "no_room_resolved" });
 				}
@@ -337,7 +389,7 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 			if (action === "invalidate") {
 				let resolved: { state: PlanningStateRecord | null; roomId: string; source: "params" | "activePointer"; issue?: string };
 				try {
-					resolved = readStateByParams(cwd, params);
+					resolved = readStateByParams(cwd, params, "invalidate");
 				} catch (error) {
 					return textResult(error instanceof Error ? error.message : String(error), true, { reason: "no_room_resolved" });
 				}
@@ -398,7 +450,7 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 			const cwd = ctx.cwd;
 			let resolved: { roomId: string; source: "params" | "activePointer" };
 			try {
-				resolved = resolveRoomForTool(cwd, params);
+				resolved = resolveRoomForTool(cwd, params, "artifacts");
 			} catch (error) {
 				return textResult(error instanceof Error ? error.message : String(error), true, { reason: "no_room_resolved" });
 			}

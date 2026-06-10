@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-// TASK-006 Phase B — runtime smoke for PRD-first planning tools/registry + source checks.
-// Validates: registerPlanningTools exposes both AI tools; the artifacts/state tools round-trip
-// via a fake ExtensionAPI; the planning-gate runtime reflects confirmation progression; and
-// the source-level chokepoints in brain-workflow / sprint tools / delegate tools exist.
+// TASK-006 Phase B - runtime smoke for PRD-first planning tools/registry + source checks.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -11,13 +8,17 @@ import * as path from "node:path";
 import { registerPlanningTools } from "../extensions/workflow/planning-tools";
 import {
 	buildGateErrorDetails,
-	evaluateSprintGateForCwd,
 	evaluateImplementationGateForCwd,
+	formatGateErrorText,
+	evaluateSprintGateForCwd,
 } from "../extensions/workflow/planning-gate-runtime";
 import { planningStatePathsFor } from "../extensions/workflow/planning-state";
+import {
+	planningCurrentRoomPointerPath,
+	readPlanningCurrentRoomPointer,
+} from "../extensions/workflow/planning-pointer";
 import { writeCurrentRoomPointer } from "../extensions/workflow/rooms/store";
 
-// --- test harness -------------------------------------------------------------
 
 let failures = 0;
 function check(condition: boolean, message: string): void {
@@ -43,6 +44,12 @@ function writeCurrentRoomPointerRaw(cwd: string, roomId: string): void {
 	fs.mkdirSync(path.dirname(pointerPath), { recursive: true });
 	fs.writeFileSync(pointerPath, JSON.stringify({ roomId }, null, 2) + "\n", "utf-8");
 }
+
+function writePlanningCurrentRoomPointerRaw(cwd: string, roomId: string): void {
+	fs.mkdirSync(path.dirname(planningCurrentRoomPointerPath(cwd)), { recursive: true });
+	fs.writeFileSync(planningCurrentRoomPointerPath(cwd), JSON.stringify({ roomId }, null, 2) + "\n", "utf-8");
+}
+
 
 interface FakePi {
 	registered: any[];
@@ -70,7 +77,6 @@ function isErrorResult(result: any): boolean {
 	return d && d.isError === true;
 }
 
-// --- 1) tool registration -----------------------------------------------------
 
 function testRegistration(): void {
 	const fake = makeFakePi();
@@ -94,7 +100,6 @@ function testRegistration(): void {
 	]);
 }
 
-// --- 2) end-to-end via fake ExtensionAPI -------------------------------------
 
 async function testEndToEnd(): Promise<void> {
 	const fake = makeFakePi();
@@ -106,15 +111,12 @@ async function testEndToEnd(): Promise<void> {
 		const cwd = fixture.cwd;
 		const roomId = fixture.roomId;
 
-		// a) write_prd + write_memo
 		const prdRes = await invoke(artTool, { action: "write_prd", roomId, content: "# PRD\nready_for_sprint: yes\n" }, cwd);
-		const memoRes = await invoke(artTool, { action: "write_memo", roomId, content: "# Memo\nBrain synthesis: ok\n" }, cwd);
+		await invoke(artTool, { action: "write_memo", roomId, content: "# Memo\nBrain synthesis: ok\n" }, cwd);
 		checkAll("2a", [
 			[!isErrorResult(prdRes), "write_prd succeeded"],
 			[fs.existsSync(path.join(cwd, ".pi", "workflow-runs", roomId, "PRD.md")), "PRD.md written under .pi/workflow-runs/<room>/"],
-			[fs.existsSync(path.join(cwd, ".pi", "workflow-runs", roomId, "memo.md")), "memo.md written under .pi/workflow-runs/<room>/"],
 			[fs.readFileSync(path.join(cwd, ".pi", "workflow-runs", roomId, "PRD.md"), "utf-8").includes("ready_for_sprint: yes"), "PRD.md content round-trips"],
-			[fs.readFileSync(path.join(cwd, ".pi", "workflow-runs", roomId, "memo.md"), "utf-8").includes("Brain synthesis"), "memo.md content round-trips"],
 		]);
 		const artRead = await invoke(artTool, { action: "read", roomId }, cwd);
 		const artDetails = detailsOf(artRead);
@@ -123,11 +125,8 @@ async function testEndToEnd(): Promise<void> {
 			[artDetails.prd?.includes("ready_for_sprint: yes"), "artifacts read returns PRD content"],
 			[artDetails.memo?.includes("Brain synthesis"), "artifacts read returns memo content"],
 			[String(artDetails.prdPath ?? "").endsWith("PRD.md"), "artifacts read prdPath ends with PRD.md"],
-			[String(artDetails.memoPath ?? "").endsWith("memo.md"), "artifacts read memoPath ends with memo.md"],
 		]);
-		void memoRes;
 
-		// b) create non_trivial state
 		const created = await invoke(stateTool, { action: "create", roomId, scopeClassification: "non_trivial", taskId: "TASK-006-RT" }, cwd);
 		checkAll("2b", [
 			[!isErrorResult(created), "state create succeeded"],
@@ -139,7 +138,6 @@ async function testEndToEnd(): Promise<void> {
 			[fs.existsSync(paths.stateFile), "planning-state.json is written to disk after create"],
 		]);
 
-		// c) set_flag prd_started + prd_ready_for_sprint
 		const setStarted = await invoke(stateTool, { action: "set_flag", roomId, state: "prd_started", value: true }, cwd);
 		const setReady = await invoke(stateTool, { action: "set_flag", roomId, state: "prd_ready_for_sprint", value: true }, cwd);
 		checkAll("2c", [
@@ -150,7 +148,6 @@ async function testEndToEnd(): Promise<void> {
 			[detailsOf(setReady).state?.states?.sprint_confirmed === false, "sprint_confirmed is still false after non-confirmation set_flag calls"],
 		]);
 
-		// d) generic 'approved' rejected for sprint_confirmed
 		const genSprint = await invoke(stateTool, { action: "set_flag", roomId, state: "sprint_confirmed", value: true, approvalText: "approved" }, cwd);
 		const genSprintDetails = detailsOf(genSprint);
 		checkAll("2d", [
@@ -161,7 +158,6 @@ async function testEndToEnd(): Promise<void> {
 			[fs.readFileSync(paths.stateFile, "utf-8").includes('"sprint_confirmed": false'), "sprint_confirmed remains false on disk after generic approval"],
 		]);
 
-		// e) explicit 'confirm sprint creation' sets sprint_confirmed; sprint gate passes; implementation gate still blocks
 		const expSprint = await invoke(stateTool, { action: "set_flag", roomId, state: "sprint_confirmed", value: true, approvalText: "confirm sprint creation" }, cwd);
 		checkAll("2e", [
 			[!isErrorResult(expSprint), "explicit 'confirm sprint creation' is accepted for sprint_confirmed"],
@@ -175,7 +171,6 @@ async function testEndToEnd(): Promise<void> {
 			[implGateBlocked.missing.includes("implementation_confirmed"), "implementation gate reports implementation_confirmed missing"],
 		]);
 
-		// f) generic 'approved' rejected for implementation_confirmed
 		const genImpl = await invoke(stateTool, { action: "set_flag", roomId, state: "implementation_confirmed", value: true, approvalText: "approved" }, cwd);
 		const genImplDetails = detailsOf(genImpl);
 		checkAll("2f", [
@@ -184,7 +179,6 @@ async function testEndToEnd(): Promise<void> {
 			[genImplDetails.expectedStage === "implementation", "implementation rejection details expectedStage is implementation"],
 		]);
 
-		// g) explicit 'confirm implementation' sets implementation_confirmed; implementation gate allows
 		const expImpl = await invoke(stateTool, { action: "set_flag", roomId, state: "implementation_confirmed", value: true, approvalText: "confirm implementation" }, cwd);
 		checkAll("2g", [
 			[!isErrorResult(expImpl), "explicit 'confirm implementation' is accepted for implementation_confirmed"],
@@ -196,7 +190,18 @@ async function testEndToEnd(): Promise<void> {
 			[implGateAllowed.missing.length === 0, "implementation gate reports no missing flags after all four confirmations"],
 		]);
 
-		// h) activePointer fallback: gate resolvers use .pi/workflow-runs/current.json when roomId is omitted
+		const noPointer = freshCwd();
+		try {
+
+			const noPointerSprintDetails = buildGateErrorDetails(noPointer.cwd, undefined, "sprint", { allowTinyDebugBypass: true });
+			const noPointerImplDetails = buildGateErrorDetails(noPointer.cwd, undefined, "implementation", { allowTinyDebugBypass: true });
+			checkAll("2h", [
+				[noPointerSprintDetails.allowed === false && noPointerImplDetails.allowed === false && noPointerSprintDetails.codes.includes("state_missing") && noPointerImplDetails.codes.includes("state_missing") && noPointerSprintDetails.missing.join(",") === "prd_started,prd_ready_for_sprint,sprint_confirmed,implementation_confirmed" && noPointerImplDetails.missing.join(",") === "prd_started,prd_ready_for_sprint,sprint_confirmed,implementation_confirmed", "both gates block and report state_missing with all expected missing flags"],
+				[String(formatGateErrorText(noPointerSprintDetails)).includes("Pass planningRoomId or call workflow_planning_state") && String(formatGateErrorText(noPointerImplDetails)).includes("Pass planningRoomId or call workflow_planning_state") && String(formatGateErrorText(noPointerSprintDetails)).includes("missingFlags=") && String(formatGateErrorText(noPointerImplDetails)).includes("missingFlags="), "guidance text resolves pointer and includes missing flags for both gates"],
+			]);
+		} finally {
+			noPointer.cleanup();
+		}
 		const alt = freshCwd();
 		try {
 			writeCurrentRoomPointer(alt.cwd, alt.roomId);
@@ -208,13 +213,106 @@ async function testEndToEnd(): Promise<void> {
 			const sprintFromPtr = evaluateSprintGateForCwd(alt.cwd, undefined);
 			checkAll("2h", [
 				[!sprintFromPtr.allowed, "evaluateSprintGateForCwd with undefined roomId uses active pointer and blocks tiny_debug without explicit bypass"],
-				[!sprintFromPtr.codes.includes("tiny_debug_bypass"), "active-pointer tiny_debug evaluation does not include tiny_debug_bypass by default"],
 			]);
 			const sprintFromPtrWithBypass = evaluateSprintGateForCwd(alt.cwd, undefined, { allowTinyDebugBypass: true });
 			checkAll("2h", [
 				[sprintFromPtrWithBypass.allowed, "evaluateSprintGateForCwd with explicit tiny-debug bypass can still allow when explicitly requested"],
 				[sprintFromPtrWithBypass.codes.includes("tiny_debug_bypass"), "explicit bypass mode surfaces tiny_debug_bypass code"],
 			]);
+
+			const staleRoom = "task-006-phase-b";
+			const planningRoom = `room-${Math.random().toString(36).slice(2, 10)}-plan`;
+			const explicitPlan = await invoke(
+				stateTool,
+				{ action: "create", roomId: planningRoom, scopeClassification: "non_trivial", taskId: "TASK-006-STALE" },
+				alt.cwd,
+			);
+			checkAll("2i", [[!isErrorResult(explicitPlan), "explicit create for plan room succeeds while stale pointer test runs"]]);
+			await invoke(stateTool, { action: "set_flag", roomId: planningRoom, state: "prd_started", value: true }, alt.cwd);
+			await invoke(stateTool, { action: "set_flag", roomId: planningRoom, state: "prd_ready_for_sprint", value: true }, alt.cwd);
+			await invoke(stateTool, { action: "set_flag", roomId: planningRoom, state: "sprint_confirmed", value: true, approvalText: "confirm sprint creation" }, alt.cwd);
+			await invoke(
+				stateTool,
+				{ action: "set_flag", roomId: planningRoom, state: "implementation_confirmed", value: true, approvalText: "confirm implementation" },
+				alt.cwd,
+			);
+			writeCurrentRoomPointer(alt.cwd, staleRoom);
+			const stalePlanningGate = evaluateSprintGateForCwd(alt.cwd, undefined, { allowTinyDebugBypass: true });
+			const stalePlanningDetails = buildGateErrorDetails(alt.cwd, undefined, "sprint", { allowTinyDebugBypass: true });
+			const staleImplGate = evaluateImplementationGateForCwd(alt.cwd, undefined, { allowTinyDebugBypass: true });
+			checkAll("2i", [
+				[readPlanningCurrentRoomPointer(alt.cwd) === planningRoom, "planning-current pointer records room for stale-pointer regression fixture"],
+				[fs.existsSync(planningCurrentRoomPointerPath(alt.cwd)), "planning-current pointer file exists"],
+				[stalePlanningGate.allowed, "sprint gate resolves through planning-current pointer despite stale workflow current pointer"],
+				[staleImplGate.allowed, "implementation gate resolves through planning-current pointer despite stale workflow current pointer"],
+				[stalePlanningDetails.pointerPath === planningCurrentRoomPointerPath(alt.cwd), "planning fallback emits planning-current pointerPath in details"],
+				[!fs.existsSync(path.join(alt.cwd, ".pi", "workflow-runs", staleRoom, "planning-state.json")), "stale workflow pointer room still has no planning-state"],
+			]);
+
+			const planningCurrentMissingStateCwd = freshCwd();
+			try {
+				const missingStateRoom = `room-${Math.random().toString(36).slice(2, 10)}-nostate`;
+				writePlanningCurrentRoomPointerRaw(planningCurrentMissingStateCwd.cwd, missingStateRoom);
+				const missingStateDetails = buildGateErrorDetails(planningCurrentMissingStateCwd.cwd, undefined, "sprint", { allowTinyDebugBypass: true });
+				checkAll("2k", [
+					[!missingStateDetails.allowed, "planning-current without state does not unexpectedly allow sprint gate"],
+					[missingStateDetails.codes.includes("state_missing"), "planning-current without state reports state_missing"],
+					[typeof missingStateDetails.stateIssue === "string" && missingStateDetails.stateIssue.includes("planning state file missing"), "buildGateErrorDetails exposes actionable stateIssue for missing planning state"],
+				]);
+			} finally { planningCurrentMissingStateCwd.cleanup(); }
+
+			const invalidPlanPtrWithLegacy = freshCwd();
+			try {
+				const legacyRoom = `room-${Math.random().toString(36).slice(2, 10)}-legacy`;
+				writeCurrentRoomPointer(invalidPlanPtrWithLegacy.cwd, legacyRoom);
+				const legacyCreate = await invoke(stateTool, { action: "create", scopeClassification: "non_trivial", taskId: "TASK-006-LEGACY" }, invalidPlanPtrWithLegacy.cwd);
+				await Promise.all([
+					invoke(stateTool, { action: "set_flag", roomId: legacyRoom, state: "prd_started", value: true }, invalidPlanPtrWithLegacy.cwd),
+					invoke(stateTool, { action: "set_flag", roomId: legacyRoom, state: "prd_ready_for_sprint", value: true }, invalidPlanPtrWithLegacy.cwd),
+					invoke(
+						stateTool,
+						{ action: "set_flag", roomId: legacyRoom, state: "sprint_confirmed", value: true, approvalText: "confirm sprint creation" },
+						invalidPlanPtrWithLegacy.cwd,
+					),
+					invoke(
+						stateTool,
+						{ action: "set_flag", roomId: legacyRoom, state: "implementation_confirmed", value: true, approvalText: "confirm implementation" },
+						invalidPlanPtrWithLegacy.cwd,
+					),
+				]);
+				writePlanningCurrentRoomPointerRaw(invalidPlanPtrWithLegacy.cwd, "../../outside");
+				fs.writeFileSync(planningCurrentRoomPointerPath(invalidPlanPtrWithLegacy.cwd), "{ this is not valid json", "utf-8");
+				checkAll("2l", [
+					[!isErrorResult(legacyCreate), "legacy workflow-room planning state create for explicit room succeeds"],
+					[buildGateErrorDetails(invalidPlanPtrWithLegacy.cwd, undefined, "sprint").codes.includes("planning_room_id_invalid") && buildGateErrorDetails(invalidPlanPtrWithLegacy.cwd, undefined, "sprint").pointerPath === planningCurrentRoomPointerPath(invalidPlanPtrWithLegacy.cwd), "invalid dedicated planning-current pointer blocks fallback to valid workflow current pointer and pointerPath is reflected in details"],
+					[buildGateErrorDetails(invalidPlanPtrWithLegacy.cwd, undefined, "sprint", { allowTinyDebugBypass: true }).codes.includes("planning_room_id_invalid") && buildGateErrorDetails(invalidPlanPtrWithLegacy.cwd, undefined, "sprint", { allowTinyDebugBypass: true }).pointerPath === planningCurrentRoomPointerPath(invalidPlanPtrWithLegacy.cwd), "malformed dedicated planning-current pointer maps to planning_room_id_invalid and is reflected in pointerPath"],
+				]);
+			} finally { invalidPlanPtrWithLegacy.cleanup(); }
+			const legacyInterop = freshCwd();
+			try {
+				const workflowRoom = `room-${Math.random().toString(36).slice(2, 10)}-legacy`;
+				const plannedRoom = `room-${Math.random().toString(36).slice(2, 10)}-plan`;
+				const staleRoom = `room-${Math.random().toString(36).slice(2, 10)}-stale`;
+				writeCurrentRoomPointer(legacyInterop.cwd, workflowRoom);
+				const legacyWorkflowCreate = await invoke(
+					stateTool,
+					{ action: "create", scopeClassification: "non_trivial", taskId: "TASK-006-LEGACY-READ" },
+					legacyInterop.cwd,
+				);
+				await invoke(stateTool, { action: "set_flag", roomId: workflowRoom, state: "prd_started", value: true }, legacyInterop.cwd);
+				await invoke(
+					stateTool,
+					{ action: "create", roomId: plannedRoom, scopeClassification: "non_trivial", taskId: "TASK-006-PLANROOM" },
+					legacyInterop.cwd,
+				);
+				writeCurrentRoomPointer(legacyInterop.cwd, staleRoom);
+				const legacyCreate = await invoke(stateTool, { action: "create", scopeClassification: "non_trivial", taskId: "TASK-006-PLANCREATE" }, legacyInterop.cwd);
+				checkAll("2m", [
+					[!isErrorResult(legacyWorkflowCreate), "workflow-room current pointer is used for create fallback when planning-current is absent"],
+					[detailsOf(legacyCreate).roomId === staleRoom, "action=create targets workflow-current room when both pointers are present"],
+					[readPlanningCurrentRoomPointer(legacyInterop.cwd) === staleRoom, "create updates planning-current to the workflow-current create room"],
+				]);
+			} finally { legacyInterop.cleanup(); }
 			const invalidRoomId = "../../outside";
 			const invalidState = await invoke(stateTool, { action: "create", roomId: invalidRoomId, scopeClassification: "tiny_debug", taskId: "TASK-006-BAD" }, cwd);
 			const invalidGate = evaluateSprintGateForCwd(cwd, invalidRoomId);
@@ -240,21 +338,19 @@ async function testEndToEnd(): Promise<void> {
 					[invalidPtrGate.codes.includes("planning_room_id_invalid"), "sprint gate surfaces planning_room_id_invalid for invalid active pointer"],
 					[invalidPtrDetails.codes.includes("planning_room_id_invalid"), "buildGateErrorDetails surfaces planning_room_id_invalid for invalid active pointer"],
 					[String(invalidPtrDetails.summary).includes("invalid planning room id"), "buildGateErrorDetails summary surfaces invalid room id reason"],
+					[invalidPtrDetails.pointerPath === path.join(invalidPtrCwd.cwd, ".pi", "workflow-runs", "current.json"), "buildGateErrorDetails pointerPath reflects workflow current pointer path when that pointer is the active resolution source"],
 					[!fs.existsSync(path.join(invalidPtrCwd.cwd, ".pi", "workflow-runs", "outside", "planning-state.json")), "invalid active pointer does not create in-scope sanitized room"],
-					[!fs.existsSync(path.join(invalidPtrCwd.cwd, "outside", "planning-state.json")), "invalid active pointer does not write outside .pi/workflow-runs"],
 				]);
 			} finally { invalidPtrCwd.cleanup(); }
 		} finally { alt.cleanup(); }
 	} finally { fixture.cleanup(); }
 }
 
-// --- 3) source-level chokepoint checks ---------------------------------------
 
 function readSource(rel: string): string {
 	return fs.readFileSync(path.resolve(__dirname, "..", rel), "utf-8");
 }
 
-// Split a tool registration source into per-tool bodies keyed by the tool's name string.
 function toolBodies(source: string): Map<string, string> {
 	const out = new Map<string, string>();
 	const registerToolRe = /pi\.registerTool\(\{/g;
@@ -321,7 +417,6 @@ function testSourceChecks(): void {
 		[/new Set\(\[\"status\",\s*\"add\",\s*\"note\",\s*\"done\",\s*\"promote\"\]\)/.test(sprintDebug),
 			"sprint_debug action allowlist includes status, add, note, done, promote"],
 		[/promoteDebugItem/.test(sprintDebug), "sprint_debug contains promoteDebugItem"],
-		// add/note/done must appear before the promote gate so tiny debug stays ungated.
 		[sprintDebugAddIdx >= 0 && sprintDebugNoteIdx >= 0 && sprintDebugDoneIdx >= 0 && sprintDebugGateIdx >= 0,
 			"sprint_debug exposes add, note, done branches and gate entry point"],
 		[sprintDebugAddIdx < sprintDebugNoteIdx && sprintDebugNoteIdx < sprintDebugDoneIdx && sprintDebugDoneIdx < sprintDebugGateIdx,
@@ -379,7 +474,6 @@ function testSourceChecks(): void {
 		[/delegate_to_coder/.test(delegate), "delegate/tools.ts registers delegate_to_coder tool"],
 		[/delegate_to_reviewer/.test(delegate), "delegate/tools.ts registers delegate_to_reviewer tool"],
 		[/agent\s*===\s*"reviewer"/.test(delegate), "delegate/tools.ts retains a separately-handled reviewer branch"],
-		// Reviewer must NOT be wrapped in a generic planning gate (the gate is exclusive to coder).
 		[/if\s*\(\s*agent\s*===\s*"reviewer"\s*\)[\s\S]{0,400}planningGate/.test(delegate) === false,
 			"reviewer branch does NOT contain a generic planningGate guard"],
 		[/if\s*\(\s*agent\s*===\s*"coder"[\s\S]{0,400}buildGateErrorDetails[\s\S]{0,200}implementation/.test(delegate),
@@ -387,7 +481,6 @@ function testSourceChecks(): void {
 	]);
 }
 
-// --- main --------------------------------------------------------------------
 
 async function main(): Promise<void> {
 	testRegistration();

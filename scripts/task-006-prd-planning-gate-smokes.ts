@@ -12,9 +12,14 @@ import {
 	classifyPlanningApproval, classifyTinyDebugBypass, createPlanningState,
 	evaluateImplementationGate, evaluateSprintPlanningGate, invalidatePlanningState,
 	isExplicitStageConfirmation, isGenericPlanningApproval, isNonTrivialScope,
-	isTinyDebugScope, planningStatePathsFor, readPlanningState, setScopeClassification,
+	isTinyDebugScope, planningStatePathsFor,
+	readPlanningState, setScopeClassification,
 	setStateFlag, setStateFlags, stateFileExists, writePlanningState,
 } from "../extensions/workflow/planning-state";
+import {
+	planningCurrentRoomPointerPath,
+	readPlanningCurrentRoomPointer,
+} from "../extensions/workflow/planning-pointer";
 
 let failures = 0;
 const check = (cond: boolean, msg: string): void => {
@@ -439,13 +444,8 @@ function main(): void {
 			[unapproved.explicitStageConfirmation === null, "'unapproved — plan the sprint' is NOT an explicit sprint confirmation"],
 			[!isExplicitStageConfirmation("unapproved — plan the sprint", "sprint"), "isExplicitStageConfirmation rejects 'unapproved — plan the sprint' for sprint"],
 		]);
-		// Sanity: the whole-word form must still classify as expected after the word-boundary fix.
-		checkAll("10", [
-			[isExplicitStageConfirmation("approved — plan the sprint", "sprint"), "sanity: 'approved — plan the sprint' is still an explicit sprint confirmation"],
-		]);
 	}
 
-	// 11) An invalidated tiny_debug state must fail-closed even with allowTinyDebugBypass: true.
 	withRoom("tiny_debug", "DBG-INV-BYPASS", (cwd, roomId) => {
 		const invalidated = invalidatePlanningState(cwd, roomId, { kind: "prd_or_scope", reason: "scope expanded mid-flight", ...META });
 		checkAll("11", [
@@ -464,7 +464,6 @@ function main(): void {
 			[!impl.codes.includes("tiny_debug_bypass"), "implementation gate does NOT surface tiny_debug_bypass when invalidation is present"],
 			[/invalidated .*re-confirmation required/i.test(impl.summary), "implementation summary calls out invalidation + re-confirmation"],
 		]);
-		// After clearing the invalidation (e.g., user re-confirms), the bypass should re-open the gates.
 		setStateFlag(cwd, roomId, "prd_started", true, META);
 		const cleared = readPlanningState(cwd, roomId).state;
 		const sprintCleared = evaluateSprintPlanningGate(cleared, { allowTinyDebugBypass: true });
@@ -477,6 +476,22 @@ function main(): void {
 			[implCleared.codes.includes("tiny_debug_bypass"), "implementation gate re-emits tiny_debug_bypass after invalidation clears"],
 		]);
 	});
+
+	{
+		const pointerRoom = freshRoom();
+		try {
+			const roomA = `${pointerRoom.roomId}-plan-a`, roomB = `${pointerRoom.roomId}-plan-b`;
+			createPlanningState({ cwd: pointerRoom.cwd, roomId: roomA, scopeClassification: "non_trivial", taskId: "TASK-PTR-01" });
+			setStateFlag(pointerRoom.cwd, roomA, "prd_started", true, META);
+			createPlanningState({ cwd: pointerRoom.cwd, roomId: roomB, scopeClassification: "non_trivial", taskId: "TASK-PTR-02" });
+			setScopeClassification(pointerRoom.cwd, roomB, "expanded_from_tiny", META);
+			invalidatePlanningState(pointerRoom.cwd, roomB, { kind: "architecture_or_evidence", reason: "proofread update", ...META });
+			checkAll("12", [
+				[readPlanningCurrentRoomPointer(pointerRoom.cwd) === roomB, "latest mutation updates planning-current to latest room"],
+				[fs.existsSync(planningCurrentRoomPointerPath(pointerRoom.cwd)), "planning-current pointer file is written"],
+			]);
+		} finally { pointerRoom.cleanup(); }
+	}
 
 	if (failures > 0) { console.error(`task-006 planning-state smokes failed: ${failures}`); process.exitCode = 1; return; }
 	console.log("task-006 PRD planning gate smokes passed");

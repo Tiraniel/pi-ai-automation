@@ -1,7 +1,9 @@
 // TASK-006 Phase B — PRD-first planning gate runtime helper.
 // Thin orchestration layer over `extensions/workflow/planning-state.ts` that:
-//   1. Resolves the planning room id from an explicit `planningRoomId` param
-//      or the active workflow room pointer at `.pi/workflow-runs/current.json`.
+//   1. Resolves the planning room id from an explicit `planningRoomId` param,
+//      the active planning-room fallback pointer (`.pi/workflow-runs/planning-current.json`),
+//      or conservatively from `.pi/workflow-runs/current.json` when it points at a room
+//      that already has planning state.
 //   2. Reads the planning state from disk and runs the fail-closed gate
 //      evaluators (`evaluateSprintPlanningGate` / `evaluateImplementationGate`).
 //   3. Produces structured, actionable gate error shapes that delegate/sprint
@@ -19,12 +21,18 @@ import {
 	PlanningGateResult,
 	PlanningStateName,
 	PlanningStateRecord,
-	readCurrentRoomPointer as readCurrentRoomPointerFromState,
 	evaluateImplementationGate as evaluateImplementationGatePhaseA,
 	evaluateSprintPlanningGate as evaluateSprintPlanningGatePhaseA,
 	readPlanningState as readPlanningStatePhaseA,
 	validatePlanningRoomId,
 } from "./planning-state";
+import {
+	planningRoomHasStateFile,
+	readPlanningCurrentRoomPointerResult,
+	readWorkflowCurrentRoomPointer,
+	planningCurrentRoomPointerPath,
+	workflowCurrentRoomPointerPath,
+} from "./planning-pointer";
 
 // ----- room pointer resolution -------------------------------------------------
 
@@ -36,26 +44,74 @@ export interface PlanningRoomResolution {
 }
 
 export function resolvePlanningRoomId(cwd: string, explicitRoomId: unknown): PlanningRoomResolution {
-	const pointerPath = `.pi/workflow-runs/current.json`;
 	const fromParams = typeof explicitRoomId === "string" ? explicitRoomId.trim() : "";
 	if (fromParams) {
 		try {
-			return { planningRoomId: validatePlanningRoomId(fromParams), source: "params", pointerPath };
+			return { planningRoomId: validatePlanningRoomId(fromParams), source: "params", pointerPath: planningCurrentRoomPointerPath(cwd) };
 		} catch (error) {
 			const issue = error instanceof Error ? error.message : String(error);
-			return { planningRoomId: null, source: "params", pointerPath, issue };
+			return { planningRoomId: null, source: "params", pointerPath: planningCurrentRoomPointerPath(cwd), issue };
 		}
 	}
-	const fromPointer = readCurrentRoomPointerFromState(cwd);
-	if (fromPointer) {
+
+	const planningPointer = readPlanningCurrentRoomPointerResult(cwd);
+	let planningPointerRoomId: string | null = null;
+	if (planningPointer.exists && planningPointer.roomId === null) {
+		return {
+			planningRoomId: null,
+			source: "activePointer",
+			pointerPath: planningCurrentRoomPointerPath(cwd),
+			issue: `${planningPointer.issue || "planning room pointer is malformed"} (from dedicated planning-room pointer)`,
+		};
+	}
+	if (planningPointer.exists && planningPointer.roomId) {
 		try {
-			return { planningRoomId: validatePlanningRoomId(fromPointer), source: "activePointer", pointerPath };
+			planningPointerRoomId = validatePlanningRoomId(planningPointer.roomId);
+			if (planningRoomHasStateFile(cwd, planningPointerRoomId)) {
+				return { planningRoomId: planningPointerRoomId, source: "activePointer", pointerPath: planningCurrentRoomPointerPath(cwd) };
+			}
 		} catch (error) {
 			const issue = error instanceof Error ? error.message : String(error);
-			return { planningRoomId: null, source: "activePointer", pointerPath, issue: `${issue} (from active planning room pointer ${fromPointer})` };
+			return {
+				planningRoomId: null,
+				source: "activePointer",
+				pointerPath: planningCurrentRoomPointerPath(cwd),
+				issue: `${issue} (from dedicated planning-room pointer ${planningPointer.roomId})`,
+			};
 		}
 	}
-	return { planningRoomId: null, source: "missing", pointerPath };
+
+	const workflowPointer = readWorkflowCurrentRoomPointer(cwd);
+	if (!workflowPointer) {
+		if (planningPointerRoomId) {
+			return {
+				planningRoomId: planningPointerRoomId,
+				source: "activePointer",
+				pointerPath: planningCurrentRoomPointerPath(cwd),
+			};
+		}
+		return { planningRoomId: null, source: "missing", pointerPath: workflowCurrentRoomPointerPath(cwd) };
+	}
+	try {
+		const workflowRoomId = validatePlanningRoomId(workflowPointer);
+		if (planningRoomHasStateFile(cwd, workflowRoomId)) {
+			return { planningRoomId: workflowRoomId, source: "activePointer", pointerPath: workflowCurrentRoomPointerPath(cwd) };
+		}
+		return planningPointerRoomId
+			? { planningRoomId: planningPointerRoomId, source: "activePointer", pointerPath: planningCurrentRoomPointerPath(cwd) }
+			: { planningRoomId: null, source: "missing", pointerPath: workflowCurrentRoomPointerPath(cwd) };
+	} catch (error) {
+		const issue = error instanceof Error ? error.message : String(error);
+		if (planningPointerRoomId) {
+			return {
+				planningRoomId: planningPointerRoomId,
+				source: "activePointer",
+				pointerPath: planningCurrentRoomPointerPath(cwd),
+				issue,
+			};
+		}
+		return { planningRoomId: null, source: "activePointer", pointerPath: workflowCurrentRoomPointerPath(cwd), issue: `${issue} (from active workflow-room pointer ${workflowPointer})` };
+	}
 }
 
 // ----- state read with structured fallback ------------------------------------
@@ -64,6 +120,7 @@ export interface PlanningStateResolution {
 	state: PlanningStateRecord | null;
 	planningRoomId: string | null;
 	roomSource: PlanningRoomResolution["source"];
+	pointerPath: string;
 	issue?: string;
 	issueCode?: string;
 	artifactPath?: string;
@@ -75,10 +132,10 @@ export function resolvePlanningStateForCwd(
 ): PlanningStateResolution {
 	const room = resolvePlanningRoomId(cwd, explicitRoomId);
 	if (room.issue) {
-		return { state: null, planningRoomId: null, roomSource: room.source, issue: room.issue, issueCode: "planning_room_id_invalid" };
+		return { state: null, planningRoomId: null, roomSource: room.source, pointerPath: room.pointerPath, issue: room.issue, issueCode: "planning_room_id_invalid" };
 	}
 	if (!room.planningRoomId) {
-		return { state: null, planningRoomId: null, roomSource: room.source };
+		return { state: null, planningRoomId: null, roomSource: room.source, pointerPath: room.pointerPath };
 	}
 	const result = readPlanningStatePhaseA(cwd, room.planningRoomId);
 	if (!result.state) {
@@ -86,11 +143,12 @@ export function resolvePlanningStateForCwd(
 			state: null,
 			planningRoomId: room.planningRoomId,
 			roomSource: room.source,
+			pointerPath: room.pointerPath,
 			issue: result.issue?.message,
 			issueCode: result.issue?.code,
 		};
 	}
-	return { state: result.state, planningRoomId: room.planningRoomId, roomSource: room.source };
+	return { state: result.state, planningRoomId: room.planningRoomId, roomSource: room.source, pointerPath: room.pointerPath };
 }
 
 // ----- gate evaluators wired to runtime resolution ----------------------------
@@ -191,7 +249,7 @@ export function buildGateErrorDetails(
 		flags: result.details.flags,
 		invalidatedBy: result.details.invalidatedBy,
 		summary: result.summary,
-		pointerPath: `.pi/workflow-runs/current.json`,
+		pointerPath: resolution.pointerPath,
 		roomSource: resolution.roomSource,
 		stateIssue: resolution.issue,
 		stateIssueCode: resolution.issueCode,

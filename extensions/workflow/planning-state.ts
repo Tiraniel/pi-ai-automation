@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { writePlanningCurrentRoomPointer } from "./planning-pointer";
 
 export const PLANNING_STATE_FILE_NAME = "planning-state.json";
 export const PLANNING_PRD_FILE_NAME = "PRD.md";
 export const PLANNING_MEMO_FILE_NAME = "memo.md";
 export const PLANNING_STATE_VERSION = 1;
 export const ROOM_DIR_NAME = "workflow-runs";
-export const CURRENT_ROOM_POINTER = "current.json";
 export const PLANNING_ROOM_ID_PATTERN = /^[a-z0-9-]+$/;
 
 export const PLANNING_STATE_NAMES = ["prd_started", "prd_ready_for_sprint", "sprint_confirmed", "implementation_confirmed"] as const;
@@ -80,14 +80,6 @@ export function planningStatePathsFor(cwd: string, roomId: string): PlanningStat
 	return { roomDir, stateFile: path.join(roomDir, PLANNING_STATE_FILE_NAME), prdFile: path.join(roomDir, PLANNING_PRD_FILE_NAME), memoFile: path.join(roomDir, PLANNING_MEMO_FILE_NAME) };
 }
 
-export function readCurrentRoomPointer(cwd: string): string | null {
-	const file = path.join(cwd, ".pi", ROOM_DIR_NAME, CURRENT_ROOM_POINTER);
-	if (!fs.existsSync(file)) return null;
-	try {
-		const raw = JSON.parse(fs.readFileSync(file, "utf-8")) as { roomId?: unknown };
-		return typeof raw.roomId === "string" && raw.roomId.trim() ? raw.roomId.trim() : null;
-	} catch { return null; }
-}
 
 const trim = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -192,6 +184,7 @@ export function writePlanningState(cwd: string, roomId: string, state: PlanningS
 	const p = planningStatePathsFor(cwd, roomId);
 	fs.mkdirSync(p.roomDir, { recursive: true });
 	fs.writeFileSync(p.stateFile, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
+	writePlanningCurrentRoomPointer(cwd, roomId);
 }
 
 export interface CreatePlanningStateInput {

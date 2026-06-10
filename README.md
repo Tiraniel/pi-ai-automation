@@ -147,6 +147,8 @@ Brain must synthesize planner outputs into a memo with PRD draft, resolved decis
 
 Planning artifacts and approvals live under `.pi/workflow-runs/<planning-room>/` as `planning-state.json`, `PRD.md`, and `memo.md` as the pre-sprint contract.
 
+Planning-room resolution is explicit: `workflow_planning_state` and gates resolve `planningRoomId` from explicit parameter first; `workflow_planning_state` uses `.pi/workflow-runs/current.json` first for `action=create` (legacy compatibility), and non-create paths prefer `.pi/workflow-runs/planning-current.json` and only fall back to `.pi/workflow-runs/current.json` when that room already has planning state. This keeps planning artifacts decoupled from runtime workflow room churn while preserving legacy create behavior.
+
 `brain` should call `workflow_deep_plan` for complex tasks when the task marker/opt-in requests it, then synthesize options and risks before sending implementation tasks to `delegate_to_coder`. If deep-planning config is disabled (default), pass `force:true` when honoring a required/auto marker unless the user explicitly enabled deep planning in config.
 
 For opt-in control, put a task marker in the sprint task markdown:

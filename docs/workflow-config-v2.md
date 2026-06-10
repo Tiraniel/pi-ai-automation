@@ -94,6 +94,8 @@ Planning artifacts live under `.pi/workflow-runs/<planning-room>/` as durable pl
 
 Brain/Tool integration: `workflow_planning_state` is the durable PRD-first state surface used by both gate evaluators and slash-command/tool gates; it tracks `scopeClassification` and `prd_started`/`prd_ready_for_sprint`/`sprint_confirmed`/`implementation_confirmed` transitions. `workflow_planning_artifacts` stores `PRD.md` / `memo.md` text in the active planning room. Generic planning affirmations (`approved`/`yes`/`agree`) are treated as continuation only and do not set sprint/implementation confirmations—those require explicit stage-confirmation text.
 
+Planning-room resolution is explicit-first: gates and tools prefer `.pi/workflow-runs/planning-current.json` as the planning-room pointer for non-create paths; for `action=create`, tools prefer the legacy `.pi/workflow-runs/current.json` first as a create fallback target, then use planning-current. For gates/read/update, legacy workflow-current fallback still applies only when that room already contains `planning-state.json`. Without a valid explicit/persistent/planning pointer, planning gates remain blocked and report missing-state guidance.
+
 ### V1 deep-planning alias
 
 v1 config uses snake_case for this block (`deep_planning`) and is supported by `readDeepPlanningConfig` as an alias that maps into the normalized `deepPlanning` config.

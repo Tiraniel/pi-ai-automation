@@ -196,7 +196,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			}, { description: "Optional workflow room context. When set, the delegated sub-agent receives PI_WORKFLOW_ROOM_ID/AGENT_ID/AGENT_ROLE env vars and a communication block in its system prompt." })),
 			...(agent === "reviewer"
 				? { goals: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Optional implementation review goals (acceptance/scope/test evidence checkpoints). When reviewer swarm is enabled, one reviewer runs per goal." })) }
-				: { planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id for the PRD-first planning implementation gate. Falls back to .pi/workflow-runs/current.json. Coder is gated; reviewer is not." })) }),
+				: { planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id for the PRD-first planning implementation gate. Falls back to .pi/workflow-runs/planning-current.json first, then to .pi/workflow-runs/current.json for compatibility. Coder is gated; reviewer is not." })) }),
 		}),
 		renderCall(args: any, theme) {
 			const task = truncateText(String(args?.task ?? ""), MAX_TASK_PREVIEW) || "(no task)";
