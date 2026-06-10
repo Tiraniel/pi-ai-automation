@@ -34,6 +34,7 @@ import {
 	askUi,
 	askUiInput,
 } from "./store";
+import { gateSprintEntryPoint } from "./planning-gate";
 
 const LIGHTWEIGHT_DEBUG_SCOPE_HINT_RE = /\b(tiny|typo|few-line|few\s+line|one-line|one\s+line|small\s+fix|minor\s+fix|quick\s+fix)\b/i;
 const LIGHTWEIGHT_HOTFIX_HINT_RE = /\bhotfix\b/i;
@@ -53,6 +54,16 @@ function isLikelyLightweightDebugPrompt(prompt: string): boolean {
 }
 
 const DECLINED_CWDS = new Set<string>();
+
+function blockedSprintAutoCreateMessage(ctx: { cwd: string }, phase: string): string | null {
+	const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+	if (gate.allowed) return null;
+	return [
+		`PRD-first planning gate blocked ${phase}:`,
+		gate.text,
+		"Action: use workflow_planning_state to record PRD-ready state and explicit sprint confirmation before non-trivial auto-create.",
+	].join("\n");
+}
 
 export function registerSprintHooks(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async (event, ctx) => {
@@ -104,6 +115,11 @@ export function registerSprintHooks(pi: ExtensionAPI): void {
 		const mode = getGlobalAutoCreate();
 		if (mode === "never") return;
 		if (mode === "always") {
+			const gateMessage = blockedSprintAutoCreateMessage(ctx, "via auto-create");
+			if (gateMessage) {
+				ctx.ui.notify(gateMessage, "warning");
+				return { systemPrompt: `${event.systemPrompt}\n\n${gateMessage}` };
+			}
 			const created = createSprint(ctx.cwd, deriveSprintName(prompt));
 			ctx.ui.notify(`Auto-created sprint ${created.sprintId}`, "info");
 			const createdCurrent = loadCurrent(ctx.cwd);
@@ -123,6 +139,11 @@ export function registerSprintHooks(pi: ExtensionAPI): void {
 			return;
 		}
 		const inputName = (await askUiInput((ctx as any).ui, "Sprint name", "Optional: short sprint title")).trim();
+		const gateMessage = blockedSprintAutoCreateMessage(ctx, "via user-confirmed bootstrap");
+		if (gateMessage) {
+			ctx.ui.notify(gateMessage, "warning");
+			return { systemPrompt: `${event.systemPrompt}\n\n${gateMessage}` };
+		}
 		const created = createSprint(ctx.cwd, inputName || deriveSprintName(prompt));
 		ctx.ui.notify(`Created sprint ${created.sprintId}`, "info");
 		const createdCurrent = loadCurrent(ctx.cwd);

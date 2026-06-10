@@ -20,6 +20,8 @@ Workflow tools:
 - `delegate_to_coder`
 - `delegate_to_reviewer` (supports optional `goals` for targeted reviewer swarm)
 - `workflow_record_architecture_plan`, `workflow_read_architecture_plan`, `workflow_update_architecture_plan` (architecture-plan persistence; `ready` plans require the per-criterion `acceptanceEvidenceMatrix` — see [Architecture evidence matrix](#architecture-evidence-matrix))
+- `workflow_planning_state` (durable PRD-first planning state machine in `.pi/workflow-runs/<planning-room>/planning-state.json`)
+- `workflow_planning_artifacts` (write/read planning PRD.md and memo.md text)
 - `room_create`, `room_job_start`, `room_send`, `room_read`, `room_job_done`, `room_status`
 - `workflow_deep_plan` (optional planning-only deep-planning pass; planning-only delegates, no code edits)
 
@@ -141,9 +143,9 @@ Deep planning is planning-only and disabled by default. It runs bounded Product 
 
 Planner entries are Product Requirements personas for `workflow_deep_plan`: read-only delegates, no `edit`, `write`, or `bash`. They use bounded grill-me behavior: inspect the codebase before asking when possible, ask at most one highest-value question per round with a recommended answer, and update a shared PRD with resolved decisions and open questions. They do not produce implementation plans or code.
 
-Brain must synthesize planner outputs into a memo with PRD draft, resolved decisions, unresolved user questions, options, risks, and `ready_for_sprint: yes|no`. Brain then proceeds with normal planning → implementation delegation only after explicit user confirmation.
+Brain must synthesize planner outputs into a memo with PRD draft, resolved decisions, unresolved user questions, options, risks, and `ready_for_sprint: yes|no`, persist planning state and artifacts via `workflow_planning_state` / `workflow_planning_artifacts`, then proceed with normal planning → implementation delegation only after explicit user confirmation.
 
-Planning artifacts live under `.pi/workflow-runs/<planning-room>/PRD.md` and `memo.md` as the pre-sprint contract (prompt-only scope in this slice).
+Planning artifacts and approvals live under `.pi/workflow-runs/<planning-room>/` as `planning-state.json`, `PRD.md`, and `memo.md` as the pre-sprint contract.
 
 `brain` should call `workflow_deep_plan` for complex tasks when the task marker/opt-in requests it, then synthesize options and risks before sending implementation tasks to `delegate_to_coder`. If deep-planning config is disabled (default), pass `force:true` when honoring a required/auto marker unless the user explicitly enabled deep planning in config.
 

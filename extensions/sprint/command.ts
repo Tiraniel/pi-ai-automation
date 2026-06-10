@@ -13,6 +13,7 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { startSprintTaskSession } from "./start-session";
 import {
+	appendProgress,
 	createEpic,
 	createSprint,
 	createTask,
@@ -24,6 +25,7 @@ import {
 	updateTaskStatus,
 } from "./store";
 import { appendDebugNote, completeDebugItem, createDebugItem, promoteDebugItem, readDebugLaneSummary } from "./debug";
+import { gateSprintEntryPoint } from "./planning-gate";
 import { SPRINTS_DIR } from "./types";
 
 export function registerSprintCommand(pi: ExtensionAPI): void {
@@ -43,6 +45,12 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 				if (sub === "new") {
 					const name = args.slice(1).join(" ").trim();
 					if (!name) throw new Error("Usage: /sprint new <name>");
+					const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+					if (!gate.allowed) {
+						ctx.ui.notify(gate.text, "warning");
+						ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before /sprint new.", "info");
+						return;
+					}
 					const created = createSprint(ctx.cwd, name);
 					ctx.ui.notify(`Active sprint: ${created.sprintId}`, "info");
 					return;
@@ -106,6 +114,12 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 						return;
 					}
 					if (action === "promote") {
+						const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+						if (!gate.allowed) {
+							ctx.ui.notify(gate.text, "warning");
+							ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before debug promotion.", "info");
+							return;
+						}
 						const id = args[2];
 						if (!id) throw new Error("Usage: /sprint debug promote <DBG-ID> [task title]");
 						const taskTitle = args.slice(3).join(" ").trim();
@@ -123,6 +137,12 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 				if (sub === "task" && args[1] === "add") {
 					const title = args.slice(2).join(" ").trim();
 					if (!title) throw new Error("Usage: /sprint task add <title>");
+					const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+					if (!gate.allowed) {
+						ctx.ui.notify(gate.text, "warning");
+						ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before creating sprint tasks.", "info");
+						return;
+					}
 					const t = createTask(ctx.cwd, title);
 					ctx.ui.notify(`Created ${t.id}`, "info");
 					return;
@@ -154,6 +174,12 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 						}
 					}
 					if (!taskId) throw new Error("Usage: /sprint task start <TASK-ID> [--auto-run]");
+					const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+					if (!gate.allowed) {
+						ctx.ui.notify(gate.text, "warning");
+						ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before starting this task.", "info");
+						return;
+					}
 
 					const result = await startSprintTaskSession(ctx, taskId, { autoRun });
 					if (result.cancelled) {
@@ -164,6 +190,12 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 				if (sub === "epic" && args[1] === "add") {
 					const title = args.slice(2).join(" ").trim();
 					if (!title) throw new Error("Usage: /sprint epic add <title>");
+					const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+					if (!gate.allowed) {
+						ctx.ui.notify(gate.text, "warning");
+						ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before creating epics.", "info");
+						return;
+					}
 					const epic = createEpic(ctx.cwd, title);
 					ctx.ui.notify(`Created epic ${epic.epicId}`, "info");
 					return;

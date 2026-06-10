@@ -42,6 +42,7 @@ import {
 } from "./workflow/delegate";
 import { registerArchitectureTools } from "./workflow/architecture";
 import { registerDeepPlanningTool } from "./workflow/deep-planning";
+import { registerPlanningTools } from "./workflow/planning-tools";
 import {
 	ensureManagedGlobalWorkflow,
 	inspectGlobalWorkflowState,
@@ -82,6 +83,7 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 	registerDelegateDoneTools(pi);
 	registerArchitectureTools(pi);
 	registerDeepPlanningTool(pi);
+	registerPlanningTools(pi);
 
 	pi.registerCommand("workflow", {
 		description: "Show effective brain/coder/reviewer workflow presets",

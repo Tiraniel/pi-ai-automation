@@ -1,13 +1,6 @@
-// Workflow delegate runtime — `delegate_to_coder` / `delegate_to_reviewer` tools.
-// Extracted from extensions/brain-workflow.ts as part of TASK-018 Slice 3.
-//
-// `registerDelegateTools(pi)` registers the two public delegation tools
-// used by Brain. Each tool is a thin wrapper around `runDelegateAgent` (for
-// `coder`) or `runReviewerSwarm` (for `reviewer` when the swarm is enabled),
-// so the tool body is just parameter validation, swarm dispatch, and result
-// formatting. The render/renderResult bodies are kept inline because they
-// share the same delegate progress shape; the actual progress formatting
-// helpers are imported from `./messages`.
+// Workflow delegate runtime — `delegate_to_coder` / `delegate_to_reviewer` tools (extracted from extensions/brain-workflow.ts in TASK-018 Slice 3).
+// Each tool is a thin wrapper around `runDelegateAgent` (coder) or `runReviewerSwarm` (reviewer when the swarm is enabled): parameter validation, swarm dispatch, and result formatting.
+// Render/renderResult bodies are kept inline because they share the same delegate progress shape; the actual progress formatting helpers are imported from `./messages`.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -28,6 +21,7 @@ import {
 	markArchitecturePhaseUpdate,
 	resolveArchitectureContext,
 } from "./architecture-gate";
+import { buildGateErrorDetails, formatGateErrorText } from "../planning-gate-runtime";
 import { evaluateCoderPhaseAdvancement } from "./completion-evidence-gate";
 import {
 	formatDelegateProgressLine,
@@ -202,7 +196,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			}, { description: "Optional workflow room context. When set, the delegated sub-agent receives PI_WORKFLOW_ROOM_ID/AGENT_ID/AGENT_ROLE env vars and a communication block in its system prompt." })),
 			...(agent === "reviewer"
 				? { goals: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: "Optional implementation review goals (acceptance/scope/test evidence checkpoints). When reviewer swarm is enabled, one reviewer runs per goal." })) }
-				: {}),
+				: { planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id for the PRD-first planning implementation gate. Falls back to .pi/workflow-runs/current.json. Coder is gated; reviewer is not." })) }),
 		}),
 		renderCall(args: any, theme) {
 			const task = truncateText(String(args?.task ?? ""), MAX_TASK_PREVIEW) || "(no task)";
@@ -340,6 +334,18 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			}
 			const delegatedTask = architecture.delegatedTask;
 			const architectureRequirement = architecture.requirement;
+
+			// TASK-006 Phase B: gate `delegate_to_coder` on the PRD-first planning implementation flag (all four confirmations) AFTER architecture context resolves and BEFORE runDelegateAgent; reviewer is intentionally NOT gated.
+			if (agent === "coder") {
+				const planningGate = buildGateErrorDetails(ctx.cwd, (params as any).planningRoomId, "implementation", { allowTinyDebugBypass: false });
+				if (!planningGate.allowed) {
+					return {
+						isError: true,
+						content: [{ type: "text", text: formatGateErrorText(planningGate) }],
+						details: { agent, status: "failed", task, planningGate, reason: "implementation_planning_gate_blocked" },
+					};
+				}
+			}
 
 			let roomContext: ResolvedRoomContext | undefined;
 			if ((params as any).room && typeof (params as any).room === "object") {

@@ -90,7 +90,9 @@ Planner entries may include `provider/model/modelPreset` references; **`modelPre
 Deep-planning is disabled by default (`enabled: false`). Opt in via workflow config with `"deepPlanning": { "enabled": true, ... }` (v1 alias remains `deep_planning`). If Brain honors `brain:deep_planning=required`, or if Brain selects `auto` while config is disabled, Brain must call `workflow_deep_plan` with `force: true` to run planning despite `enabled` being false.
 When enabled, `workflow_deep_plan` orchestrates bounded rounds and returns a concise transcript for Brain to synthesize into a memo (PRD draft, resolved decisions, unresolved questions, options, risks, `ready_for_sprint: yes|no`). Brain proceeds with normal planning → implementation delegation only after explicit user confirmation.
 
-Planning artifacts live under `.pi/workflow-runs/<planning-room>/PRD.md` and `memo.md` as the pre-sprint contract (documented/prompt-only scope in this slice).
+Planning artifacts live under `.pi/workflow-runs/<planning-room>/` as durable planning state + materials: `planning-state.json`, `PRD.md`, `memo.md`, and gate snapshots.
+
+Brain/Tool integration: `workflow_planning_state` is the durable PRD-first state surface used by both gate evaluators and slash-command/tool gates; it tracks `scopeClassification` and `prd_started`/`prd_ready_for_sprint`/`sprint_confirmed`/`implementation_confirmed` transitions. `workflow_planning_artifacts` stores `PRD.md` / `memo.md` text in the active planning room. Generic planning affirmations (`approved`/`yes`/`agree`) are treated as continuation only and do not set sprint/implementation confirmations—those require explicit stage-confirmation text.
 
 ### V1 deep-planning alias
 

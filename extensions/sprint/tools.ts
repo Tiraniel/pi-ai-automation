@@ -33,13 +33,16 @@ import {
 } from "./store";
 import { startSprintTaskSession } from "./start-session";
 import { appendDebugNote, completeDebugItem, createDebugItem, readDebugLaneSummary, promoteDebugItem } from "./debug";
+import { evaluateDebugFinalization, evaluateSprintTaskFinalizationFromDisk } from "../workflow/finalization-runtime";
+import { isFinalizationStatus } from "../workflow/finalization-gate";
+import { gateSprintEntryPoint, sprintGateErrorResult } from "./planning-gate";
 import type { SprintConfig, SprintCurrent } from "./types";
 
 export function registerSprintTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "sprint_read_context",
 		label: "Sprint: Read Context",
-		description: "Read active sprint config/current/task pointers with brief snippets. If this session is bound to a sprint task, the binding is reported as the effective context.",
+		description: "Read active sprint config/current/task pointers with brief snippets; reports the session binding as effective context when pinned to a task.",
 		promptSnippet: "Read sprint context before planning or coding.",
 		promptGuidelines: ["Use sprint_read_context first when sprint pointers exist or sprint state is unclear."],
 		parameters: Type.Object({}),
@@ -99,14 +102,22 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "sprint_create",
 		label: "Sprint: Create Sprint",
-		description: "Initialize sprint system if needed and create+activate a sprint.",
+		description: "Create+activate a sprint. Gated by the PRD-first planning state for non-trivial work (prd_started + prd_ready_for_sprint + sprint_confirmed).",
 		promptSnippet: "Create a sprint when non-trivial work starts without one.",
-		promptGuidelines: ["Use sprint_create when there is no active sprint and work should be tracked in .sprints."],
-		parameters: Type.Object({ name: Type.String() }),
+		promptGuidelines: [
+			"Use sprint_create when there is no active sprint and work should be tracked in .sprints.",
+			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the active room pointer first. Tiny debug add/note/done are intentionally ungated; creation is gated.",
+		],
+		parameters: Type.Object({
+			name: Type.String(),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/current.json." })),
+		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const cwd = ctx.cwd;
 			const name = String((params as any).name || "").trim();
 			if (!name) return { isError: true, content: [{ type: "text", text: "Missing name" }] };
+			const gate = gateSprintEntryPoint(cwd, (params as any).planningRoomId, "sprint");
+			if (!gate.allowed) return sprintGateErrorResult(gate.details);
 			const created = createSprint(cwd, name);
 			return { content: [{ type: "text", text: `Created ${path.relative(cwd, created.sprintPath)}` }] };
 		},
@@ -115,9 +126,12 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "sprint_create_task",
 		label: "Sprint: Create Task",
-		description: "Create task in active sprint.",
+		description: "Create task in active sprint. Gated by the PRD-first planning state for non-trivial work (prd_started + prd_ready_for_sprint + sprint_confirmed).",
 		promptSnippet: "Create a task for concrete implementation work.",
-		promptGuidelines: ["Use sprint_create_task for scoped units of work inside the active sprint."],
+		promptGuidelines: [
+			"Use sprint_create_task for scoped units of work inside the active sprint.",
+			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the active room pointer first. Tiny debug add/note/done are intentionally ungated; task creation is gated.",
+		],
 		parameters: Type.Object({
 			title: Type.String(),
 			humanSummary: Type.Optional(Type.String()),
@@ -125,11 +139,14 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			acceptanceCriteria: Type.Optional(Type.String()),
 			epic: Type.Optional(Type.String()),
 			priority: Type.Optional(Type.String()),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/current.json." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as any;
 			const title = String(p.title || "").trim();
 			if (!title) return { isError: true, content: [{ type: "text", text: "Missing title" }] };
+			const gate = gateSprintEntryPoint(ctx.cwd, p.planningRoomId, "sprint");
+			if (!gate.allowed) return sprintGateErrorResult(gate.details);
 			const created = createTask(ctx.cwd, title, {
 				humanSummary: p.humanSummary,
 				aiContext: p.aiContext,
@@ -144,18 +161,24 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "sprint_create_epic",
 		label: "Sprint: Create Epic",
-		description: "Create an epic under .sprints/epics.",
+		description: "Create an epic under .sprints/epics. Gated by the PRD-first planning state for non-trivial work (prd_started + prd_ready_for_sprint + sprint_confirmed).",
 		promptSnippet: "Create an epic for larger multi-task initiative context.",
-		promptGuidelines: ["Use sprint_create_epic when work spans multiple tasks and needs durable shared context."],
+		promptGuidelines: [
+			"Use sprint_create_epic when work spans multiple tasks and needs durable shared context.",
+			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass planningRoomId or set the active room pointer first. Tiny debug add/note/done are intentionally ungated; epic creation is gated.",
+		],
 		parameters: Type.Object({
 			title: Type.String(),
 			humanSummary: Type.Optional(Type.String()),
 			aiContext: Type.Optional(Type.String()),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/current.json." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as any;
 			const title = String(p.title || "").trim();
 			if (!title) return { isError: true, content: [{ type: "text", text: "Missing title" }] };
+			const gate = gateSprintEntryPoint(ctx.cwd, p.planningRoomId, "sprint");
+			if (!gate.allowed) return sprintGateErrorResult(gate.details);
 			const epic = createEpic(ctx.cwd, title, { humanSummary: p.humanSummary, aiContext: p.aiContext });
 			return { content: [{ type: "text", text: `Created epic ${epic.epicId} at ${path.relative(ctx.cwd, epic.epicPath)}` }] };
 		},
@@ -164,11 +187,11 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "sprint_debug",
 		label: "Sprint: Debug/Hotfix Lane",
-		description: "Track tiny debug/hotfix items in the lightweight .sprints/debug lane.",
+		description: "Track tiny debug/hotfix items in the .sprints/debug lane. add/note/done/status remain ungated; `action: promote` remains gated by the PRD-first planning state.",
 		promptSnippet: "Use sprint_debug for tiny debug/hotfix/few-line fixes without starting a full sprint task session.",
 		promptGuidelines: [
 			"Use sprint_debug for minimal debug/hotfix items with optional notes/evidence. For larger work, promote to a normal sprint task with `action: promote`.",
-			"When action is `promote`, the item is converted into a normal sprint task in the current active sprint via `createTask` and does not start a task session.",
+			"When action is `promote`, the item is converted into a normal sprint task via `createTask` and does not start a session. The sprint planning gate runs before promote; pass `planningRoomId` or set the active room pointer first.",
 		],
 		parameters: Type.Object({
 			action: Type.String(),
@@ -177,6 +200,8 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			note: Type.Optional(Type.String()),
 			evidence: Type.Optional(Type.String()),
 			limit: Type.Optional(Type.Number()),
+			finalizationGateMode: Type.Optional(Type.Union([Type.Literal("strict"), Type.Literal("dry-run")])),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id for the sprint planning gate. Required when action=promote and the planning state is not on the active room pointer; ignored for add/note/done/status." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as any;
@@ -232,16 +257,33 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 				if (actionLower === "done") {
 					const itemId = String(p.itemId || "").trim();
 					if (!itemId) return { isError: true, content: [{ type: "text", text: "Missing itemId" }] };
+					const mode = p.finalizationGateMode === "dry-run" ? "dry-run" : "strict";
+					const finalization = evaluateDebugFinalization({
+						itemId,
+						requestedStatus: "done",
+						mode,
+						finalNote: p.note ? String(p.note) : undefined,
+						finalEvidence: p.evidence ? String(p.evidence) : undefined,
+						debugChain: { repeatedInAreaCount: readDebugLaneSummary(cwd).doneCount },
+					});
 					const updated = completeDebugItem(cwd, itemId, p.evidence ? String(p.evidence) : undefined);
+					const statusLine = finalization.allowed
+						? `Finalization gate allowed as ${finalization.recommendedStatus || "done"}.`
+						: `Finalization gate blocked completion; advisory only in ${mode === "dry-run" ? "dry-run" : "strict"} mode.`;
 					return {
 						content: [
 							{ type: "text", text: `Completed ${updated.id}` },
-							{ type: "text", text: JSON.stringify({ item: updated }) },
+							{ type: "text", text: statusLine },
+							...(finalization.blockers.length ? [{ type: "text", text: `Blockers: ${finalization.blockers.join("; ")}` }] : []),
+							...(finalization.warnings.length ? [{ type: "text", text: `Warnings: ${finalization.warnings.join("; ")}` }] : []),
+							{ type: "text", text: JSON.stringify({ item: updated, finalizationGate: finalization }) },
 						],
 					};
 				}
 				const itemId = String(p.itemId || "").trim();
 				if (!itemId) return { isError: true, content: [{ type: "text", text: "Missing itemId" }] };
+				const gate = gateSprintEntryPoint(cwd, p.planningRoomId, "sprint");
+				if (!gate.allowed) return sprintGateErrorResult(gate.details);
 				const title = String(p.title || "").trim();
 				const result = promoteDebugItem(cwd, itemId, title ? { title } : undefined);
 				return {
@@ -299,12 +341,19 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			"Use sprint_update_task to move task state and attach concise evidence notes.",
 			"This tool will refuse to update a taskId that does not match the session-bound task. Sessions pinned to a single task cannot accidentally write to a different task.",
 		],
-		parameters: Type.Object({ taskId: Type.String(), status: Type.Optional(Type.String()), note: Type.Optional(Type.String()) }),
+		parameters: Type.Object({
+			taskId: Type.String(),
+			status: Type.Optional(Type.String()),
+			note: Type.Optional(Type.String()),
+			finalizationGateMode: Type.Optional(Type.Union([Type.Literal("strict"), Type.Literal("dry-run")])) ,
+			finalizationGatePlanId: Type.Optional(Type.String()),
+		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const p = params as any;
 			const taskId = String(p.taskId || "").trim();
 			if (!taskId) return { isError: true, content: [{ type: "text", text: "Missing taskId" }] };
 			const status = p.status ? String(p.status) : "in_progress";
+			const mode = p.finalizationGateMode === "dry-run" ? "dry-run" : "strict";
 			const sessionManager = (ctx as any).sessionManager;
 			const binding = readSessionBinding(sessionManager);
 			if (binding && binding.taskId !== taskId) {
@@ -316,15 +365,49 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 					}],
 				};
 			}
+			let finalizationGate;
+			if (isFinalizationStatus(status)) {
+				finalizationGate = evaluateSprintTaskFinalizationFromDisk({
+					cwd: ctx.cwd,
+					taskId,
+					requestedStatus: status,
+					mode,
+					finalNote: p.note ? String(p.note) : undefined,
+					finalEvidence: p.note ? String(p.note) : undefined,
+					sessionManager,
+					planId: p.finalizationGatePlanId ? String(p.finalizationGatePlanId) : undefined,
+				});
+				if (!finalizationGate.allowed && mode === "dry-run") {
+					// dry-run never blocks the task update.
+				} else if (!finalizationGate.allowed && mode === "strict") {
+					return {
+						isError: true,
+						details: { finalizationGate },
+						content: [
+							{ type: "text", text: finalizationGate.summary },
+							{ type: "text", text: `Blockers: ${finalizationGate.blockers.join("; ") || "none"}` },
+							...(finalizationGate.warnings.length ? [{ type: "text", text: `Warnings: ${finalizationGate.warnings.join("; ")}` }] : []),
+							{ type: "text", text: `recommendedStatus=${finalizationGate.recommendedStatus} recommendation=${finalizationGate.recommendation}` },
+						],
+					};
+				}
+			}
 			const file = updateTaskStatus(ctx.cwd, taskId, status, p.note ? String(p.note) : undefined, sessionManager, binding?.taskPath);
-			return { content: [{ type: "text", text: `Updated ${path.basename(file)}` }] };
+			const content = [{ type: "text", text: `Updated ${path.basename(file)}` }];
+			if (finalizationGate) {
+				content.push({ type: "text", text: finalizationGate.summary });
+				content.push({ type: "text", text: `recommendedStatus=${finalizationGate.recommendedStatus} recommendation=${finalizationGate.recommendation}` });
+				if (finalizationGate.blockers.length) content.push({ type: "text", text: `Blockers: ${finalizationGate.blockers.join("; ")}` });
+				if (finalizationGate.warnings.length) content.push({ type: "text", text: `Warnings: ${finalizationGate.warnings.join("; ")}` });
+			}
+			return { content, details: finalizationGate ? { finalizationGate } : undefined };
 		},
 	});
 
 	pi.registerTool({
 		name: "sprint_log_progress",
 		label: "Sprint: Log Progress",
-		description: "Append message to active sprint PROGRESS.md. Uses the session-bound sprint when this session is pinned to a task.",
+		description: "Append message to active sprint PROGRESS.md; uses the session-bound sprint when this session is pinned to a task.",
 		promptSnippet: "Log notable sprint progress milestones.",
 		promptGuidelines: ["Use sprint_log_progress after meaningful changes, checks, or decisions."],
 		parameters: Type.Object({ message: Type.String() }),
@@ -339,27 +422,27 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "sprint_start_task_session",
 		label: "Sprint: Start Task Session",
-		description: "Start a dedicated sprint task session for the given TASK-ID with --auto-run. When ctx.newSession is available, the session is created automatically and the kickoff is sent. When automatic session creation is unavailable, the tool falls back to placing the /sprint task start command in the editor for the user to run.",
+		description: "Start a sprint task session for TASK-ID with --auto-run. Uses ctx.newSession when available; falls back to placing the /sprint task start command in the editor. This command is gated by the PRD-first planning state for non-trivial work.",
 		promptSnippet: "Start a sprint task session automatically when possible.",
 		promptGuidelines: [
-			"Use sprint_start_task_session to start a task session automatically when ctx.newSession is available. The tool creates the session and sends the auto-run kickoff without requiring a slash command.",
-			"When automatic session creation is unavailable, the tool falls back to placing the /sprint task start command in the editor. In that case, the user must run the command to switch sessions.",
+			"Use sprint_start_task_session to auto-start a task session; if ctx.newSession is unavailable it places the /sprint task start command in the editor for the user to run.",
 			"Do not call this when the current session is already pinned to the same task.",
+			"For non-trivial work the gate requires prd_started + prd_ready_for_sprint + sprint_confirmed; pass `planningRoomId` or set the active room pointer first.",
 		],
-		parameters: Type.Object({ taskId: Type.String({ description: "TASK-ID (e.g. TASK-001) to bind the new session to" }) }),
+		parameters: Type.Object({
+			taskId: Type.String({ description: "TASK-ID (e.g. TASK-001) to bind the new session to" }),
+			planningRoomId: Type.Optional(Type.String({ description: "Optional planning room id. Falls back to .pi/workflow-runs/current.json." })),
+		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const taskId = String((params as any).taskId || "").trim();
 			if (!taskId) return { isError: true, content: [{ type: "text", text: "Missing taskId" }] };
+			const gate = gateSprintEntryPoint(ctx.cwd, (params as any).planningRoomId, "sprint");
+			if (!gate.allowed) return sprintGateErrorResult(gate.details);
 			const newSession = (ctx as any).newSession;
 			if (typeof newSession === "function") {
 				try {
 					const result = await startSprintTaskSession(ctx, taskId, { autoRun: true });
-					return {
-						content: [{
-							type: "text",
-							text: result.message,
-						}],
-					};
+					return { content: [{ type: "text", text: result.message }] };
 				} catch (error) {
 					return {
 						isError: true,
@@ -367,7 +450,6 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 					};
 				}
 			}
-
 			// Fallback: automatic session start unavailable; prepare slash command in editor
 			const command = `/sprint task start ${taskId} --auto-run`;
 			const ui = (ctx as any).ui;
@@ -399,7 +481,7 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "sprint_get_session_binding",
 		label: "Sprint: Get Session Binding",
-		description: "Read the session-pinned sprint/task binding for the current Pi session, if any. Returns null binding when this session is not bound to a specific task.",
+		description: "Read the session-pinned sprint/task binding for the current Pi session, if any.",
 		promptSnippet: "Check whether the current session is pinned to a sprint task.",
 		promptGuidelines: [
 			"Use sprint_get_session_binding to confirm which task this session is dedicated to before doing task-scoped work.",
