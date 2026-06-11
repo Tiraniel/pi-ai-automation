@@ -9,6 +9,7 @@ import type { WorkflowArchitecturePlan } from "./architecture/types";
 import { DELEGATE_MANIFEST_DIR } from "./delegate/constants";
 import type { ReviewerMemo } from "./delegate/reviewer-roles";
 import type { DelegateCompletionSource } from "./types";
+import { runAndPersistWorkflowQualityAudit } from "./quality-audit-tools";
 import { evaluateFinalizationGate, isFinalizationStatus, type FinalizationGateResult, type FinalizationMode } from "./finalization-gate";
 
 interface DoneSidecar {
@@ -39,7 +40,6 @@ interface PaneManifest {
 		summary?: string;
 	};
 }
-
 function readJsonFile<T>(filePath: string): T | undefined {
 	try {
 		return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
@@ -47,7 +47,6 @@ function readJsonFile<T>(filePath: string): T | undefined {
 		return undefined;
 	}
 }
-
 function parseDoneSidecar(filePath: string): DoneSidecar | undefined {
 	const value = readJsonFile<Record<string, unknown>>(filePath);
 	if (!value || typeof value !== "object") return undefined;
@@ -76,11 +75,9 @@ const WORKFLOW_RUNS_DIR_NAME = "workflow-runs";
 const REVIEWER_MEMO_DIR_NAME = "reviewer-memos";
 const REVIEWER_MEMO_FILE_EXT = ".md";
 const FORBIDDEN_MEMO_PATH_CHARS = /[\\/:*?"<>|\s]+/g;
-
 function workflowRunsRoot(cwd: string): string {
 	return path.join(cwd, ".pi", WORKFLOW_RUNS_DIR_NAME);
 }
-
 function sanitizeReviewerMemoSegment(value: string | undefined | null, fallback: string): string {
 	if (typeof value !== "string") return fallback;
 	const trimmed = value.trim();
@@ -113,7 +110,6 @@ interface EvaluateSprintFinalizationInput {
 interface EvaluateDebugFinalizationInput {
 	itemId: string;	requestedStatus: string;	mode?: FinalizationMode;	finalNote?: string;	finalEvidence?: string;	debugChain?: { repeatedInAreaCount?: number; priorFailureCount?: number };
 }
-
 type ReviewPhase = "phaseA" | "phaseB";
 
 interface DelegateHistory {
@@ -465,6 +461,8 @@ export function evaluateSprintTaskFinalizationFromDisk(input: EvaluateSprintFina
 	const manifests = readMatchingManifests(input.cwd, planId);
 	const { history, source, latestEvidence } = mergeManifestHistory(manifests);
 	const reviewerMemo = readLatestReviewerMemo(input.cwd, planId, resolved.plan);
+	// Phase B: advisory workflow quality audit linkage. The audit surfaces historical/recent workflow risk (failed delegates, auto_exit, debug chains, prompt-only/static-only wording, oversized files) and is advisory by design — it must never turn otherwise-valid strict finalization into a hard blocker. The helper writes a task-filtered JSON summary under `.pi/workflow-runs/quality-audit/` for downstream citation and returns `undefined` if the audit cannot run; the gate then records `qualityAudit.error: "audit_not_run"`.
+	const qualityAuditSummary = runAndPersistWorkflowQualityAudit(input.cwd, targetTaskId);
 	const normalized = {
 		mode: normalizeMode(input.mode),
 		requestedStatus,
@@ -476,6 +474,7 @@ export function evaluateSprintTaskFinalizationFromDisk(input: EvaluateSprintFina
 		finalNote: trimText(input.finalNote),
 		finalEvidence: trimText(input.finalEvidence),
 		reviewerMemo,
+		qualityAuditSummary,
 	};
 	return evaluateFinalizationGate(normalized);
 }

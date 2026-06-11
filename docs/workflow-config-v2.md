@@ -394,3 +394,40 @@ Brain architecture plans carry an optional per-criterion `acceptanceEvidenceMatr
 - Calls `resolveWorkflow` with whatever catalogs loaded successfully so
   downstream resolver diagnostics remain visible even when some catalogs fail.
 - Returns `{ workflow?, catalogs?, resolved?, diagnostics }`.
+
+## Workflow quality audit (advisory finalization linkage)
+
+Brain exposes a deterministic workflow-quality audit so it can see
+historical/session risk before finalizing future tasks. The audit scans
+local-only artifacts (no network, no external LLM):
+
+- Delegate manifests and sidecars under `.pi/workflow-runs/delegates/`
+  for failed coder runs, missing done records, `auto_exit` /
+  `process_exit` completions, and repeated reviewer retries.
+- Sprint task files, debug items, and `PROGRESS.md` notes under
+  `.sprints/` for prompt-only completion language, static-only
+  interactive validation, repeated-same-area debug chains after a
+  `done` task, and known historical risky tasks.
+- Optional file-size metrics over `extensions/**` and `scripts/**` for
+  oversized source/smoke files (`workflow_cfg_large_file`,
+  `oversized_file`).
+
+Public tool: `workflow_quality_audit_report`. Companion tools:
+`workflow_run_quality_audit`, `workflow_render_quality_audit_report`,
+`workflow_build_quality_audit_summary`. Implementation is split across
+`extensions/workflow/quality-audit*.ts` and covered by
+`scripts/task-009-workflow-quality-audit-smokes.ts` (with fixtures in
+`task-009-workflow-quality-audit-fixtures.ts`).
+
+Finalization integration:
+
+- `evaluateSprintTaskFinalizationFromDisk` runs the audit during
+  finalization and persists a task-filtered summary to
+  `.pi/workflow-runs/quality-audit/<TASK-ID>-quality-audit-summary.json`.
+- `evaluateFinalizationGate` exposes the audit as
+  `details.qualityAudit` (summary, artifact link/path, finding counts,
+  by-code, by-severity, first finding messages) and adds advisory
+  warnings.
+- Audit findings produce warnings/details only. They are advisory by
+  design and never create hard blockers on their own; existing strict
+  blockers (plan/memo/coder evidence) are preserved.

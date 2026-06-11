@@ -10,6 +10,7 @@ import {
 	type CoderCompletionEvidence,
 	type CoderCriterionCoverage,
 } from "./delegate/completion-evidence";
+import type { WorkflowQualityAuditFinalizationSummary, WorkflowQualityAuditSeverity } from "./quality-audit-types";
 export type FinalizationMode = "strict" | "dry-run";
 export type FinalizationTarget =
 	| { kind: "sprint-task"; taskId: string; planId?: string }
@@ -19,9 +20,9 @@ export interface FinalizationGateDebugChain {
 	repeatedInAreaCount?: number;
 	priorFailureCount?: number;
 }
-export interface FinalizationGateInput { mode?: FinalizationMode; requestedStatus: string; target: FinalizationTarget; plan?: WorkflowArchitecturePlan; coderEvidence?: unknown; coderCompletionSource?: DelegateCompletionSource; coderEvidenceSummary?: string; reviewerMemo?: ReviewerMemo; finalNote?: string; finalEvidence?: string; debugChain?: FinalizationGateDebugChain; }
+export interface FinalizationGateInput { mode?: FinalizationMode; requestedStatus: string; target: FinalizationTarget; plan?: WorkflowArchitecturePlan; coderEvidence?: unknown; coderCompletionSource?: DelegateCompletionSource; coderEvidenceSummary?: string; reviewerMemo?: ReviewerMemo; finalNote?: string; finalEvidence?: string; debugChain?: FinalizationGateDebugChain; qualityAuditSummary?: WorkflowQualityAuditFinalizationSummary; }
 export type FinalizationRecommendedStatus = "done" | "provisional_done" | "prompt_only_mitigation";
-export interface FinalizationGateDetails { isFinalStatus: boolean; finalStatusAlias: string; recommendedStatus: FinalizationRecommendedStatus; matrix: { planStatus: "missing" | "ready" | "draft" | "active" | "unknown"; isMatrixCoverageOk: boolean; coverageIssues: string[]; promptOnlyCriteria: string[] }; coder: { present: boolean; ok: boolean; rejectionCodes: string[]; missingCriteria: string[]; source: string; evidenceRows: number; history: { autoExitObserved: boolean; processExitObserved: boolean; missingSidecarObserved: boolean; freeFormOnlyObserved: boolean; retries: number; warnings: string[]; failedAttempts: number } }; reviewer: { present: boolean; approved: boolean; missingRequiredRoles: string[]; missingRecommendations: boolean; promptOnlyCaveats: string[] }; debug: { repeatedSameAreaCount: number; priorFailureCount: number; needsEscalation: boolean; rootCauseMentioned: boolean } }
+export interface FinalizationGateDetails { isFinalStatus: boolean; finalStatusAlias: string; recommendedStatus: FinalizationRecommendedStatus; matrix: { planStatus: "missing" | "ready" | "draft" | "active" | "unknown"; isMatrixCoverageOk: boolean; coverageIssues: string[]; promptOnlyCriteria: string[] }; coder: { present: boolean; ok: boolean; rejectionCodes: string[]; missingCriteria: string[]; source: string; evidenceRows: number; history: { autoExitObserved: boolean; processExitObserved: boolean; missingSidecarObserved: boolean; freeFormOnlyObserved: boolean; retries: number; warnings: string[]; failedAttempts: number } }; reviewer: { present: boolean; approved: boolean; missingRequiredRoles: string[]; missingRecommendations: boolean; promptOnlyCaveats: string[] }; debug: { repeatedSameAreaCount: number; priorFailureCount: number; needsEscalation: boolean; rootCauseMentioned: boolean }; qualityAudit: { present: boolean; summary?: string; artifactLink?: string; artifactPath?: string; totalFindings: number; criticalOrHighCount: number; warningOrHighCount: number; byCode: Record<string, number>; bySeverity: Record<WorkflowQualityAuditSeverity, number>; reportGeneratedAt?: string; firstFindingMessages: string[]; taskId?: string; error?: string; } }
 export interface FinalizationGateResult { mode: FinalizationMode; ok: boolean; allowed: boolean; strictBlocking: boolean; requestedStatus: string; target: FinalizationTarget; summary: string; codes: string[]; blockers: string[]; warnings: string[]; isFinalStatus: boolean; recommendation: string; recommendedStatus: FinalizationRecommendedStatus; details: FinalizationGateDetails; }
 const FULL_FINAL_STATUSES = new Set(["done", "completed", "complete", "closed", "close", "resolved", "resolved-with-root-cause", "resolved_with_root_cause", "finalized", "final"]);
 const PROMPT_ONLY_MITIGATION_STATUSES = new Set(["prompt_only_mitigation", "prompt-only-mitigation"]);
@@ -102,6 +103,14 @@ function promptOnlyRows(plan: WorkflowArchitecturePlan | undefined): string[] {
 }
 function buildBaseDetails(input: FinalizationGateInput, finalStatus: boolean, requestedStatus: string): FinalizationGateDetails {
 	const normalizedStatus = normalizeStatus(requestedStatus);
+	const emptySeverityCounts: Record<WorkflowQualityAuditSeverity, number> = {
+		critical: 0,
+		high: 0,
+		medium: 0,
+		low: 0,
+		warning: 0,
+		info: 0,
+	};
 	return {
 		isFinalStatus: finalStatus,
 		finalStatusAlias: normalizedStatus,
@@ -132,6 +141,15 @@ function buildBaseDetails(input: FinalizationGateInput, finalStatus: boolean, re
 			priorFailureCount: toPositiveInteger(input.debugChain?.priorFailureCount),
 			needsEscalation: false,
 			rootCauseMentioned: false,
+		},
+		qualityAudit: {
+			present: false,
+			totalFindings: 0,
+			criticalOrHighCount: 0,
+			warningOrHighCount: 0,
+			byCode: {},
+			bySeverity: emptySeverityCounts,
+			firstFindingMessages: [],
 		},
 	};
 }
@@ -283,6 +301,42 @@ function evaluateSprint(
 	if (disclosureIssues.length > 0 && !containsAllDisclosures(noteText, disclosureIssues)) {
 		blockers.push("Delegate history requires explicit disclosure of failures/retries/sidecar issues in final note/evidence.");
 		codes.push("history_disclosure_missing");
+	}
+	// Workflow quality audit summary: ALWAYS advisory. The audit surfaces
+	// historical/recent workflow risk; it is consumed/linked from
+	// `evaluateSprintTaskFinalizationFromDisk` so Brain can cite the
+	// artifactLink during finalization, but it must never block
+	// otherwise-valid strict finalization on its own.
+	if (input.qualityAuditSummary) {
+		const audit = input.qualityAuditSummary;
+		details.qualityAudit = {
+			present: true,
+			summary: audit.summary,
+			artifactLink: audit.artifactLink,
+			artifactPath: audit.artifactPath,
+			totalFindings: audit.totalFindings,
+			criticalOrHighCount: audit.criticalOrHighCount,
+			warningOrHighCount: audit.warningOrHighCount,
+			byCode: { ...audit.byCode },
+			bySeverity: { ...audit.bySeverity },
+			reportGeneratedAt: audit.reportGeneratedAt,
+			firstFindingMessages: [...audit.firstFindingMessages],
+			taskId: audit.taskId,
+		};
+		if (audit.totalFindings > 0) {
+			warnings.push(`Workflow quality audit surfaced ${audit.totalFindings} finding(s) (${audit.criticalOrHighCount} critical/high); see ${audit.artifactLink} for details.`);
+			codes.push("quality_audit_findings");
+		} else {
+			warnings.push(`Workflow quality audit clean; see ${audit.artifactLink}.`);
+			codes.push("quality_audit_clean");
+		}
+	} else if (sprintTarget.planId || sprintTarget.taskId) {
+		// The disk adapter is expected to populate qualityAuditSummary for
+		// sprint tasks. If it is missing, surface an advisory signal in
+		// details without creating a blocker.
+		details.qualityAudit.error = "audit_not_run";
+		warnings.push("Workflow quality audit could not run; finalization is allowed but may miss historical workflow risk context.");
+		codes.push("quality_audit_unavailable");
 	}
 	const matrixCoverageText = matrixValidation.ok ? "" : matrixValidation.issues.map((i) => `${i.code}: ${i.message}`).join("; ");
 	const hasWarnPromptOnly = warnings.some((w) => w.includes("Prompt-only") || w.includes("prompt-only"));

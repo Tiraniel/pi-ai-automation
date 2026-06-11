@@ -595,6 +595,49 @@ Default session-per-task flow:
 
 See [`examples/sprints-config.json`](./examples/sprints-config.json).
 
+## Workflow quality audit
+
+Brain exposes a deterministic workflow-quality audit that scans local
+workflow-run and sprint artifacts (no network, no external LLM) and
+surfaces evidence-backed risk signals before finalization: failed coder
+runs, missing done sidecars, `auto_exit` / `process_exit` completions,
+repeated reviewer retries, debug chains after a `done` task, prompt-only
+completion language, static-only validation for interactive behavior, and
+oversized source/smoke files.
+
+Public tool entry point:
+
+- `workflow_quality_audit_report` — runs the audit, persists a
+  task-filtered finalization summary JSON under
+  `.pi/workflow-runs/quality-audit/`, and returns the rendered Markdown
+  plus structured details (`findingCount`, `byCode`, `artifactPath`,
+  repo-relative `artifactLink`, severity breakdown, first finding
+  messages). Optional params: `cwd`, `taskId`, `maxDelegateManifests`,
+  `maxTaskFiles`, `maxProgressFiles`, `maxDebugItems`, `maxMetricFiles`,
+  `maxMetricLines`, `metricFileDirs`, `metricExtensions`, `maxAgeDays`.
+- Companion tools registered alongside it: `workflow_run_quality_audit`
+  (in-memory scan), `workflow_render_quality_audit_report` (render only),
+  and `workflow_build_quality_audit_summary` (build a finalization
+  summary payload).
+
+Sprint finalization integration:
+
+- `evaluateSprintTaskFinalizationFromDisk` runs the audit during
+  finalization and writes the task-filtered summary to
+  `.pi/workflow-runs/quality-audit/<TASK-ID>-quality-audit-summary.json`.
+- `evaluateFinalizationGate` exposes the audit as
+  `details.qualityAudit` (summary, artifact link/path, finding counts,
+  by-code, by-severity) and adds advisory warnings; audit findings
+  produce warnings/details, never hard blockers. Existing strict
+  blockers (plan/memo/coder evidence) are preserved.
+- The audit is advisory by design; historical/recent workflow risk is
+  surfaced for citation, not used to refuse otherwise-valid finalization.
+
+See `extensions/workflow/quality-audit.ts`, the split across
+`quality-audit-{types,scan,scan-helpers,render,tools}.ts`, and the
+smoke/fixture pair at
+`scripts/task-009-workflow-quality-audit-{smokes,fixtures}.ts`.
+
 ## pi-ai-automation-memory (repo context extension)
 
 This package also includes a global repo-memory extension that gives every Brain/agent turn fast, bounded repo context via a deterministic SQLite-backed index.
