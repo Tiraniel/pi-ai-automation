@@ -86,7 +86,8 @@ function formatManifestLine(manifest: PaneManifest): string {
 	const ageText = typeof activityAgeMs === "number" ? ` age=${Math.max(0, Math.floor(activityAgeMs / 1000))}s${activityAgeMs > DELEGATE_PANE_ACTIVITY_STALE_MS ? " STALE" : ""}` : "";
 	const activity = `${activityText}${ageText}`;
 	const completionText = `completion=${completion}${completionSource}${completionWarn}${completionStop}`;
-	return `${manifest.runId} ${manifest.state ?? "running"} ${manifest.agent || "agent"} ${manifest.exitCode !== undefined ? `exit=${manifest.exitCode}` : ""} ${manifest.tabTitle ?? ""} @ ${updatedText}${room}\n  task: ${preview}\n  surface: ${manifest.surface || "-"} activity: ${activity} ${completionText}`;
+	const placement = `surface: ${manifest.surface || "-"} workspace: ${manifest.workspace || "-"} pane: ${manifest.pane || "-"}`;
+	return `${manifest.runId} ${manifest.state ?? "running"} ${manifest.agent || "agent"} ${manifest.exitCode !== undefined ? `exit=${manifest.exitCode}` : ""} ${manifest.tabTitle ?? ""} @ ${updatedText}${room}\n  task: ${preview}\n  ${placement} activity: ${activity} ${completionText}`;
 }
 
 function registerDelegateStatusTool(pi: ExtensionAPI): void {

@@ -225,7 +225,7 @@ Valid values: `headless`, `pane`, `auto`. The env var takes precedence over conf
    - `session.jsonl` — child Pi session file written by `--session`
    - `done.json` — sidecar written by the child when it calls explicit completion tool, or by child auto-exit fallback on normal completion
    - `run.sh` — generated shell script that launches the child Pi session
-2. Parent opens a new cmux terminal surface in the **same workspace/pane** (`cmux new-surface --type terminal`, scoped by `cmux identify --json` context). If the delegate has `room` context (or a task id like `TASK-015`), the first surface is moved to a **new cmux workspace** (`move-tab-to-new-workspace`) named after the room/task id; subsequent delegates with the same group key reuse that workspace. Each agent gets a tab titled `{group}-{role}`, e.g. `auth-refactor-backend` or `TASK-015-coder`.
+2. Parent resolves a durable placement group (`room:<roomId>`, `task:<TASK-ID>`, or a parent-session fallback), takes a per-group file lock under `.pi/workflow-runs/delegate-layout/`, and allocates the cmux surface from the persisted placement registry. The first delegate in a group creates a dedicated cmux pane/workspace when cmux supports `move-tab-to-new-workspace`; later delegates reuse the stored pane/workspace and open their own surface/tab inside it. Each agent gets a tab titled `{group}-{role}`, e.g. `auth-refactor-backend` or `TASK-015-coder`.
 3. Parent tails the session JSONL for finalized messages/tool calls (not streaming events) and polls `done.json` for completion.
 4. The child gets a pane-specific instruction in its system prompt: after producing the concise final handoff, **MUST call `sub_agent_done`** as the final action to return control to Brain. Final text alone is insufficient.
 5. On abort, parent sends Escape to the pane.
@@ -236,6 +236,7 @@ Valid values: `headless`, `pane`, `auto`. The env var takes precedence over conf
 - **cmux must be running** and `CMUX_SOCKET_PATH` must be set (or discoverable). If cmux is unavailable and mode is `pane`, the delegate returns a clear failed result. `auto` silently falls back to headless.
 - **API keys must be available to the pane shell** via its own environment, Pi auth, or `~/.pi/.env`. The generated pane script only exports workflow-specific env vars and does not copy arbitrary parent secrets into `/tmp`.
 - **Surfaces auto-close by default** after the child finishes. Set `delegatePaneAutoClose: false` to keep them open for inspection.
+- **Pane placement is durable and lock-protected** in `.pi/workflow-runs/delegate-layout/placement.json`, so parallel delegates from the same repo converge on one cmux group per room/task. If a stored pane ref is stale, the next delegate marks the old refs stale and creates a fresh group while preserving historical run records.
 - **Initial support is cmux-only.** tmux/zellij are not implemented unless very cheap to add later.
 - **Reviewer swarm** works with pane mode too — each reviewer target may open its own pane when cmux is available.
 - `done.json` may be written either by explicit `sub_agent_done` / `workflow_delegate_done` (preferred) **or** by a child-side auto-exit fallback after a normal `agent_end` when the child forgot the tool call.

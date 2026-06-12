@@ -30,10 +30,11 @@ import {
 } from "./child";
 import {
 	closeCmuxSurface,
-	createCmuxDelegateTab,
+	cmuxDelegateAdapter,
 	deriveGroupKeyAndTitle,
 	getPaneShellReadyDelayMs,
 	buildTabTitle,
+	isParentCmuxSurface,
 	sendCmuxCommand,
 	sendCmuxShellCommand,
 	shellEscape,
@@ -62,6 +63,11 @@ import {
 } from "./pane-status";
 import { createDelegateEventState, processSessionLine } from "./state";
 import { resolvePaneCompletionOutcome } from "./pane-completion";
+import {
+	allocateDelegatePlacement,
+	markDelegatePlacementSurfaceState,
+	type DelegateSurfaceState,
+} from "./placement";
 
 function summarizeTask(task: string): string {
 	return task.replace(/\s+/g, " ").trim().slice(0, 200) || "(no task)";
@@ -108,6 +114,8 @@ export async function runDelegateAgentPane(
 	let tmpPromptPath: string | null = null;
 	const state = createDelegateEventState();
 	let surfaceId: string | null = null;
+	let workspaceId: string | undefined;
+	let paneId: string | undefined;
 	let surfaceClosed = false;
 	let finalDoneData: DoneSidecar | undefined;
 	let completionOutcome: ReturnType<typeof resolvePaneCompletionOutcome> | undefined;
@@ -117,6 +125,31 @@ export async function runDelegateAgentPane(
 
 	const runRoot = getWorkflowRunsRoot(ctx.cwd);
 	const manifestPath = manifestPathFromRunRoot(runRoot, runId);
+	const { groupKey, groupTitle } = deriveGroupKeyAndTitle(roomContext, task);
+	const tabTitle = buildTabTitle(groupTitle, roomContext, agent);
+	const parentSurfaceId = process.env.CMUX_SURFACE_ID?.trim() || cmuxDelegateAdapter.identify()?.surface;
+	const markSurfaceState = async (nextState: DelegateSurfaceState): Promise<void> => {
+		try {
+			await markDelegatePlacementSurfaceState(ctx.cwd, groupKey, runId, nextState);
+		} catch {
+			// best effort; manifest remains the primary run-status artifact.
+		}
+	};
+	const closeSurfaceAndMark = async (): Promise<void> => {
+		if (!surfaceId || surfaceClosed) return;
+		if (isParentCmuxSurface(surfaceId, parentSurfaceId)) {
+			state.stderr = appendCapped(
+				state.stderr,
+				`\nskipped cmux auto-close because delegate surface matched parent Brain surface: ${surfaceId}`,
+				MAX_STDERR_BYTES,
+			);
+			await markSurfaceState("failed");
+			return;
+		}
+		closeCmuxSurface(surfaceId);
+		surfaceClosed = true;
+		await markSurfaceState("closed");
+	};
 
 	try {
 		ensureDir(path.dirname(manifestPath));
@@ -157,8 +190,6 @@ export async function runDelegateAgentPane(
 	const scriptPath = path.join(runDir, "run.sh");
 	await fs.promises.writeFile(scriptPath, scriptLines.join("\n") + "\n", { mode: 0o700 });
 
-	const { groupKey, groupTitle } = deriveGroupKeyAndTitle(roomContext, task);
-	const tabTitle = buildTabTitle(groupTitle, roomContext, agent);
 	manifest = buildManifest({
 		runId,
 		cwd,
@@ -179,7 +210,20 @@ export async function runDelegateAgentPane(
 	await writeActivitySidecar(activityFile, makeActivityPayload(runId, "starting", "created"));
 	await writeManifest(manifestPath, manifest);
 
-	surfaceId = createCmuxDelegateTab(tabTitle, groupKey);
+	const placement = await allocateDelegatePlacement(
+		{
+			cwd: ctx.cwd,
+			runId,
+			agent,
+			task,
+			roomContext,
+			groupKey,
+			groupTitle,
+			tabTitle,
+		},
+		cmuxDelegateAdapter,
+	);
+	surfaceId = placement?.surface ?? null;
 	if (!surfaceId) {
 		await removeTempPrompt(tmpDir, tmpPromptPath);
 		try { await fs.promises.rm(runDir, { recursive: true }); } catch { /* ignore */ }
@@ -213,8 +257,18 @@ export async function runDelegateAgentPane(
 		};
 	}
 
-	await writeManifest(manifestPath, { ...manifest, surface: surfaceId, updatedAt: new Date().toISOString() });
+	workspaceId = placement?.workspace;
+	paneId = placement?.pane;
+	await writeManifest(manifestPath, {
+		...manifest,
+		surface: surfaceId,
+		workspace: workspaceId,
+		pane: paneId,
+		updatedAt: new Date().toISOString(),
+	});
 	manifest.surface = surfaceId;
+	manifest.workspace = workspaceId;
+	manifest.pane = paneId;
 
 	// Give the shell a moment to become ready before dispatching the first command.
 	const shellReadyDelay = getPaneShellReadyDelayMs();
@@ -229,8 +283,9 @@ export async function runDelegateAgentPane(
 	if (!sendResult.ok) {
 		state.stderr = appendCapped(state.stderr, `cmux send failed: ${sendResult.stderr}`, MAX_STDERR_BYTES);
 		if (autoClose && !surfaceClosed) {
-			closeCmuxSurface(surfaceId);
-			surfaceClosed = true;
+			await closeSurfaceAndMark();
+		} else {
+			await markSurfaceState("failed");
 		}
 		await removeTempPrompt(tmpDir, tmpPromptPath);
 		manifest.state = "failed";
@@ -341,8 +396,7 @@ export async function runDelegateAgentPane(
 				);
 				manifest.state = "failed";
 				await writeManifest(manifestPath, { ...manifest, updatedAt: new Date().toISOString() });
-				closeCmuxSurface(surfaceId);
-				surfaceClosed = true;
+				await closeSurfaceAndMark();
 				return 1;
 			}
 
@@ -423,6 +477,7 @@ export async function runDelegateAgentPane(
 		manifest.exitCode = exitCode;
 		manifest.updatedAt = new Date().toISOString();
 		await writeManifest(manifestPath, manifest);
+		await markSurfaceState(manifest.state);
 		const completionFailed = completionOutcome?.status === "failed";
 		const finalStatus = completionFailed
 			? state.aborted || state.stopReason === "aborted"
@@ -462,8 +517,7 @@ export async function runDelegateAgentPane(
 	} finally {
 		await removeTempPrompt(tmpDir, tmpPromptPath);
 		if (autoClose && !surfaceClosed && surfaceId) {
-			closeCmuxSurface(surfaceId);
-			surfaceClosed = true;
+			await closeSurfaceAndMark();
 		}
 		if (manifestPath) {
 			manifest.updatedAt = new Date().toISOString();

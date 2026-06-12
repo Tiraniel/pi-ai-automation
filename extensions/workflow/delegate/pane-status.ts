@@ -50,6 +50,8 @@ export interface PaneManifest {
 	tabTitle: string;
 	roomContext?: Pick<ResolvedRoomContext, "roomId" | "agentId" | "role">;
 	surface?: string;
+	workspace?: string;
+	pane?: string;
 	sessionFile: string;
 	stderrFile: string;
 	doneFile: string;
