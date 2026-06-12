@@ -431,3 +431,67 @@ Finalization integration:
 - Audit findings produce warnings/details only. They are advisory by
   design and never create hard blockers on their own; existing strict
   blockers (plan/memo/coder evidence) are preserved.
+
+## Three-lane automation and AFK supervisor
+
+The sprint subsystem exposes a three-lane automation model with a
+local-only AFK (away-from-keyboard) supervisor MVP. This section is
+the gate-preservation companion to `README.md` "Three-lane automation
+flow and AFK supervisor"; it is intentionally short and points at the
+shared contracts.
+
+### Lanes and tools
+
+- Lane vocabulary: exactly `full-sprint | hotfix | debug`. Hotfix kind
+  vocabulary: exactly `code-changing | text-evidence-only`. Debug
+  next-lane vocabulary: exactly `hotfix | full-sprint |
+  no-code/report-only`. Vocabulary is enforced by the
+  `AutomationLane` / `HotfixKind` / `DebugNextLane` enums in
+  `extensions/sprint/lane-policy.ts`.
+- AI tools: `sprint_classify_lane` (policy classifier) and
+  `sprint_ship` (AFK supervisor) registered from
+  `extensions/sprint/ship-tools.ts`. Slash command:
+  `/sprint task ship <TASK-ID> --afk [--lane <lane>]
+  [--hotfix-kind <kind>] [--run-id <id>] [--scope <text>]
+  [--retry-budget <n>]`.
+- Durables: state.json + REPORT.md at
+  `.pi/workflow-runs/afk-ship/<runId>/`; the path is always
+  repo-relative and canonical.
+
+### Gate preservation
+
+- `full-sprint` lane start calls
+  `gateSprintEntryPoint(cwd, roomId, 'implementation')` and **does
+  not** create AFK state when the gate denies. The existing
+  `delegate_to_coder` PRD/architecture/implementation gate and the
+  `delegate_to_reviewer` review path remain the only implementation
+  path for non-trivial work.
+- `hotfix` and `debug` starts are lightweight and not PRD-gated;
+  code-changing hotfix reviewer requirement is enforced by the Phase A
+  `defaultReviewerRequiredFor` contract (durable state
+  `reviewerRequired=true`). Text-evidence-only is reviewer-free only
+  when concrete `textOnlyConcreteRefs` + `textOnlyValidationEvidence`
+  are present and the changed refs do not look like code/control-flow
+  paths (defensive backstop: `.ts`/`.tsx`/`extensions/`/`src/`/...
+  paths are always refused, even when `textOnlyClass=prompt-template`).
+- `delivery_complete` requires finalization summary/result AND
+  workflow quality audit summary/artifact. A reviewer-required lane
+  additionally requires an `approved` reviewer outcome; a
+  `changes-requested` outcome blocks delivery.
+
+### Default-deny remote actions
+
+- AFK supervisor default `ShipPermissions` deny `push`, `pr`, `deploy`,
+  `destructive`, and `credentialed`. The `remote_action_requested`
+  engine event with a default-deny permission emits an
+  `unauthorized-remote-action` stop condition.
+- The `sprint_ship` and `sprint_classify_lane` tool surface never
+  shells out to remote publishing, PR creation, deploy, publish, or
+  any credentialed action. The supervisor only inspects/writes local
+  files under `.pi/workflow-runs/afk-ship/<runId>/`. Push/PR/deploy
+  require separate explicit opt-in (e.g. setting
+  `permissions.push=true` on the durable state) and are out of scope
+  for the default MVP path.
+- See `scripts/task-011-three-lane-afk-smokes.ts` (behavior tests) and
+  `scripts/task-011-phase-b-smokes.ts` (integration smokes) for the
+  runtime evidence backing these defaults.

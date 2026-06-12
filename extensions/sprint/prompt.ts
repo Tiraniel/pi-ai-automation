@@ -82,3 +82,39 @@ export function debugLaneGuidanceText(): string {
 		"- Promote to a normal sprint task when scope grows using `promote`, then continue in the regular sprint workflow.",
 	].filter(Boolean).join("\n");
 }
+
+export interface AfkShipKickoffInput {
+	runId: string;
+	lane: "full-sprint" | "hotfix" | "debug";
+	hotfixKind?: "code-changing" | "text-evidence-only";
+	taskId?: string;
+	retryBudget: number;
+	reportPath: string;
+	statePath: string;
+}
+
+export function buildAfkShipKickoff(input: AfkShipKickoffInput): string {
+	const kindLine = input.hotfixKind ? ` (hotfixKind=${input.hotfixKind})` : "";
+	const taskLine = input.taskId ? ` taskId=${input.taskId}` : "";
+	return [
+		"AFK ship supervisor session bound (local-only MVP).",
+		`runId=${input.runId} lane=${input.lane}${kindLine}${taskLine}`,
+		`statePath=${input.statePath}`,
+		`reportPath=${input.reportPath}`,
+		`retryBudget=${input.retryBudget}`,
+		"",
+		"Distinct from `/sprint task start --auto-run` (which only kicks off a bound session): AFK supervised shipping drives a durable implement -> review/evidence -> focused-fix -> finalize loop through `sprint_ship` until the run is delivery_complete, blocked, or hits its retry budget.",
+		"Workflow:",
+		"1. Read the run state with `sprint_ship action=read runId=...` and confirm lane/retryBudget/reportPath.",
+		"2. For non-trivial work, gate the lane with the existing PRD-first planning gate (`sprint_read_context`/workflow planning state). The full-sprint start path already enforces this; do not bypass.",
+		"3. Drive the loop: `sprint_ship action=transition event={\"kind\":\"implement_started\"}` -> `coder_completed` -> reviewer flow -> `focused_fix_completed` (on reviewer changes-requested) -> `finalization_recorded` -> `delivery_complete`.",
+		"4. When the run stops, the `REPORT.md` is the durable deliverable. Read it before claiming completion.",
+		"",
+		"Safety:",
+		"- Local-only MVP: do NOT shell out to remote publishing, PR creation, deploy, or credentialed actions. Default permissions deny push/pr/deploy/destructive/credentialed; requests for these produce a stop condition unless explicitly authorized.",
+		"- Full-sprint lane still requires PRD/sprint/architecture/implementation confirmations. The implementation gate is enforced at start; do not invent a silent bypass.",
+		"- Hotfix lane is lightweight but strict: code-changing hotfixes are reviewer-required by default; text-evidence-only is reviewer-free only when concrete refs and validation evidence are present and the changes are non-code (.md/.txt/prompt packs).",
+		"- Debug lane is audit-first and diagnose-first: a debug session must record a non-empty diagnosis and root-cause hypothesis, recommend a single next lane (hotfix | full-sprint | no-code/report-only), and may NOT perform implementation unless an explicit `select_next_lane` event promotes the lane. The supervisor must not silently perform broad implementation in debug lane.",
+		"- The `sprint_ship` and `sprint_classify_lane` AI tools are the surface; both go through the durable state under `.pi/workflow-runs/afk-ship/<runId>/`.",
+	].filter(Boolean).join("\n");
+}

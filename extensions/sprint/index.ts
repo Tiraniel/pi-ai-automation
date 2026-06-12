@@ -81,8 +81,9 @@ export {
 	type DebugLaneSummary,
 } from "./debug";
 
-export { buildTaskSessionKickoff, sessionBindingPromptText, sprintPointerText } from "./prompt";
+export { buildAfkShipKickoff, buildTaskSessionKickoff, debugLaneGuidanceText, sessionBindingPromptText, sprintPointerText } from "./prompt";
 
 export { registerSprintCommand } from "./command";
 export { registerSprintTools } from "./tools";
+export { registerSprintShipTools } from "./ship-tools";
 export { registerSprintHooks } from "./hooks";

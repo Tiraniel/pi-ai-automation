@@ -8,10 +8,16 @@
 // ExtensionAPI.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerSprintCommand, registerSprintHooks, registerSprintTools } from "./sprint";
+import {
+	registerSprintCommand,
+	registerSprintHooks,
+	registerSprintShipTools,
+	registerSprintTools,
+} from "./sprint";
 
 export default function sprintSystem(pi: ExtensionAPI) {
 	registerSprintCommand(pi);
 	registerSprintTools(pi);
+	registerSprintShipTools(pi);
 	registerSprintHooks(pi);
 }

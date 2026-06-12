@@ -3,7 +3,7 @@
 
 import * as path from "node:path";
 import { readBrainMarkersForTaskFile } from "./markers";
-import { buildTaskSessionKickoff } from "./prompt";
+import { buildAfkShipKickoff, buildTaskSessionKickoff, type AfkShipKickoffInput } from "./prompt";
 import {
   activeSprintAbs,
   appendProgress,
@@ -17,6 +17,7 @@ import { SPRINT_BINDING_CUSTOM_TYPE, type SessionBinding, type SprintCurrent } f
 
 export interface StartSprintTaskSessionOptions {
   autoRun: boolean;
+  shipRun?: AfkShipKickoffInput;
 }
 
 export interface StartSprintTaskSessionResult {
@@ -44,7 +45,15 @@ export async function startSprintTaskSession(
   const binding: SessionBinding = { sprintPath: sprintRel, taskPath: taskRel, taskId, title, boundAt: nowIso() };
   const sessionName = `Sprint: ${taskId} ${title}`.slice(0, 80);
   const markers = readBrainMarkersForTaskFile(taskInfo.file);
-  const kickoff = buildTaskSessionKickoff(binding, autoRun, markers);
+  let kickoff = buildTaskSessionKickoff(binding, autoRun, markers);
+  if (options.shipRun) {
+    // AFK supervised shipping is a distinct kickoff from the regular
+    // `--auto-run` task kickoff; it is layered in front so the new session
+    // immediately sees the durable state/report paths and the explicit
+    // distinction between `--auto-run` (just kicks off) and AFK (drives the
+    // bounded loop via `sprint_ship`).
+    kickoff = buildAfkShipKickoff(options.shipRun) + "\n\n" + kickoff;
+  }
   const parentSession =
     ctx.sessionManager && typeof ctx.sessionManager.getSessionFile === "function"
       ? ctx.sessionManager.getSessionFile()
@@ -71,7 +80,8 @@ export async function startSprintTaskSession(
       current.activeTaskPath = taskRel;
       current.updatedAt = nowIso();
       saveCurrent(cwd, current);
-      appendProgress(cwd, `task session started ${taskId}${autoRun ? " (auto-run)" : ""}`);
+      const shipTag = options.shipRun ? ` (AFK ship runId=${options.shipRun.runId})` : "";
+      appendProgress(cwd, `task session started ${taskId}${autoRun ? " (auto-run)" : ""}${shipTag}`);
     },
     withSession: async (newCtx: any) => {
       if (autoRun && kickoff) await newCtx.sendUserMessage(kickoff);
@@ -80,9 +90,10 @@ export async function startSprintTaskSession(
   });
 
   const cancelled = Boolean(result?.cancelled);
+  const shipTag = options.shipRun ? ` (AFK ship runId=${options.shipRun.runId})` : "";
   const message = cancelled
     ? `Sprint task session creation cancelled for ${taskId}`
-    : `Sprint task session started: ${taskId} ${title}${autoRun ? " (auto-run sent)" : ""}`;
+    : `Sprint task session started: ${taskId} ${title}${autoRun ? " (auto-run sent)" : ""}${shipTag}`;
 
   return { cancelled, taskId, title, message };
 }

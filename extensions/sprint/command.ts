@@ -3,11 +3,13 @@
 //
 // `registerSprintCommand(pi)` registers the single `/sprint` command that
 // drives the v1 .sprints substrate: init/new/status, debug/hotfix, task add/active/start/
-// done, epic add, and log. The handler parses subcommands then dispatches
-// to the store helpers in ./store. The task-start subcommand is the only
-// one with non-trivial side effects (it pins the new Pi session to a
-// single sprint task via a custom session entry); its body is inlined here
-// because the setup/withSession callbacks are local to the command.
+// done, epic add, log, and task ship (AFK supervisor kickoff). The handler
+// parses subcommands then dispatches to the store helpers in ./store and
+// the AFK supervisor helpers in ./ship-state. The task-start and task-ship
+// subcommands are the only ones with non-trivial side effects (they pin
+// the new Pi session to a single sprint task via a custom session entry);
+// their bodies are inlined here because the setup/withSession callbacks
+// are local to the command.
 
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -35,6 +37,20 @@ import {
 import { evaluateDebugFinalization } from "../workflow/finalization-runtime";
 import { gateSprintEntryPoint } from "./planning-gate";
 import { SPRINTS_DIR } from "./types";
+import {
+	createInitialShipState,
+	shipReportPathRelative,
+	shipStatePathRelative,
+	shipStateExists,
+	writeShipReport,
+	writeShipState,
+} from "./ship-state";
+import { renderShipReport } from "./ship-report";
+import { ALL_HOTFIX_KINDS, isAutomationLane, type HotfixKind } from "./lane-policy";
+
+function isHotfixKind(value: unknown): value is HotfixKind {
+	return typeof value === "string" && (ALL_HOTFIX_KINDS as readonly string[]).includes(value);
+}
 
 export function registerSprintCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("sprint", {
@@ -227,6 +243,113 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					}
 					return;
 				}
+				if (sub === "task" && args[1] === "ship") {
+					// /sprint task ship <TASK-ID> --afk [--lane full-sprint|hotfix|debug]
+					//   [--hotfix-kind code-changing|text-evidence-only]
+					//   [--run-id <id>] [--scope <text>] [--retry-budget <n>]
+					// Default lane is full-sprint for normal sprint tasks. Hotfix and
+					// debug starts are lightweight and not PRD-gated. Full-sprint
+					// starts run gateSprintEntryPoint(...,'implementation'); if denied,
+					// the command stops and the AFK run is NOT created.
+					if (!args.includes("--afk")) {
+						throw new Error("Usage: /sprint task ship <TASK-ID> --afk [--lane <lane>] [--hotfix-kind <kind>] [--run-id <id>] [--scope <text>] [--retry-budget <n>]");
+					}
+					const positional = args.slice(2).filter((a) => !a.startsWith("--"));
+					const taskId = positional[0];
+					if (!taskId) throw new Error("Usage: /sprint task ship <TASK-ID> --afk [--lane <lane>] [--scope <text>]");
+
+					const laneArgRaw = (() => {
+						const idx = args.indexOf("--lane");
+						return idx >= 0 ? String(args[idx + 1] || "").trim() : "full-sprint";
+					})();
+					if (!isAutomationLane(laneArgRaw)) {
+						throw new Error(`Invalid --lane "${laneArgRaw}"; must be one of: full-sprint|hotfix|debug.`);
+					}
+					const laneArg = laneArgRaw;
+
+					const hotfixKindArg = (() => {
+						const idx = args.indexOf("--hotfix-kind");
+						return idx >= 0 ? String(args[idx + 1] || "").trim() : "";
+					})();
+					if (laneArg === "hotfix" && !isHotfixKind(hotfixKindArg)) {
+						throw new Error("hotfix lane requires --hotfix-kind code-changing|text-evidence-only.");
+					}
+
+					const scopeArg = (() => {
+						const idx = args.indexOf("--scope");
+						return idx >= 0 ? String(args[idx + 1] || "").trim() : "";
+					})();
+					if (laneArg === "hotfix" && !scopeArg) {
+						throw new Error("hotfix lane requires an explicit --scope statement.");
+					}
+
+					const runIdArg = (() => {
+						const idx = args.indexOf("--run-id");
+						return idx >= 0 ? String(args[idx + 1] || "").trim() : "";
+					})();
+					const retryBudgetArg = (() => {
+						const idx = args.indexOf("--retry-budget");
+						return idx >= 0 ? Number(args[idx + 1]) : NaN;
+					})();
+					const retryBudget = Number.isFinite(retryBudgetArg) && retryBudgetArg > 0 ? Math.max(1, Math.floor(retryBudgetArg)) : 3;
+
+					if (laneArg === "full-sprint") {
+						const gate = gateSprintEntryPoint(ctx.cwd, undefined, "implementation");
+						if (!gate.allowed) {
+							ctx.ui.notify(gate.text, "warning");
+							ctx.ui.notify("Use workflow_planning_state to record PRD-ready implementation authorization before starting a full-sprint AFK ship run.", "info");
+							return;
+						}
+					}
+
+					const runId = runIdArg || `afk-${taskId.toLowerCase()}-${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}-${Math.random().toString(36).slice(2, 8)}`;
+					if (shipStateExists(ctx.cwd, runId)) {
+						ctx.ui.notify(`AFK run already exists: ${shipStatePathRelative(ctx.cwd, runId)}; pick a different --run-id.`, "warning");
+						return;
+					}
+
+					const initial = createInitialShipState({
+						runId,
+						taskId,
+						lane: laneArg,
+						hotfixKind: laneArg === "hotfix" ? (hotfixKindArg as "code-changing" | "text-evidence-only") : undefined,
+						retryBudget,
+						allowedScope: scopeArg || undefined,
+						fullSprintGatesConfirmed: laneArg === "full-sprint",
+					});
+					const persisted = writeShipState(ctx.cwd, initial);
+					const withReport = writeShipReport(ctx.cwd, persisted, { render: (s) => renderShipReport(s, { workspaceName: path.basename(ctx.cwd) }) });
+
+					ctx.ui.notify(
+						`AFK ship run created runId=${withReport.runId} lane=${withReport.lane}${withReport.hotfixKind ? ` hotfixKind=${withReport.hotfixKind}` : ""} state=${shipStatePathRelative(ctx.cwd, withReport.runId)} report=${shipReportPathRelative(ctx.cwd, withReport.runId)}`,
+						"info",
+					);
+
+					const newSession = (ctx as any).newSession;
+					if (typeof newSession !== "function") {
+						ctx.ui.notify(
+							`AFK run is ready (${shipStatePathRelative(ctx.cwd, withReport.runId)}). Automatic session start is unavailable in this context; start a session bound to ${taskId} manually with /sprint task start ${taskId} --auto-run, or use the sprint_ship AI tool to drive the run.`,
+							"info",
+						);
+						return;
+					}
+					const result = await startSprintTaskSession(ctx, taskId, {
+						autoRun: true,
+						shipRun: {
+							runId: withReport.runId,
+							lane: withReport.lane,
+							hotfixKind: withReport.hotfixKind,
+							taskId,
+							retryBudget: withReport.retryBudget,
+							reportPath: withReport.finalReportPath ?? shipReportPathRelative(ctx.cwd, withReport.runId),
+							statePath: shipStatePathRelative(ctx.cwd, withReport.runId),
+						},
+					});
+					if (result.cancelled) {
+						ctx.ui.notify("Sprint task session creation cancelled (AFK run state and report are still on disk).", "warning");
+					}
+					return;
+				}
 				if (sub === "epic" && args[1] === "add") {
 					const title = args.slice(2).join(" ").trim();
 					if (!title) throw new Error("Usage: /sprint epic add <title>");
@@ -248,7 +371,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					return;
 				}
 				ctx.ui.notify(
-					"Usage: /sprint init [--private] [--gitignore] | new <name> | status | debug|hotfix [status] | debug add <title> | debug note <DBG-ID> <note> | debug done <DBG-ID> [--dry-run] [evidence] | debug promote <DBG-ID> [task title] | task add <title> | task active <TASK-ID> | task start <TASK-ID> [--auto-run] | task done <TASK-ID> | epic add <title> | log <message>",
+					"Usage: /sprint init [--private] [--gitignore] | new <name> | status | debug|hotfix [status] | debug add <title> | debug note <DBG-ID> <note> | debug done <DBG-ID> [--dry-run] [evidence] | debug promote <DBG-ID> [task title] | task add <title> | task active <TASK-ID> | task start <TASK-ID> [--auto-run] | task ship <TASK-ID> --afk [--lane <lane>] [--hotfix-kind <kind>] [--run-id <id>] [--scope <text>] [--retry-budget <n>] | task done <TASK-ID> | epic add <title> | log <message>",
 					"info",
 				);
 			} catch (error) {

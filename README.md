@@ -468,6 +468,7 @@ Useful commands:
 /sprint task add <title>
 /sprint task active <TASK-ID>
 /sprint task start <TASK-ID> [--auto-run]
+/sprint task ship <TASK-ID> --afk [--lane <lane>] [--hotfix-kind <kind>] [--run-id <id>] [--scope <text>] [--retry-budget <n>]
 /sprint task done <TASK-ID>
 /sprint epic add <title>
 /sprint log <message>
@@ -568,6 +569,8 @@ AI-callable sprint tools:
 - `sprint_start_task_session`
 - `sprint_get_session_binding`
 - `sprint_debug`
+- `sprint_classify_lane` (three-lane automation policy; see "Three-lane automation flow and AFK supervisor" below)
+- `sprint_ship` (local AFK ship supervisor: start / read / transition / report)
 
 Lightweight debug/hotfix lane:
 
@@ -594,6 +597,142 @@ Default session-per-task flow:
 - Once a session is pinned, the binding is stored inside the session file itself as a `sprintBinding` custom entry, and `sprint_read_context`, `sprint_update_task`, `sprint_log_progress`, and `before_agent_start` all prefer the binding over `.sprints/current.json`. This means a pinned session remains bound to its task even if `.sprints/current.json` is changed by other sessions or commands. `sprint_update_task` also refuses to update a `taskId` that does not match the bound task, so a pinned session cannot accidentally write to a different task.
 
 See [`examples/sprints-config.json`](./examples/sprints-config.json).
+
+## Three-lane automation flow and AFK supervisor
+
+The sprint subsystem exposes a strict three-lane automation model so users
+and agents can pick the right level of planning for the work in front of
+them without weakening the existing quality gates. A bounded, local-only
+AFK (away-from-keyboard) supervisor MVP drives the implement -> review ->
+focused-fix -> finalize loop for authorized lanes and writes a durable
+delivery/blocker report.
+
+### Lane selection
+
+| Lane | Use it for | Planning depth | Reviewer | Finalization |
+| --- | --- | --- | --- | --- |
+| `full-sprint` | Non-trivial work: new features, refactors, anything touching state machines, schemas, persistence, or multiple behavior paths. | Full PRD + architecture + sprint + implementation confirmations (`workflow_planning_state`, sprint task, architecture plan with `acceptanceEvidenceMatrix`, coder evidence, reviewer approval). | Required (existing `delegate_to_coder` and `delegate_to_reviewer` gates remain the only path). | Linked to workflow quality audit before `delivery_complete`. |
+| `hotfix` | Lightweight, bounded fixes that still need strict execution. Two sub-kinds: `code-changing` (default; reviewer required) and `text-evidence-only` (docs/typo-only or non-code prompt/template text only; reviewer-free only when concrete refs and validation evidence are present). | Lightweight: short `--scope` statement, optional `--hotfix-kind`, file/LOC/behavior thresholds, root-cause clarity. | Code-changing hotfixes require reviewer by default; text-evidence-only is reviewer-free only when concrete refs and validation evidence are present and changes are non-code (`.md`/`.txt`/prompt packs). | Same finalization + workflow quality audit linkage as full-sprint. |
+| `debug` | Diagnosis-first inspection: read, hypothesize, recommend. | No PRD. Must record a non-empty diagnosis and root-cause hypothesis, and emit exactly one next-lane recommendation: `hotfix`, `full-sprint`, or `no-code/report-only`. | Not required. | May exit via report-only stop; may NOT silently perform implementation without an explicit `select_next_lane` promotion. |
+
+Lane vocabulary is enforced at every layer: the `AutomationLane` enum in
+`extensions/sprint/lane-policy.ts`, the `sprint_classify_lane` AI tool,
+and the `/sprint task ship` slash command all accept exactly
+`full-sprint | hotfix | debug`. Hotfix kind vocabulary is exactly
+`code-changing | text-evidence-only`. Debug next-lane vocabulary is
+exactly `hotfix | full-sprint | no-code/report-only`. A fourth implicit
+lane is never introduced without a PRD update.
+
+### Hotfix scope and promotion triggers
+
+A hotfix blocks or promotes (to full-sprint) on any of:
+
+- Scope expansion (missing or vague `--scope` statement).
+- File count over the threshold (>2 files) or LOC over the threshold (>50 LOC).
+- More than one behavior path touched.
+- Architecture / state-machine / schema / persistence / refactor surface.
+- Unclear root cause.
+- Repeated same-area fix chain (>=2 prior fixes in the same area).
+- Reviewer broader-risk flag.
+
+For text-only hotfixes, the evidence-only reviewer-free path requires
+**all** of: explicit `textOnlyClass` (`docs` | `prompt-template` | `typo`),
+non-empty `textOnlyConcreteRefs` (file + `#section`/`#line`), non-empty
+`textOnlyValidationEvidence` (smoke/static-check command or
+`rg`-rendered proof), and **no code/control-flow files** in `changedFiles`
+or in the ref paths (paths matching `.ts`/`.tsx`/`.js`/`.py`/...
+extensions or `extensions/`/`src/`/`scripts/`/... directories are
+auto-rejected even if `textOnlyClass=prompt-template`). Uncertain or
+`other` classification defaults to reviewer-required, never reviewer-free.
+
+### Debug lane is audit-first
+
+A debug session must record a non-empty diagnosis and root-cause
+hypothesis on the durable state, and recommend exactly one next lane
+(`hotfix` | `full-sprint` | `no-code/report-only`) before any
+implementation may be authorized. The debug state machine rejects
+`implement_started`, `coder_completed`, and `focused_fix_completed` until
+an explicit `select_next_lane` event promotes the lane to `hotfix` or
+`full-sprint`. The `no-code/report-only` outcome is the only path that
+stops the supervisor at the audit/report stage without entering the
+implement loop. Debug never silently performs broad implementation.
+
+### AI tools and slash command
+
+The thin AFK supervisor surface is exposed as two AI tools registered
+from `extensions/sprint/ship-tools.ts`:
+
+- `sprint_classify_lane` — classifies an automation request into the
+  three-lane policy and returns a `LaneDecision` (status, reviewer
+  requirement, evidence-only flag, recommended next lane, risk codes).
+- `sprint_ship` — drives the AFK run lifecycle. `action=start` creates a
+  run and persists state under `.pi/workflow-runs/afk-ship/<runId>/`
+  with `state.json` and `REPORT.md`. `action=read` / `action=report` /
+  `action=transition` advance the run. The tool never shells out to
+  remote publishing, PR creation, deploy, or credentialed actions; the
+  `permissions` field on durable state defaults to deny for `push`,
+  `pr`, `deploy`, `destructive`, and `credentialed`.
+
+Slash command:
+
+```bash
+/sprint task ship <TASK-ID> --afk [--lane full-sprint|hotfix|debug] [--hotfix-kind code-changing|text-evidence-only] [--run-id <id>] [--scope <text>] [--retry-budget <n>]
+```
+
+- `--lane full-sprint` runs the existing implementation gate
+  (`gateSprintEntryPoint(...,'implementation')`); the run is **not**
+  created if the gate denies.
+- `--lane hotfix` requires `--hotfix-kind` and `--scope`; default
+  reviewer-required state is enforced by Phase A contracts.
+- `--lane debug` is the audit-first path and does not require a scope
+  statement; the run starts in the `diagnosing` stage.
+
+### AFK supervisor limits and default-deny
+
+The AFK supervisor MVP is local-only and bounded:
+
+- Default permissions deny `push`, `pr`, `deploy`, `destructive`, and
+  `credentialed`. Requests for these produce an
+  `unauthorized-remote-action` stop condition unless explicitly
+  authorized on the durable state.
+- The tool/command surface never shells out to remote publishing, PR
+  creation, deploy, or credentialed actions. The supervisor only
+  inspects/writes local files under
+  `.pi/workflow-runs/afk-ship/<runId>/`.
+- The retry budget is configurable (`--retry-budget`, default 3) and
+  is enforced by the pure stage-transition engine. Once the budget is
+  exhausted the run stops with a `retry-budget-exhausted` stop
+  condition.
+- `delivery_complete` requires both finalization summary/result and the
+  workflow quality audit summary/artifact. A reviewer-required lane
+  (full-sprint or code-changing hotfix) additionally requires an
+  approved reviewer outcome; a `changes-requested` outcome is
+  treated as unresolved and blocks delivery.
+
+### `--auto-run` kickoff vs AFK supervised shipping
+
+- `/sprint task start <TASK-ID> --auto-run` only kicks off a dedicated
+  Pi session bound to the task and sends the regular
+  `buildTaskSessionKickoff` prompt. It does **not** create AFK state,
+  drive a `sprint_ship` loop, or write a delivery report.
+- `/sprint task ship <TASK-ID> --afk` creates durable AFK state
+  (state.json + REPORT.md) and a new session bound to the task with the
+  AFK kickoff prompt layered in front of the regular kickoff. The new
+  session then drives the bounded
+  `implement_started -> coder_completed -> reviewer_* / evidence_collected
+  -> focused_fix_completed -> finalization_recorded -> delivery_complete`
+  loop through `sprint_ship action=transition` until the run completes,
+  is blocked, or hits its retry budget.
+
+### AFK delivery report
+
+The `REPORT.md` written at `.pi/workflow-runs/afk-ship/<runId>/REPORT.md`
+always includes: lane and scope, debug diagnosis (when applicable),
+changed files, evidence refs, checks, reviewer outcome (or "not
+applicable" for the evidence-only path — the report never fabricates
+reviewer approval), finalization status, finalization summary/result,
+quality-audit summary/artifact, promotion reason codes, blockers,
+residual risks, default-deny permissions, and a final status line.
 
 ## Workflow quality audit
 
