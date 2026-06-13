@@ -432,30 +432,79 @@ function hasNonEmptyCommandOutcomes(value: unknown): boolean {
 	return false;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+/** Check whether a candidate value is a typed reviewer-evidence object with
+ *  meaningful content (non-empty `criterionCoverage` or non-empty
+ *  `commandsRun`). Bare `{ present: true }` / `{ explicitDeclaration: true }`
+ *  objects are intentionally NOT accepted. */
+function isTypedReviewerEvidenceObject(value: unknown): boolean {
+	const record = asRecord(value);
+	if (!record) return false;
+	if (hasNonEmptyCriterionCoverage(record.criterionCoverage)) return true;
+	if (hasNonEmptyCommandOutcomes(record.commandsRun)) return true;
+	return false;
+}
+
 function hasExplicitStructuredReviewerEvidence(input: ReviewerResultLike): boolean {
 	// Fail-closed: a bare `present: true` or `explicitDeclaration: true` flag
 	// is NOT enough to suppress auto_exit provisional blocking. We require
 	// meaningful typed content (non-empty `criterionCoverage` or non-empty
-	// `commandsRun`) on the `reviewerEvidence` / `details.reviewerEvidence`
-	// object. Final-output label detection is intentionally NOT used: vague
-	// labels like "evidence packet: ok ok" or "reviewer evidence: ok ok" in
-	// the final text are NOT structured reviewer evidence and must not
-	// suppress provisional blocking.
-	const ev = input.reviewerEvidence;
-	if (ev) {
-		if (hasNonEmptyCriterionCoverage(ev.criterionCoverage)) return true;
-		if (hasNonEmptyCommandOutcomes(ev.commandsRun)) return true;
-		if (ev.explicitDeclaration === true
-			&& (hasNonEmptyCriterionCoverage(ev.criterionCoverage) || hasNonEmptyCommandOutcomes(ev.commandsRun))) {
-			return true;
+	// `commandsRun`) on the supported reviewer-evidence containers.
+	// Final-output label detection is intentionally NOT used: vague labels
+	// like "evidence packet: ok ok" or "reviewer evidence: ok ok" in the
+	// final text are NOT structured reviewer evidence and must not suppress
+	// provisional blocking. The supported containers, in order, are:
+	//   1. `input.reviewerEvidence`
+	//   2. `input.details.reviewerEvidence`
+	//   3. `input.details.done.reviewerEvidence`
+	//   4. `input.details.done.coderEvidence` when that object itself carries
+	//      non-empty `criterionCoverage` or `commandsRun` (reviewer used the
+	//      only available sidecar field name)
+	//   5. `input.details.done.coderEvidence.delegateHistory.reviewerEvidence`
+	//   6. parseable JSON in `input.details.done.summary` whose root object
+	//      may contain `reviewerEvidence`, `coderEvidence`,
+	//      `coderEvidence.delegateHistory.reviewerEvidence`, or top-level
+	//      `delegateHistory.reviewerEvidence`
+	if (isTypedReviewerEvidenceObject(input.reviewerEvidence)) return true;
+	const details = asRecord(input.details);
+	if (!details) return false;
+	if (isTypedReviewerEvidenceObject(details.reviewerEvidence)) return true;
+	const done = asRecord(details.done);
+	if (done) {
+		if (isTypedReviewerEvidenceObject(done.reviewerEvidence)) return true;
+		const coderEvidence = asRecord(done.coderEvidence);
+		if (coderEvidence) {
+			if (isTypedReviewerEvidenceObject(coderEvidence)) return true;
+			const delegateHistory = asRecord(coderEvidence.delegateHistory);
+			if (delegateHistory && isTypedReviewerEvidenceObject(delegateHistory.reviewerEvidence)) return true;
 		}
 	}
-	const details = input.details;
-	if (details && typeof details === "object") {
-		const reviewerEvidence = (details as { reviewerEvidence?: unknown }).reviewerEvidence;
-		if (reviewerEvidence && typeof reviewerEvidence === "object") {
-			if (hasNonEmptyCriterionCoverage((reviewerEvidence as Record<string, unknown>).criterionCoverage)) return true;
-			if (hasNonEmptyCommandOutcomes((reviewerEvidence as Record<string, unknown>).commandsRun)) return true;
+	// Parseable JSON in `done.summary` is a known pane-sidecar fallback when
+	// the structured object was serialized into a single summary string.
+	// Malformed or non-object JSON (arrays, numbers, primitives) is ignored.
+	if (done && typeof done.summary === "string" && done.summary.trim().length > 0) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(done.summary);
+		} catch {
+			parsed = undefined;
+		}
+		const parsedRecord = asRecord(parsed);
+		if (parsedRecord) {
+			if (isTypedReviewerEvidenceObject(parsedRecord.reviewerEvidence)) return true;
+			const parsedCoderEvidence = asRecord(parsedRecord.coderEvidence);
+			if (parsedCoderEvidence) {
+				if (isTypedReviewerEvidenceObject(parsedCoderEvidence)) return true;
+				const parsedDelegateHistory = asRecord(parsedCoderEvidence.delegateHistory);
+				if (parsedDelegateHistory && isTypedReviewerEvidenceObject(parsedDelegateHistory.reviewerEvidence)) return true;
+			}
+			const topDelegateHistory = asRecord(parsedRecord.delegateHistory);
+			if (topDelegateHistory && isTypedReviewerEvidenceObject(topDelegateHistory.reviewerEvidence)) return true;
 		}
 	}
 	return false;

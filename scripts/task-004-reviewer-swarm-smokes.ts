@@ -46,8 +46,10 @@ import {
 	buildReviewerMemoForResults,
 	buildReviewerRoleTask,
 	deriveReviewerRoleTargets,
+	evaluateReviewerResult,
 } from "../extensions/workflow/delegate/reviewer-roles";
 import { DEFAULT_REVIEWER_SWARM_TARGETS } from "../extensions/workflow/prompts";
+import { buildReviewerResultLikeForRoleEvaluation } from "../extensions/workflow/delegate/swarm";
 import type { ReviewerTargetResult } from "../extensions/workflow/types";
 import type {
 	AcceptanceEvidenceMatrixEntry,
@@ -637,6 +639,289 @@ function main(): void {
 		for (const oldId of ["review-goal-architecture", "review-goal-correctness", "review-goal-tests", "review-goal-security"]) {
 			check(!bootstrapText.includes(oldId),
 				`11: bootstrap.ts no longer references legacy reviewer gate id '${oldId}'`);
+		}
+	}
+
+	// (12) DBG-007 sidecar-to-evaluator runtime shaping: the role-mode
+	//      path must read pane done sidecars from `result.doneFile` and
+	//      forward them as `details.done` so the role evaluator's
+	//      fallback evidence paths can see `coderEvidence` /
+	//      `summary` JSON stored in the actual sidecar. Cover the
+	//      positive case (typed coderEvidence in sidecar suppresses
+	//      auto_exit provisional and approves the memo) and the
+	//      negative cases (missing / unreadable / empty sidecar
+	//      fail-closed: no details.done is fabricated, the role
+	//      stays provisional, and the memo is not approved).
+	{
+		const plan = makeMatrixPlan();
+		const derivation = deriveReviewerRoleTargets(plan);
+		const behaviorTarget = derivation.targets.find((t) => t.role === "behavior");
+		const regressionTarget = derivation.targets.find((t) => t.role === "regression");
+		check(Boolean(behaviorTarget && regressionTarget),
+			"12: behavior + regression targets present for sidecar shaping test");
+
+		// 12a: source-string guard confirming the helper exists in
+		//      swarm.ts and is wired into the role-mode resultLikes
+		//      mapping (so runtime sidecars are forwarded into the
+		//      evaluator).
+		check(/export\s+function\s+buildReviewerResultLikeForRoleEvaluation\s*\(/.test(swarmText),
+			"12a: swarm.ts exports buildReviewerResultLikeForRoleEvaluation");
+		check(/parseDoneSidecar\s*\(/.test(swarmText),
+			"12a: swarm.ts uses parseDoneSidecar to read pane done sidecars");
+		check(/from\s+["']\.\/pane-status["']/.test(swarmText),
+			"12a: swarm.ts imports parseDoneSidecar from ./pane-status");
+		check(/resultLikes:\s*ReviewerResultLike\[\]\s*=\s*results\.map\(\(r\)\s*=>\s*buildReviewerResultLikeForRoleEvaluation\(r\)\)/.test(swarmText),
+			"12a: swarm.ts role-mode resultLikes uses buildReviewerResultLikeForRoleEvaluation(r)");
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "task-004-sidecar-"));
+		try {
+			// 12b: positive — typed coderEvidence.criterionCoverage in
+			//      a real on-disk done sidecar + auto_exit completion
+			//      source + no direct reviewerEvidence suppresses
+			//      provisional, keeps the role approved, and the memo
+			//      becomes approved.
+			const doneFile = path.join(tmpDir, "done-b.json");
+			fs.writeFileSync(doneFile, JSON.stringify({
+				done: true,
+				completion: "auto_exit",
+				source: "shell_exit",
+				exit_code: 0,
+				from_auto_exit: true,
+				coderEvidence: {
+					present: true,
+					explicitDeclaration: true,
+					criterionCoverage: [
+						{ criterion: "Behavior reviewer criterion", evidenceKind: "behavior-test", summary: "behavior test passed" },
+					],
+					commandsRun: [
+						{ command: "npx tsx scripts/smoke-tui.ts", outcome: "exit 0", summary: "smoke passed" },
+					],
+				},
+			}) + "\n", "utf8");
+			const autoExitTarget: ReviewerTargetResult = {
+				target: "behavior#1 Behavior reviewer",
+				verdict: "APPROVED",
+				status: "completed",
+				result: {
+					agent: "reviewer",
+					task: "task",
+					cwd: "/tmp",
+					exitCode: 0,
+					messages: [],
+					stderr: "",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+					finalOutput: "APPROVED. Looks good.",
+					completionSource: "auto_exit",
+					doneFile,
+				},
+			};
+			const like = buildReviewerResultLikeForRoleEvaluation(autoExitTarget);
+			check(like.completionSource === "auto_exit",
+				"12b: helper preserves completionSource=auto_exit from delegate result");
+			check(like.details !== undefined && (like.details as Record<string, unknown>).done !== undefined,
+				"12b: helper forwards parsed sidecar as details.done when doneFile is readable");
+			const sidecar = (like.details as Record<string, unknown>).done as Record<string, unknown>;
+			check(sidecar.coderEvidence !== undefined,
+				"12b: forwarded sidecar preserves coderEvidence");
+			const sidecarCoder = sidecar.coderEvidence as Record<string, unknown>;
+			check(Array.isArray(sidecarCoder.criterionCoverage) && (sidecarCoder.criterionCoverage as unknown[]).length > 0,
+				"12b: forwarded sidecar preserves typed criterionCoverage");
+			// Drive the helper output through the role evaluator and
+			// the canonical memo builder end-to-end. Every required
+			// role needs a result aligned to its target. The behavior
+			// role is auto_exit + sidecar fallback evidence; the other
+			// roles approve with explicit evidence so they are not
+			// downgraded by the runtime-scope / static-only checks.
+			const otherResults: import("../extensions/workflow/delegate/reviewer-roles").ReviewerResultLike[] = [];
+			const { evaluations, memo } = buildReviewerMemoForResults(
+				plan,
+				"phaseA",
+				[like, ...otherResults],
+				{ goals: undefined },
+			);
+			const behaviorEval = evaluations.find((e) => e.role === "behavior");
+			check(Boolean(behaviorEval), "12b: behavior evaluation present after sidecar forwarding");
+			check(behaviorEval?.provisional === false,
+				`12b: behavior auto_exit with sidecar coderEvidence is NOT provisional (got: ${behaviorEval?.provisional})`);
+			check(behaviorEval?.effectiveVerdict === "APPROVED",
+				`12b: behavior auto_exit with sidecar coderEvidence stays APPROVED (got: ${behaviorEval?.effectiveVerdict})`);
+			// The memo is not fully approved yet because the
+			// other-role evaluations are synthesized as UNKNOWN by
+			// `buildReviewerMemoForResults` when fewer results than
+			// targets are supplied. Those synthesized UNKNOWN
+			// evaluations are downgraded to CHANGES_REQUESTED by
+			// the role evaluator (UNKNOWN verdict + required role
+			// adds a blocking reason), so they land in the
+			// `changesRequested` bucket and must block final
+			// approval. This is the expected fail-closed end-state
+			// for this synthetic target list.
+			check(memo.approved === false,
+				"12b: synthetic partial result set still blocks final approval (fail-closed for UNKNOWN other roles)");
+			check(memo.changesRequested.length >= 4,
+				`12b: memo buckets the synthesized UNKNOWN other roles as changesRequested (got: ${memo.changesRequested.length})`);
+
+			// 12c: full end-to-end — every required role is supplied,
+			//      one is auto_exit + sidecar fallback, the rest are
+			//      explicit + typed structured evidence. The memo
+			//      must be approved and have no provisional caveats.
+			const fullResults: import("../extensions/workflow/delegate/reviewer-roles").ReviewerResultLike[] = derivation.targets.map((t, i) => {
+				if (i === 0) {
+					// behavior: sidecar fallback evidence + auto_exit.
+					return buildReviewerResultLikeForRoleEvaluation(autoExitTarget);
+				}
+				// Other roles: explicit + typed structured evidence.
+				return {
+					verdict: "APPROVED" as const,
+					finalOutput: "APPROVED. behavior test passed: tsx scripts/smoke-tui.ts exited 0.",
+					completionSource: "explicit" as const,
+					status: "completed" as const,
+					reviewerEvidence: {
+						present: true,
+						explicitDeclaration: true,
+						criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+					},
+				};
+			});
+			const full = buildReviewerMemoForResults(plan, "phaseA", fullResults, { goals: undefined });
+			check(full.memo.approved === true,
+				"12c: end-to-end memo approved=true when auto_exit role uses sidecar coderEvidence fallback");
+			check(full.memo.provisionalCaveats.length === 0,
+				`12c: end-to-end memo has no provisionalCaveats (got: ${full.memo.provisionalCaveats.length})`);
+
+			// 12d: negative — missing doneFile => no details.done is
+			//      fabricated; the role evaluator must still treat
+			//      auto_exit as provisional and block.
+			const noDoneFileTarget: ReviewerTargetResult = {
+				target: "behavior#1 Behavior reviewer",
+				verdict: "APPROVED",
+				status: "completed",
+				result: {
+					agent: "reviewer",
+					task: "task",
+					cwd: "/tmp",
+					exitCode: 0,
+					messages: [],
+					stderr: "",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+					finalOutput: "APPROVED. Looks good.",
+					completionSource: "auto_exit",
+				},
+			};
+			const noDoneFileLike = buildReviewerResultLikeForRoleEvaluation(noDoneFileTarget);
+			const noDoneFileDetails = noDoneFileLike.details as Record<string, unknown> | undefined;
+			check(noDoneFileDetails === undefined || noDoneFileDetails.done === undefined,
+				"12d: helper omits details.done when result.doneFile is absent");
+			const noDoneFileEval = evaluateReviewerResult(behaviorTarget!, noDoneFileLike);
+			check(noDoneFileEval.provisional === true,
+				"12d: missing doneFile keeps auto_exit provisional (no fabricated sidecar)");
+
+			// 12e: negative — unreadable doneFile (path that does
+			//      not exist) => no details.done is fabricated; the
+			//      role evaluator must still treat auto_exit as
+			//      provisional and block.
+			const unreadableTarget: ReviewerTargetResult = {
+				target: "behavior#1 Behavior reviewer",
+				verdict: "APPROVED",
+				status: "completed",
+				result: {
+					agent: "reviewer",
+					task: "task",
+					cwd: "/tmp",
+					exitCode: 0,
+					messages: [],
+					stderr: "",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+					finalOutput: "APPROVED. Looks good.",
+					completionSource: "auto_exit",
+					doneFile: path.join(tmpDir, "does-not-exist-done.json"),
+				},
+			};
+			const unreadableLike = buildReviewerResultLikeForRoleEvaluation(unreadableTarget);
+			const unreadableDetails = unreadableLike.details as Record<string, unknown> | undefined;
+			check(unreadableDetails === undefined || unreadableDetails.done === undefined,
+				"12e: helper omits details.done when doneFile path is unreadable");
+			const unreadableEval = evaluateReviewerResult(behaviorTarget!, unreadableLike);
+			check(unreadableEval.provisional === true,
+				"12e: unreadable doneFile keeps auto_exit provisional (no fabricated evidence)");
+
+			// 12f: negative — empty sidecar (parseable but
+			//      object-only with no reviewerEvidence /
+			//      coderEvidence / summary) => details.done is
+			//      forwarded but evaluator must still treat
+			//      auto_exit as provisional and block.
+			const emptySidecarFile = path.join(tmpDir, "done-empty.json");
+			fs.writeFileSync(emptySidecarFile, JSON.stringify({ done: true, completion: "auto_exit" }) + "\n", "utf8");
+			const emptySidecarTarget: ReviewerTargetResult = {
+				target: "behavior#1 Behavior reviewer",
+				verdict: "APPROVED",
+				status: "completed",
+				result: {
+					agent: "reviewer",
+					task: "task",
+					cwd: "/tmp",
+					exitCode: 0,
+					messages: [],
+					stderr: "",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+					finalOutput: "APPROVED. Looks good.",
+					completionSource: "auto_exit",
+					doneFile: emptySidecarFile,
+				},
+			};
+			const emptyLike = buildReviewerResultLikeForRoleEvaluation(emptySidecarTarget);
+			const emptyDetails = emptyLike.details as Record<string, unknown>;
+			check(emptyDetails && emptyDetails.done !== undefined,
+				"12f: helper forwards empty-but-valid sidecar as details.done");
+			const emptyEval = evaluateReviewerResult(behaviorTarget!, emptyLike);
+			check(emptyEval.provisional === true,
+				"12f: empty sidecar keeps auto_exit provisional (no typed evidence to suppress)");
+			check(emptyEval.effectiveVerdict === "CHANGES_REQUESTED",
+				"12f: empty sidecar does not approve a required role");
+
+			// 12g: positive — typed criterionCoverage under
+			//      `coderEvidence.delegateHistory.reviewerEvidence`
+			//      in the on-disk sidecar (legacy reviewer's
+			//      structured evidence path) also suppresses
+			//      auto_exit provisional for the regression role.
+			const regFile = path.join(tmpDir, "done-reg.json");
+			fs.writeFileSync(regFile, JSON.stringify({
+				done: true,
+				completion: "auto_exit",
+				source: "shell_exit",
+				exit_code: 0,
+				coderEvidence: {
+					delegateHistory: {
+						reviewerEvidence: {
+							commandsRun: [{ command: "npx tsx scripts/regression-smoke.ts", outcome: "exit 0", summary: "regression test passed" }],
+						},
+					},
+				},
+			}) + "\n", "utf8");
+			const regTarget: ReviewerTargetResult = {
+				target: "regression#5 Regression reviewer",
+				verdict: "APPROVED",
+				status: "completed",
+				result: {
+					agent: "reviewer",
+					task: "task",
+					cwd: "/tmp",
+					exitCode: 0,
+					messages: [],
+					stderr: "",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+					finalOutput: "APPROVED. Looks good.",
+					completionSource: "auto_exit",
+					doneFile: regFile,
+				},
+			};
+			const regLike = buildReviewerResultLikeForRoleEvaluation(regTarget);
+			const regEval = evaluateReviewerResult(regressionTarget!, regLike);
+			check(regEval.provisional === false,
+				"12g: on-disk sidecar with coderEvidence.delegateHistory.reviewerEvidence suppresses auto_exit provisional");
+			check(regEval.effectiveVerdict === "APPROVED",
+				"12g: on-disk sidecar with coderEvidence.delegateHistory.reviewerEvidence keeps regression role approved");
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}
 	}
 }

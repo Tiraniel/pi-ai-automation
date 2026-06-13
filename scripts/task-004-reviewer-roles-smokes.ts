@@ -1007,6 +1007,357 @@ function main(): void {
 		check(regressionHardRules.toLowerCase().includes("prompt-only"),
 			"14g: regression hard role rules surface prompt-only rejection language");
 	}
+
+	// (15) DBG-007 fallback evidence paths: structured reviewer evidence may
+	//      be stored in legacy / pane-sidecar locations (details.done.* or
+	//      parseable JSON in details.done.summary). These paths must
+	//      suppress auto_exit provisional blocking when the typed
+	//      content is meaningful (non-empty criterionCoverage or
+	//      commandsRun), and must remain fail-closed for empty objects,
+	//      bare flags, malformed summary JSON, and free-form summary
+	//      labels.
+	{
+		const plan = makeMatrixPlan();
+		const derivation = deriveReviewerRoleTargets(plan);
+		const behaviorTarget = derivation.targets.find((t) => t.role === "behavior");
+		const regressionTarget = derivation.targets.find((t) => t.role === "regression");
+		check(Boolean(behaviorTarget && regressionTarget), "15: behavior + regression targets present");
+
+		// 15a: typed criterion coverage under `details.done.coderEvidence`
+		//      suppresses auto_exit provisional.
+		const doneCoderCoverageResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					coderEvidence: {
+						present: true,
+						criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+					},
+				},
+			},
+		};
+		const doneCoderCoverageEval = evaluateReviewerResult(behaviorTarget!, doneCoderCoverageResult);
+		check(doneCoderCoverageEval.provisional === false,
+			"15a: details.done.coderEvidence with criterionCoverage suppresses auto_exit provisional");
+		check(doneCoderCoverageEval.effectiveVerdict === "APPROVED",
+			"15a: details.done.coderEvidence with criterionCoverage keeps required role approved");
+
+		// 15b: typed commands run under `details.done.coderEvidence`
+		//      suppresses auto_exit provisional.
+		const doneCoderCommandsResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					coderEvidence: {
+						commandsRun: [{ command: "npx tsx scripts/smoke-tui.ts", outcome: "exit 0" }],
+					},
+				},
+			},
+		};
+		const doneCoderCommandsEval = evaluateReviewerResult(behaviorTarget!, doneCoderCommandsResult);
+		check(doneCoderCommandsEval.provisional === false,
+			"15b: details.done.coderEvidence with commandsRun suppresses auto_exit provisional");
+
+		// 15c: typed evidence under
+		//      `details.done.coderEvidence.delegateHistory.reviewerEvidence`
+		//      suppresses auto_exit provisional.
+		const delegateHistoryEvidenceResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					coderEvidence: {
+						delegateHistory: {
+							reviewerEvidence: {
+								criterionCoverage: [{ criterion: "Regression reviewer validates regression-proof", summary: "regression test passed" }],
+							},
+						},
+					},
+				},
+			},
+		};
+		const delegateHistoryEvidenceEval = evaluateReviewerResult(regressionTarget!, delegateHistoryEvidenceResult);
+		check(delegateHistoryEvidenceEval.provisional === false,
+			"15c: details.done.coderEvidence.delegateHistory.reviewerEvidence with criterionCoverage suppresses auto_exit provisional");
+		check(delegateHistoryEvidenceEval.effectiveVerdict === "APPROVED",
+			"15c: details.done.coderEvidence.delegateHistory.reviewerEvidence keeps regression role approved");
+
+		// 15d: typed evidence under `details.done.reviewerEvidence` suppresses
+		//      auto_exit provisional.
+		const doneReviewerEvidenceResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					reviewerEvidence: {
+						criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+					},
+				},
+			},
+		};
+		const doneReviewerEvidenceEval = evaluateReviewerResult(behaviorTarget!, doneReviewerEvidenceResult);
+		check(doneReviewerEvidenceEval.provisional === false,
+			"15d: details.done.reviewerEvidence with criterionCoverage suppresses auto_exit provisional");
+
+		// 15e: parseable JSON in `details.done.summary` containing
+		//      `reviewerEvidence` suppresses auto_exit provisional.
+		const summaryJsonReviewer: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						reviewerEvidence: {
+							criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+						},
+					}),
+				},
+			},
+		};
+		const summaryJsonReviewerEval = evaluateReviewerResult(behaviorTarget!, summaryJsonReviewer);
+		check(summaryJsonReviewerEval.provisional === false,
+			"15e: parseable done.summary JSON with reviewerEvidence suppresses auto_exit provisional");
+
+		// 15f: parseable JSON in `details.done.summary` containing
+		//      `coderEvidence` with typed content suppresses auto_exit
+		//      provisional.
+		const summaryJsonCoder: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						coderEvidence: {
+							criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+						},
+					}),
+				},
+			},
+		};
+		const summaryJsonCoderEval = evaluateReviewerResult(behaviorTarget!, summaryJsonCoder);
+		check(summaryJsonCoderEval.provisional === false,
+			"15f: parseable done.summary JSON with coderEvidence + criterionCoverage suppresses auto_exit provisional");
+
+		// 15g: parseable JSON in `details.done.summary` containing
+		//      `coderEvidence.delegateHistory.reviewerEvidence` suppresses
+		//      auto_exit provisional.
+		const summaryJsonDelegateHistory: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						coderEvidence: {
+							delegateHistory: {
+								reviewerEvidence: {
+									criterionCoverage: [{ criterion: "Regression reviewer validates regression-proof", summary: "regression test passed" }],
+								},
+							},
+						},
+					}),
+				},
+			},
+		};
+		const summaryJsonDelegateHistoryEval = evaluateReviewerResult(regressionTarget!, summaryJsonDelegateHistory);
+		check(summaryJsonDelegateHistoryEval.provisional === false,
+			"15g: parseable done.summary JSON with coderEvidence.delegateHistory.reviewerEvidence suppresses auto_exit provisional");
+
+		// 15h: parseable JSON in `details.done.summary` containing top-level
+		//      `delegateHistory.reviewerEvidence` suppresses auto_exit
+		//      provisional.
+		const summaryJsonTopDelegateHistory: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						delegateHistory: {
+							reviewerEvidence: {
+								commandsRun: [{ command: "npx tsx scripts/regression-smoke.ts", outcome: "exit 0" }],
+							},
+						},
+					}),
+				},
+			},
+		};
+		const summaryJsonTopDelegateHistoryEval = evaluateReviewerResult(regressionTarget!, summaryJsonTopDelegateHistory);
+		check(summaryJsonTopDelegateHistoryEval.provisional === false,
+			"15h: parseable done.summary JSON with top-level delegateHistory.reviewerEvidence suppresses auto_exit provisional");
+
+		// 15i (negative): empty `details.done.coderEvidence = {}` does NOT
+		//      suppress auto_exit provisional.
+		const emptyDoneCoder: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { coderEvidence: {} } },
+		};
+		const emptyDoneCoderEval = evaluateReviewerResult(behaviorTarget!, emptyDoneCoder);
+		check(emptyDoneCoderEval.provisional === true,
+			"15i: empty details.done.coderEvidence = {} does NOT suppress auto_exit provisional");
+		check(emptyDoneCoderEval.effectiveVerdict === "CHANGES_REQUESTED",
+			"15i: empty details.done.coderEvidence = {} still blocks required role");
+
+		// 15j (negative): bare `details.done.coderEvidence = { present: true }`
+		//      does NOT suppress auto_exit provisional.
+		const bareDoneCoder: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { coderEvidence: { present: true, explicitDeclaration: true } } },
+		};
+		const bareDoneCoderEval = evaluateReviewerResult(behaviorTarget!, bareDoneCoder);
+		check(bareDoneCoderEval.provisional === true,
+			"15j: bare details.done.coderEvidence = { present: true } does NOT suppress auto_exit provisional");
+
+		// 15k (negative): empty arrays on
+		//      `details.done.coderEvidence.criterionCoverage` /
+		//      `commandsRun` do NOT suppress.
+		const emptyArraysDoneCoder: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					coderEvidence: { criterionCoverage: [], commandsRun: [] },
+				},
+			},
+		};
+		const emptyArraysDoneCoderEval = evaluateReviewerResult(behaviorTarget!, emptyArraysDoneCoder);
+		check(emptyArraysDoneCoderEval.provisional === true,
+			"15k: empty criterionCoverage/commandsRun arrays on details.done.coderEvidence do NOT suppress provisional");
+
+		// 15l (negative): malformed JSON in `details.done.summary` does NOT
+		//      suppress.
+		const malformedSummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { summary: "not-json {{{" } },
+		};
+		const malformedSummaryEval = evaluateReviewerResult(behaviorTarget!, malformedSummary);
+		check(malformedSummaryEval.provisional === true,
+			"15l: malformed JSON in details.done.summary does NOT suppress auto_exit provisional");
+
+		// 15m (negative): non-object JSON (array / primitive) in
+		//      `details.done.summary` does NOT suppress.
+		const arraySummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { summary: JSON.stringify([1, 2, 3]) } },
+		};
+		const arraySummaryEval = evaluateReviewerResult(behaviorTarget!, arraySummary);
+		check(arraySummaryEval.provisional === true,
+			"15m: array JSON in details.done.summary does NOT suppress auto_exit provisional");
+
+		const primitiveSummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { summary: JSON.stringify(42) } },
+		};
+		const primitiveSummaryEval = evaluateReviewerResult(behaviorTarget!, primitiveSummary);
+		check(primitiveSummaryEval.provisional === true,
+			"15m: primitive JSON in details.done.summary does NOT suppress auto_exit provisional");
+
+		// 15n (negative): empty object JSON in `details.done.summary` does
+		//      NOT suppress.
+		const emptyObjectSummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { summary: JSON.stringify({}) } },
+		};
+		const emptyObjectSummaryEval = evaluateReviewerResult(behaviorTarget!, emptyObjectSummary);
+		check(emptyObjectSummaryEval.provisional === true,
+			"15n: empty object JSON in details.done.summary does NOT suppress auto_exit provisional");
+
+		// 15o (negative): JSON in `details.done.summary` with only bare
+		//      `present: true` / `explicitDeclaration: true` flags does NOT
+		//      suppress.
+		const bareFlagSummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						reviewerEvidence: { present: true, explicitDeclaration: true },
+						coderEvidence: { present: true, explicitDeclaration: true },
+					}),
+				},
+			},
+		};
+		const bareFlagSummaryEval = evaluateReviewerResult(behaviorTarget!, bareFlagSummary);
+		check(bareFlagSummaryEval.provisional === true,
+			"15o: bare present/explicitDeclaration flags in done.summary JSON do NOT suppress auto_exit provisional");
+
+		// 15p: end-to-end: full plan with one auto_exit result whose typed
+		//      evidence is supplied via details.done.coderEvidence approves
+		//      the required role and the memo becomes approved.
+		const fallbackResults: ReviewerResultLike[] = derivation.targets.map((t, i) => {
+			if (i === 0) {
+				return {
+					verdict: "APPROVED",
+					finalOutput: "APPROVED. Looks good.",
+					completionSource: "auto_exit",
+					status: "completed",
+					details: {
+						done: {
+							coderEvidence: {
+								criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", summary: "behavior test passed" }],
+							},
+						},
+					},
+				};
+			}
+			// Other roles approve with typed structured evidence so they are
+			// not downgraded by the runtime-scope / static-only checks.
+			return {
+				verdict: "APPROVED",
+				finalOutput: "APPROVED. behavior test passed: tsx scripts/smoke-tui.ts exited 0.",
+				completionSource: "explicit",
+				status: "completed",
+				reviewerEvidence: {
+					present: true,
+					explicitDeclaration: true,
+					criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+				},
+			};
+		});
+		const { memo: fallbackMemo } = buildReviewerMemoForResults(plan, "phaseA", fallbackResults);
+		check(fallbackMemo.approved === true,
+			"15p: end-to-end memo approved=true when auto_exit role uses details.done.coderEvidence fallback evidence");
+		check(fallbackMemo.provisionalCaveats.length === 0,
+			`15p: end-to-end memo has no provisionalCaveats (got: ${fallbackMemo.provisionalCaveats.length})`);
+	}
 }
 
 main();

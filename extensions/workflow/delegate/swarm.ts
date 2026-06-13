@@ -44,6 +44,7 @@ import {
 } from "./reviewer-roles";
 import { writeReviewerMemoFile } from "./reviewer-memo-file";
 import { runDelegateAgent } from "./runner";
+import { parseDoneSidecar } from "./pane-status";
 
 export function parseReviewerVerdict(text: string): "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN" {
 	const normalized = text.replace(/\r\n?/g, "\n");
@@ -108,6 +109,39 @@ export function buildReviewerGoalTask(task: string, goal: string): string {
 	// framing is now role/quality-check oriented and identical to the
 	// role-mode prompt scaffolding.
 	return `${task}\n\nAssigned review goal:\n- ${goal}\n\nReviewer checks should focus on implementation diffs, behavior, validation evidence, and the assigned review goal.\nThe architecture/phase plan is context for intended behavior and scope, not a plan-quality rubric.\nDo not validate or critique Brain-owned plan quality.\nStart your response with APPROVED or CHANGES_REQUESTED.`;
+}
+
+/** Build a `ReviewerResultLike` for the role evaluator from a runtime
+ *  `ReviewerTargetResult`. When the underlying delegate `result` exposes a
+ *  pane done sidecar path via `result.doneFile`, read and forward the parsed
+ *  sidecar under `details.done` so the role evaluator's fallback evidence
+ *  paths (`details.done.coderEvidence`, `details.done.summary`, ...) can
+ *  see structured coder/reviewer evidence stored in the sidecar.
+ *
+ *  Fail-closed: an unreadable / missing / empty sidecar simply omits
+ *  `details.done`; existing delegate `details` are preserved; the helper
+ *  never fabricates evidence. Exported so smoke tests can drive the
+ *  sidecar-to-evaluator path directly. */
+export function buildReviewerResultLikeForRoleEvaluation(
+	target: ReviewerTargetResult,
+): ReviewerResultLike {
+	const baseDetails = (target.result as unknown as { details?: Record<string, unknown> } | undefined)?.details;
+	const details: Record<string, unknown> = baseDetails ? { ...baseDetails } : {};
+	const doneFile = typeof target.result?.doneFile === "string" ? target.result.doneFile.trim() : "";
+	if (doneFile.length > 0) {
+		const sidecar = parseDoneSidecar(doneFile);
+		if (sidecar && typeof sidecar === "object" && !Array.isArray(sidecar)) {
+			details.done = sidecar;
+		}
+	}
+	return {
+		verdict: target.verdict,
+		finalOutput: target.result?.finalOutput ?? "",
+		completionSource: target.result?.completionSource,
+		completionWarning: target.result?.completionWarning,
+		status: target.status,
+		details: Object.keys(details).length > 0 ? details : undefined,
+	};
 }
 
 export async function runReviewerSwarm(
@@ -242,14 +276,11 @@ export async function runReviewerSwarm(
 	let docsConfigInScope = false;
 
 	if (roleState && reviewContext?.plan) {
-		const resultLikes: ReviewerResultLike[] = results.map((r) => ({
-			verdict: r.verdict,
-			finalOutput: r.result?.finalOutput ?? "",
-			completionSource: r.result?.completionSource,
-			completionWarning: r.result?.completionWarning,
-			status: r.status,
-			details: (r.result as unknown as { details?: Record<string, unknown> } | undefined)?.details,
-		}));
+		// Build `resultLikes` via the canonical helper so pane done sidecar
+		// data (coderEvidence / summary / etc.) is forwarded as
+		// `details.done` and the role evaluator's fallback evidence paths
+		// can suppress false provisional / static-only blockers.
+		const resultLikes: ReviewerResultLike[] = results.map((r) => buildReviewerResultLikeForRoleEvaluation(r));
 		// Use the canonical helper so synthetic and runtime paths share one
 		// derivation/evaluation path. Pass `goals` so the consolidated memo
 		// preserves the caller's supplemental goals instead of re-deriving
