@@ -26,6 +26,7 @@ import { KARPATHY_GUIDELINES_PROMPT } from "../prompts";
 import { resolveModelArg } from "../runtime/config";
 import {
 	DELEGATE_ACTIVITY_ENV_VAR,
+	DELEGATE_DISPLAY_ENV,
 	DELEGATE_DONE_ENV_VAR,
 	DELEGATE_RUN_ID_ENV_VAR,
 	SUB_AGENT_DONE_TOOL_NAME,
@@ -115,7 +116,45 @@ export async function removeTempPrompt(dir: string | null, filePath: string | nu
 	}
 }
 
-export function buildAgentSystemPrompt(agent: AgentName, preset: AgentPreset, roomContext?: ResolvedRoomContext, paneMode?: boolean): string {
+// TASK-002: explicit per-spawn completion context. The parent passes the
+// done-sidecar path, activity-sidecar path, runId, an optional `display`
+// override, and an `enabled` flag here so the child prompt / arg / env
+// builders do not need to read `process.env` (which can race under
+// concurrent headless delegates — the parent process's env is shared
+// across all child spawns). The explicit per-spawn context is the
+// SOLE source of authority for the completion env vars under the
+// TASK-002 hard-cut.
+export interface DelegateCompletionContext {
+	doneFile?: string;
+	activityFile?: string;
+	runId?: string;
+	display?: string;
+	/** True when the child should register the completion tools / receive
+	 *  the canonical completion prompt. The headless runner sets this
+	 *  once a per-run sidecar is allocated; the pane runner sets it
+	 *  whenever it spawns a pane delegate. */
+	enabled?: boolean;
+}
+
+/** Compute whether a child should treat itself as completion-enabled.
+ *  Precedence (highest to lowest): explicit `enabled` flag, presence of
+ *  `doneFile`. This is the single source of truth for prompt / arg /
+ *  env builders so they do not read `process.env`. */
+function isCompletionEnabled(paneMode: boolean | undefined, completionContext: DelegateCompletionContext | undefined): boolean {
+	if (completionContext) {
+		if (completionContext.enabled === true) return true;
+		if (typeof completionContext.doneFile === "string" && completionContext.doneFile.trim().length > 0) return true;
+	}
+	return paneMode === true;
+}
+
+export function buildAgentSystemPrompt(
+	agent: AgentName,
+	preset: AgentPreset,
+	roomContext: ResolvedRoomContext | undefined,
+	paneMode: boolean | undefined,
+	completionContext?: DelegateCompletionContext,
+): string {
 	const configured = preset.instructions?.trim() ?? "";
 	const includeKarpathyGuidelines = agent === "coder" ? preset.includeKarpathyGuidelines !== false : false;
 	const footer = `You are running as ${agent} in the Pi brain -> coder -> reviewer workflow.
@@ -129,8 +168,15 @@ Return concise handoff output for Brain.`;
 	if (includeKarpathyGuidelines) {
 		sections.push(KARPATHY_GUIDELINES_PROMPT.trim());
 	}
-	if (paneMode) {
-		sections.push(`You are running in a visible cmux pane. After producing your normal concise final handoff, you MUST call the \`${SUB_AGENT_DONE_TOOL_NAME}\` completion tool as your final action to return control to Brain. Final text alone is insufficient. Do not leak raw hidden chain-of-thought in the pane.`);
+	// TASK-002: tell headless delegates (and pane delegates) about the
+	// typed completion contract when a done sidecar is allocated. The
+	// source of truth is the explicit `completionContext` / `paneMode`
+	// parameter — `process.env` is intentionally NOT consulted so
+	// concurrent headless delegates cannot race through shared env
+	// mutation.
+	if (isCompletionEnabled(paneMode, completionContext)) {
+		const setting = paneMode ? "visible cmux pane" : "headless child process";
+		sections.push(`You are running in a ${setting}. After producing your normal concise final handoff, you MUST call the \`${SUB_AGENT_DONE_TOOL_NAME}\` completion tool as your final action to return control to Brain. Final text alone is insufficient. For matrix-gated work, pass an \`evidence\` envelope with typed \`coderEvidence\` (coder) or \`reviewerEvidence\` (reviewer) inside the canonical \`evidence\` parameter. The tool schema does NOT declare deprecated top-level \`coderEvidence\` / \`reviewerEvidence\` parameters — those fields are not accepted and are silently ignored. Gate decisions use stable enum / code / array fields; free-form text, summaries, Markdown, and approval phrases in any human language are diagnostic only and never satisfy pass/fail. Do not leak raw hidden chain-of-thought in the pane.`);
 	}
 	sections.push(footer);
 
@@ -143,9 +189,10 @@ export function buildChildArgs(
 	preset: AgentPreset,
 	task: string,
 	tmpPromptPath: string | null,
-	roomContext?: ResolvedRoomContext,
-	paneMode?: boolean,
+	roomContext: ResolvedRoomContext | undefined,
+	paneMode: boolean | undefined,
 	sessionFile?: string,
+	completionContext?: DelegateCompletionContext,
 ): string[] {
 	const args: string[] = [];
 	if (!paneMode) {
@@ -157,6 +204,7 @@ export function buildChildArgs(
 	const modelArg = resolveModelArg(preset);
 	if (modelArg) args.push("--model", modelArg);
 	if (preset.thinkingLevel) args.push("--thinking", preset.thinkingLevel);
+	const completionEnabled = isCompletionEnabled(paneMode, completionContext);
 	if (preset.tools) {
 		let effectiveTools = preset.tools.slice();
 		const seen = new Set(effectiveTools);
@@ -168,7 +216,11 @@ export function buildChildArgs(
 				}
 			}
 		}
-		if (paneMode) {
+		// TASK-002: register the completion tools whenever the child process
+		// is configured to write a done sidecar (pane OR headless). Headless
+		// delegates now allocate a done sidecar so typed completion
+		// evidence is supported uniformly across both transports.
+		if (completionEnabled) {
 			if (!seen.has(SUB_AGENT_DONE_TOOL_NAME)) {
 				effectiveTools.push(SUB_AGENT_DONE_TOOL_NAME);
 			}
@@ -179,9 +231,9 @@ export function buildChildArgs(
 		}
 		if (effectiveTools.length > 0) args.push("--tools", effectiveTools.join(","));
 		else args.push("--no-tools");
-	} else if (paneMode) {
+	} else if (completionEnabled) {
 		// When tools are unrestricted, the child completion tool is globally
-		// registered when PI_WORKFLOW_DELEGATE_DONE_FILE is set.
+		// registered when the completion context is enabled.
 		// The primary tool is sub_agent_done; workflow_delegate_done is kept
 		// as a backward-compatible alias.
 	}
@@ -211,21 +263,61 @@ export function buildChildEnv(parentCwd: string, roomContext?: ResolvedRoomConte
 	return childEnv;
 }
 
-export function buildHeadlessChildEnv(parentCwd: string, roomContext?: ResolvedRoomContext): NodeJS.ProcessEnv {
+export function buildHeadlessChildEnv(
+	parentCwd: string,
+	roomContext: ResolvedRoomContext | undefined,
+	completionContext?: DelegateCompletionContext,
+): NodeJS.ProcessEnv {
 	const childEnv: NodeJS.ProcessEnv = { ...process.env };
+	// TASK-002 HARD-CUT: clear ALL delegate completion env vars from
+	// inherited `process.env` BEFORE applying the explicit per-spawn
+	// completion context. The previous code only deleted the room vars
+	// and then overlaid; that allowed a stale `PI_WORKFLOW_DELEGATE_*`
+	// from the parent process (or from a previous headless spawn whose
+	// context was never cleared) to leak into the new child and corrupt
+	// done-sidecar ownership under concurrent headless delegates. The
+	// explicit per-spawn context is the sole source of authority for
+	// the completion env vars.
+	for (const key of [
+		DELEGATE_DONE_ENV_VAR,
+		DELEGATE_ACTIVITY_ENV_VAR,
+		DELEGATE_RUN_ID_ENV_VAR,
+		DELEGATE_DISPLAY_ENV,
+	]) {
+		delete childEnv[key];
+	}
 	for (const key of [
 		ROOM_ENV_ROOM_ROOT,
 		ROOM_ENV_ROOM_ID,
 		ROOM_ENV_AGENT_ID,
 		ROOM_ENV_AGENT_ROLE,
-		DELEGATE_DONE_ENV_VAR,
-		DELEGATE_ACTIVITY_ENV_VAR,
-		DELEGATE_RUN_ID_ENV_VAR,
 	]) {
 		delete childEnv[key];
 	}
+	// TASK-002: headless delegates can now opt-in to typed completion
+	// evidence by allocating a done sidecar and passing the env vars. The
+	// parent (headless.ts) passes the explicit `completionContext` so the
+	// child env is race-free under concurrent headless delegates (the
+	// shared parent `process.env` is never read here).
 	for (const [key, value] of Object.entries(buildChildEnv(parentCwd, roomContext))) {
 		if (value !== undefined) childEnv[key] = value;
+	}
+	// Overlay completion env vars from the explicit `completionContext`.
+	// This replaces the old `process.env` round-trip; the parent must
+	// allocate a per-run sidecar and pass it here.
+	if (completionContext) {
+		if (typeof completionContext.doneFile === "string" && completionContext.doneFile.trim().length > 0) {
+			childEnv[DELEGATE_DONE_ENV_VAR] = completionContext.doneFile;
+		}
+		if (typeof completionContext.activityFile === "string" && completionContext.activityFile.trim().length > 0) {
+			childEnv[DELEGATE_ACTIVITY_ENV_VAR] = completionContext.activityFile;
+		}
+		if (typeof completionContext.runId === "string" && completionContext.runId.trim().length > 0) {
+			childEnv[DELEGATE_RUN_ID_ENV_VAR] = completionContext.runId;
+		}
+		if (typeof completionContext.display === "string" && completionContext.display.trim().length > 0) {
+			childEnv[DELEGATE_DISPLAY_ENV] = completionContext.display;
+		}
 	}
 	return childEnv;
 }

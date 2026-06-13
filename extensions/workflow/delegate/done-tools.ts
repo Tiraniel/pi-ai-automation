@@ -9,7 +9,10 @@
 // Pi session so the pane can be closed.
 //
 // `sub_agent_done` is the primary tool; `workflow_delegate_done` is a
-// legacy alias kept for backward compatibility with older prompts.
+// legacy alias kept for backward compatibility with older prompts that
+// still reference that name. The alias exposes the SAME canonical-only
+// `evidence` envelope schema; it does not preserve legacy top-level
+// `coderEvidence` / `reviewerEvidence` compatibility fields.
 
 import * as fs from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -283,8 +286,26 @@ function makeDoneToolExecute(toolName: string) {
 			return errTool("Done file path not set in env.", { reason: "missing_env" });
 		}
 		const summary = String(params?.summary ?? "").trim();
-		const coderEvidence = params && typeof params.coderEvidence === "object" && params.coderEvidence !== null
-			? params.coderEvidence
+		// TASK-002 HARD-CUT: the completion tool boundary is canonical-only.
+		// The schema exposes only `summary` and `evidence` parameters.
+		// Deprecated top-level `coderEvidence` / `reviewerEvidence` params
+		// are NO LONGER declared on the tool schema. If a caller passes
+		// unknown top-level keys (e.g. older agents), the writer simply
+		// ignores them: no normalization, no sidecar write of top-level
+		// fields, no diagnostic warning. The canonical `evidence`
+		// envelope is the SOLE gate-authoritative input. New runs MUST
+		// pass `evidence: { coderEvidence?, reviewerEvidence? }`.
+		const rawEvidence = params && typeof params.evidence === "object" && params.evidence !== null
+			? (params.evidence as Record<string, unknown>)
+			: undefined;
+		const canonicalCoder = rawEvidence && "coderEvidence" in rawEvidence && typeof rawEvidence.coderEvidence === "object" && rawEvidence.coderEvidence !== null
+			? rawEvidence.coderEvidence
+			: undefined;
+		const canonicalReviewer = rawEvidence && "reviewerEvidence" in rawEvidence && typeof rawEvidence.reviewerEvidence === "object" && rawEvidence.reviewerEvidence !== null
+			? rawEvidence.reviewerEvidence
+			: undefined;
+		const canonicalWarnings = rawEvidence && Array.isArray(rawEvidence.warnings)
+			? (rawEvidence.warnings as unknown[]).filter((w): w is string => typeof w === "string")
 			: undefined;
 		const runId = process.env[DELEGATE_RUN_ID_ENV_VAR] || "";
 		const now = new Date().toISOString();
@@ -298,7 +319,19 @@ function makeDoneToolExecute(toolName: string) {
 				tool: toolName,
 				exit_code: 0,
 			};
-			if (coderEvidence !== undefined) data.coderEvidence = coderEvidence;
+			// Canonical evidence envelope. The envelope is the sole
+			// gate-readable path. Top-level `data.coderEvidence` /
+			// `data.reviewerEvidence` is NOT written under any condition
+			// (TASK-002 hard-cut). The schema does not declare legacy
+			// top-level params, and the writer does not surface any
+			// legacy diagnostic — the contract is canonical-only.
+			const envelope: Record<string, unknown> = {};
+			if (canonicalCoder !== undefined) envelope.coderEvidence = canonicalCoder;
+			if (canonicalReviewer !== undefined) envelope.reviewerEvidence = canonicalReviewer;
+			if (canonicalWarnings && canonicalWarnings.length > 0) envelope.warnings = canonicalWarnings;
+			if (Object.keys(envelope).length > 0) {
+				data.evidence = envelope;
+			}
 			fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
 			const activityFile = process.env[DELEGATE_ACTIVITY_ENV_VAR];
 			if (activityFile) {
@@ -309,7 +342,8 @@ function makeDoneToolExecute(toolName: string) {
 		}
 		setTimeout(() => ctx.shutdown(), 500);
 		const details: Record<string, unknown> = { doneFile, tool: toolName, completion: "explicit", source: "tool" };
-		if (coderEvidence !== undefined) details.coderEvidenceProvided = true;
+		if (canonicalCoder !== undefined) details.canonicalCoderEvidenceProvided = true;
+		if (canonicalReviewer !== undefined) details.canonicalReviewerEvidenceProvided = true;
 		return okTool("Delegate completion signaled. Shutting down.", details);
 	};
 }
@@ -342,6 +376,44 @@ const coderEvidenceParameters = Type.Optional(Type.Object({
 	delegateHistory: Type.Optional(Type.Object({}, { description: "Optional structured delegate history (attempts, retries, warnings)." })),
 }, { description: "Optional TASK-003 structured coder completion evidence. The parent completion-evidence-gate validates this packet against the architecture plan's matrix; tiny / non-matrix work may omit it." }));
 
+// TASK-002: canonical reviewer-evidence parameter (typed object; the
+// parent reviewer-roles gate is the source of truth for the shape).
+// Kept as a Type.Object (no required keys) so a single envelope covers
+// the matrix-gated case and tiny / non-matrix fallback.
+const reviewerEvidenceParameters = Type.Optional(Type.Object({
+	role: Type.Optional(Type.String({ description: "Reviewer role id (behavior, evidence-test, implementation, regression, maintainability, docs-config)." })),
+	verdict: Type.Optional(Type.Union([Type.Literal("APPROVED"), Type.Literal("CHANGES_REQUESTED"), Type.Literal("UNKNOWN")], { description: "Reviewer verdict token (first word of response)." })),
+	effectiveVerdict: Type.Optional(Type.Union([Type.Literal("APPROVED"), Type.Literal("CHANGES_REQUESTED"), Type.Literal("UNKNOWN")], { description: "Effective verdict after role-aware evaluation." })),
+	blockingReasons: Type.Optional(Type.Array(Type.String())),
+	weakEvidence: Type.Optional(Type.Array(Type.String())),
+	promptOnlyCaveats: Type.Optional(Type.Array(Type.String())),
+	unresolvedRisks: Type.Optional(Type.Array(Type.String())),
+	criterionCoverage: Type.Optional(Type.Array(Type.Object({
+		criterion: Type.String({ minLength: 1, description: "Criterion text this reviewer row covers." }),
+		evidenceKind: Type.Optional(Type.String({ description: "Evidence kind (behavior-test, runtime-gate, regression-test, ...)." })),
+		summary: Type.Optional(Type.String({ description: "Short summary of the reviewer's evidence." })),
+	}, { description: "Per-criterion coverage rows (non-empty for typed reviewer evidence)." }))),
+	commandsRun: Type.Optional(Type.Array(Type.Object({
+		command: Type.String({ minLength: 1, description: "Command that produced reviewer evidence." }),
+		outcome: Type.Optional(Type.String({ description: "Command outcome." })),
+		summary: Type.Optional(Type.String()),
+	}, { description: "Commands run by the reviewer to produce evidence (non-empty for typed reviewer evidence)." }))),
+	finalOutput: Type.Optional(Type.String({ description: "Optional final output preview." })),
+	explicitDeclaration: Type.Optional(Type.Boolean({ description: "Optional explicit declaration flag (NOT sufficient on its own)." })),
+}, { description: "Optional TASK-002 structured reviewer completion evidence. The parent reviewer-roles gate validates the packet; bare { present: true } / { explicitDeclaration: true } objects are NOT sufficient." }));
+
+// TASK-002 HARD-CUT: canonical evidence envelope parameter. New coder /
+// reviewer runs MUST pass `evidence: { coderEvidence?, reviewerEvidence? }`.
+// Deprecated top-level `coderEvidence` / `reviewerEvidence` parameters
+// have been DELETED from the strict delegate completion schema. The
+// canonical `evidence` envelope is the SOLE gate-authoritative input.
+const evidenceEnvelopeParameters = Type.Optional(Type.Object({
+	coderEvidence: coderEvidenceParameters,
+	reviewerEvidence: reviewerEvidenceParameters,
+	warnings: Type.Optional(Type.Array(Type.String({ description: "Optional structured warning strings." }))),
+	event: Type.Optional(Type.Object({}, { description: "Optional canonical EvidenceEvent-shaped payload (kind/provenance/payload)." })),
+}, { description: "Required TASK-002 canonical done.evidence envelope. New runs MUST write `evidence.coderEvidence` and / or `evidence.reviewerEvidence` here; deprecated top-level `coderEvidence` / `reviewerEvidence` parameters have been removed from the strict delegate completion schema and are not accepted." }));
+
 export function registerDelegateDoneTools(pi: ExtensionAPI): void {
 	// Child-only completion tools for pane delegates. Only registered when the
 	// env var is set (parent sets it before launching a pane delegate).
@@ -358,26 +430,28 @@ export function registerDelegateDoneTools(pi: ExtensionAPI): void {
 		promptSnippet: "Signal task completion and shut down.",
 		promptGuidelines: [
 			"Call this as your final action after producing your normal concise handoff to return control to Brain.",
-			"For matrix-gated architecture-plan work, also pass a `coderEvidence` object that maps your changed files and validation commands to the plan's acceptance criteria.",
+			"For matrix-gated architecture-plan work, also pass an `evidence` envelope (see below) that maps your changed files and validation commands to the plan's acceptance criteria.",
+			"Use `evidence.coderEvidence` for coder runs and `evidence.reviewerEvidence` for reviewer runs. The canonical `evidence` envelope is the SOLE gate-authoritative input — do not rely on final assistant text, Markdown, or free-form English / non-English approval phrases.",
+			"TASK-002 HARD-CUT: deprecated top-level `coderEvidence` / `reviewerEvidence` parameters have been REMOVED from the strict delegate completion schema. New runs MUST pass the `evidence` envelope directly. Unknown top-level params are ignored.",
 			"This tool writes the done sidecar and terminates the session.",
 		],
 		parameters: Type.Object({
 			summary: Type.Optional(Type.String({ description: "Optional one-line completion summary" })),
-			coderEvidence: coderEvidenceParameters,
+			evidence: evidenceEnvelopeParameters,
 		}),
 		execute: makeDoneToolExecute(SUB_AGENT_DONE_TOOL_NAME),
 	});
 	pi.registerTool({
 		name: DELEGATE_DONE_TOOL_NAME,
-		label: "Delegate Done (legacy)",
-		description: `Legacy alias for ${SUB_AGENT_DONE_TOOL_NAME}. Use ${SUB_AGENT_DONE_TOOL_NAME} instead.`,
-		promptSnippet: "Signal task completion and shut down (legacy alias).",
+		label: "Delegate Done (alias)",
+		description: `Alias for ${SUB_AGENT_DONE_TOOL_NAME}. Use ${SUB_AGENT_DONE_TOOL_NAME} instead.`,
+		promptSnippet: "Signal task completion and shut down.",
 		promptGuidelines: [
-			`Prefer ${SUB_AGENT_DONE_TOOL_NAME}. This alias exists for backward compatibility only.`,
+			`Prefer ${SUB_AGENT_DONE_TOOL_NAME}. This alias exposes the same canonical-only contract — only the \`evidence\` envelope is gate-authoritative; deprecated top-level \`coderEvidence\` / \`reviewerEvidence\` params are not part of the strict delegate completion schema.`,
 		],
 		parameters: Type.Object({
 			summary: Type.Optional(Type.String({ description: "Optional one-line completion summary" })),
-			coderEvidence: coderEvidenceParameters,
+			evidence: evidenceEnvelopeParameters,
 		}),
 		execute: makeDoneToolExecute(DELEGATE_DONE_TOOL_NAME),
 	});

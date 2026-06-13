@@ -441,15 +441,27 @@ function main(): void {
 		}
 		// buildReviewerMemoForResults preserves the supplemental goals on the
 		// consolidated memo and embeds them into the markdown body.
+		// Under the TASK-002 tightened contract, typed reviewer evidence
+		// must live on the canonical `done.evidence` envelope; top-level
+		// `reviewerEvidence` is a legacy path and does NOT satisfy the
+		// reviewer-roles gate. The fixture carries the canonical
+		// `verdict` / `effectiveVerdict` so the role gate's structured
+		// verdict authority drives the APPROVED outcome.
 		const results = derivation.targets.map(() => ({
 			verdict: "APPROVED" as const,
 			finalOutput: "APPROVED. Diff matches the spec; criterion satisfied.",
 			completionSource: "explicit" as const,
 			status: "completed" as const,
-			reviewerEvidence: {
-				present: true,
-				explicitDeclaration: true,
-				criterionCoverage: [{ criterion: "criterion", evidenceKind: "diff", summary: "diff review" }],
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						present: true,
+						explicitDeclaration: true,
+						criterionCoverage: [{ criterion: "criterion", evidenceKind: "diff", summary: "diff review" }],
+					},
+				},
 			},
 		}));
 		const { memo } = buildReviewerMemoForResults(plan, "phaseA", results, { goals: explicitGoals });
@@ -644,12 +656,15 @@ function main(): void {
 
 	// (12) DBG-007 sidecar-to-evaluator runtime shaping: the role-mode
 	//      path must read pane done sidecars from `result.doneFile` and
-	//      forward them as `details.done` so the role evaluator's
-	//      fallback evidence paths can see `coderEvidence` /
-	//      `summary` JSON stored in the actual sidecar. Cover the
-	//      positive case (typed coderEvidence in sidecar suppresses
-	//      auto_exit provisional and approves the memo) and the
-	//      negative cases (missing / unreadable / empty sidecar
+	//      forward them as `details.done` so the reviewer role gate can
+	//      read the canonical `details.done.evidence.reviewerEvidence`
+	//      envelope stored in the actual sidecar. Under the TASK-002
+	//      hard-cut, the canonical envelope is the SOLE approval-
+	//      authority path; top-level `coderEvidence` / `reviewerEvidence`
+	//      / summary JSON on the sidecar are diagnostic only and FAIL
+	//      CLOSED. Cover the positive case (canonical envelope in sidecar
+	//      suppresses auto_exit provisional and approves the memo) and
+	//      the negative cases (missing / unreadable / empty sidecar
 	//      fail-closed: no details.done is fabricated, the role
 	//      stays provisional, and the memo is not approved).
 	{
@@ -675,11 +690,15 @@ function main(): void {
 
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "task-004-sidecar-"));
 		try {
-			// 12b: positive — typed coderEvidence.criterionCoverage in
-			//      a real on-disk done sidecar + auto_exit completion
-			//      source + no direct reviewerEvidence suppresses
-			//      provisional, keeps the role approved, and the memo
-			//      becomes approved.
+			// 12b: positive — canonical sidecar evidence. The
+			//      on-disk done sidecar carries a canonical
+			//      `evidence.reviewerEvidence` envelope with typed
+			//      `criterionCoverage` and `commandsRun`. Combined
+			//      with `auto_exit` completion source and no direct
+			//      reviewerEvidence, the canonical envelope must
+			//      suppress provisional, keep the role APPROVED.
+			//      Legacy top-level `coderEvidence` is diagnostic
+			//      only under the TASK-002 tightened contract.
 			const doneFile = path.join(tmpDir, "done-b.json");
 			fs.writeFileSync(doneFile, JSON.stringify({
 				done: true,
@@ -687,15 +706,19 @@ function main(): void {
 				source: "shell_exit",
 				exit_code: 0,
 				from_auto_exit: true,
-				coderEvidence: {
-					present: true,
-					explicitDeclaration: true,
-					criterionCoverage: [
-						{ criterion: "Behavior reviewer criterion", evidenceKind: "behavior-test", summary: "behavior test passed" },
-					],
-					commandsRun: [
-						{ command: "npx tsx scripts/smoke-tui.ts", outcome: "exit 0", summary: "smoke passed" },
-					],
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						present: true,
+						explicitDeclaration: true,
+						criterionCoverage: [
+							{ criterion: "Behavior reviewer criterion", evidenceKind: "behavior-test", summary: "behavior test passed" },
+						],
+						commandsRun: [
+							{ command: "npx tsx scripts/smoke-tui.ts", outcome: "exit 0", summary: "smoke passed" },
+						],
+					},
 				},
 			}) + "\n", "utf8");
 			const autoExitTarget: ReviewerTargetResult = {
@@ -721,17 +744,21 @@ function main(): void {
 			check(like.details !== undefined && (like.details as Record<string, unknown>).done !== undefined,
 				"12b: helper forwards parsed sidecar as details.done when doneFile is readable");
 			const sidecar = (like.details as Record<string, unknown>).done as Record<string, unknown>;
-			check(sidecar.coderEvidence !== undefined,
-				"12b: forwarded sidecar preserves coderEvidence");
-			const sidecarCoder = sidecar.coderEvidence as Record<string, unknown>;
-			check(Array.isArray(sidecarCoder.criterionCoverage) && (sidecarCoder.criterionCoverage as unknown[]).length > 0,
+			const sidecarEvidence = sidecar.evidence as Record<string, unknown> | undefined;
+			check(sidecarEvidence !== undefined,
+				"12b: forwarded sidecar preserves canonical evidence envelope");
+			const sidecarReviewer = sidecarEvidence?.reviewerEvidence as Record<string, unknown> | undefined;
+			check(sidecarReviewer !== undefined,
+				"12b: forwarded sidecar preserves typed reviewerEvidence");
+			check(Array.isArray(sidecarReviewer?.criterionCoverage) && (sidecarReviewer!.criterionCoverage as unknown[]).length > 0,
 				"12b: forwarded sidecar preserves typed criterionCoverage");
 			// Drive the helper output through the role evaluator and
 			// the canonical memo builder end-to-end. Every required
-			// role needs a result aligned to its target. The behavior
-			// role is auto_exit + sidecar fallback evidence; the other
-			// roles approve with explicit evidence so they are not
-			// downgraded by the runtime-scope / static-only checks.
+			// role needs a result aligned to its target. The
+			// behavior role is auto_exit + canonical sidecar
+			// evidence; the other roles approve with explicit
+			// evidence so they are not downgraded by the
+			// runtime-scope / static-only checks.
 			const otherResults: import("../extensions/workflow/delegate/reviewer-roles").ReviewerResultLike[] = [];
 			const { evaluations, memo } = buildReviewerMemoForResults(
 				plan,
@@ -742,9 +769,9 @@ function main(): void {
 			const behaviorEval = evaluations.find((e) => e.role === "behavior");
 			check(Boolean(behaviorEval), "12b: behavior evaluation present after sidecar forwarding");
 			check(behaviorEval?.provisional === false,
-				`12b: behavior auto_exit with sidecar coderEvidence is NOT provisional (got: ${behaviorEval?.provisional})`);
+				`12b: behavior auto_exit with canonical sidecar reviewerEvidence is NOT provisional (got: ${behaviorEval?.provisional})`);
 			check(behaviorEval?.effectiveVerdict === "APPROVED",
-				`12b: behavior auto_exit with sidecar coderEvidence stays APPROVED (got: ${behaviorEval?.effectiveVerdict})`);
+				`12b: behavior auto_exit with canonical sidecar reviewerEvidence stays APPROVED (got: ${behaviorEval?.effectiveVerdict})`);
 			// The memo is not fully approved yet because the
 			// other-role evaluations are synthesized as UNKNOWN by
 			// `buildReviewerMemoForResults` when fewer results than
@@ -761,30 +788,42 @@ function main(): void {
 				`12b: memo buckets the synthesized UNKNOWN other roles as changesRequested (got: ${memo.changesRequested.length})`);
 
 			// 12c: full end-to-end — every required role is supplied,
-			//      one is auto_exit + sidecar fallback, the rest are
-			//      explicit + typed structured evidence. The memo
+			//      one is auto_exit + canonical sidecar evidence, the
+			//      rest are explicit + typed structured evidence on
+			//      the canonical `details.evidence.reviewerEvidence`
+			//      envelope (legacy top-level `reviewerEvidence` is
+			//      no longer authority under TASK-002). The memo
 			//      must be approved and have no provisional caveats.
 			const fullResults: import("../extensions/workflow/delegate/reviewer-roles").ReviewerResultLike[] = derivation.targets.map((t, i) => {
 				if (i === 0) {
-					// behavior: sidecar fallback evidence + auto_exit.
+					// behavior: canonical sidecar evidence + auto_exit.
 					return buildReviewerResultLikeForRoleEvaluation(autoExitTarget);
 				}
-				// Other roles: explicit + typed structured evidence.
+				// Other roles: explicit + canonical typed structured
+				// evidence with verdict / effectiveVerdict so the
+				// role gate's structured verdict authority drives
+				// the APPROVED outcome.
 				return {
 					verdict: "APPROVED" as const,
 					finalOutput: "APPROVED. behavior test passed: tsx scripts/smoke-tui.ts exited 0.",
 					completionSource: "explicit" as const,
 					status: "completed" as const,
-					reviewerEvidence: {
-						present: true,
-						explicitDeclaration: true,
-						criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+					details: {
+						evidence: {
+							reviewerEvidence: {
+								verdict: "APPROVED",
+								effectiveVerdict: "APPROVED",
+								present: true,
+								explicitDeclaration: true,
+								criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+							},
+						},
 					},
 				};
 			});
 			const full = buildReviewerMemoForResults(plan, "phaseA", fullResults, { goals: undefined });
 			check(full.memo.approved === true,
-				"12c: end-to-end memo approved=true when auto_exit role uses sidecar coderEvidence fallback");
+				"12c: end-to-end memo approved=true when auto_exit role uses canonical sidecar reviewerEvidence");
 			check(full.memo.provisionalCaveats.length === 0,
 				`12c: end-to-end memo has no provisionalCaveats (got: ${full.memo.provisionalCaveats.length})`);
 
@@ -878,22 +917,28 @@ function main(): void {
 			check(emptyEval.effectiveVerdict === "CHANGES_REQUESTED",
 				"12f: empty sidecar does not approve a required role");
 
-			// 12g: positive — typed criterionCoverage under
+			// 12g: positive — canonical sidecar evidence for the
+			//      regression role. The on-disk done sidecar carries
+			//      a typed `evidence.reviewerEvidence.commandsRun`
+			//      array on the canonical envelope. Under TASK-002
+			//      the canonical envelope suppresses auto_exit
+			//      provisional for the regression role. The legacy
 			//      `coderEvidence.delegateHistory.reviewerEvidence`
-			//      in the on-disk sidecar (legacy reviewer's
-			//      structured evidence path) also suppresses
-			//      auto_exit provisional for the regression role.
+			//      nested path is no longer authority and is
+			//      covered by task-004 reviewer-roles' legacy-
+			//      rejection smokes; the canonical path is
+			//      exercised here.
 			const regFile = path.join(tmpDir, "done-reg.json");
 			fs.writeFileSync(regFile, JSON.stringify({
 				done: true,
 				completion: "auto_exit",
 				source: "shell_exit",
 				exit_code: 0,
-				coderEvidence: {
-					delegateHistory: {
-						reviewerEvidence: {
-							commandsRun: [{ command: "npx tsx scripts/regression-smoke.ts", outcome: "exit 0", summary: "regression test passed" }],
-						},
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						commandsRun: [{ command: "npx tsx scripts/regression-smoke.ts", outcome: "exit 0", summary: "regression test passed" }],
 					},
 				},
 			}) + "\n", "utf8");
@@ -917,9 +962,9 @@ function main(): void {
 			const regLike = buildReviewerResultLikeForRoleEvaluation(regTarget);
 			const regEval = evaluateReviewerResult(regressionTarget!, regLike);
 			check(regEval.provisional === false,
-				"12g: on-disk sidecar with coderEvidence.delegateHistory.reviewerEvidence suppresses auto_exit provisional");
+				"12g: canonical sidecar with evidence.reviewerEvidence.commandsRun suppresses auto_exit provisional");
 			check(regEval.effectiveVerdict === "APPROVED",
-				"12g: on-disk sidecar with coderEvidence.delegateHistory.reviewerEvidence keeps regression role approved");
+				"12g: canonical sidecar with evidence.reviewerEvidence.commandsRun keeps regression role approved");
 		} finally {
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}

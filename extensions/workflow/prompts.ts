@@ -87,9 +87,9 @@ Quality gates (enforceable):
 
 Architecture-plan matrix-gated completion (TASK-003):
 - When the delegated task is part of a ready architecture plan with an \`acceptanceEvidenceMatrix\`, your completion is *not* final until the matrix is satisfied. Free-form "done" / "checks passed" text is diagnostic only and will not advance the phase.
-- On your final action (the \`sub_agent_done\` / \`workflow_delegate_done\` completion tool), you MUST include a structured \`coderEvidence\` packet that maps every \`acceptanceEvidenceMatrix\` row to a \`criterionCoverage\` entry keyed by the exact criterion text from the plan, with \`evidenceKind\`, \`strength\`, \`supportingFiles\`, \`supportingCommands\`, a one-line \`summary\`, and any caveats/gaps. The \`coderEvidence\` packet is REQUIRED for ready matrix-gated work — it is not optional and free-form final text is never sufficient. If the completion tool or its \`coderEvidence\` schema is unavailable in your environment, you MUST report a blocker / known gap in \`criterionCoverage\` and \`knownGaps\` instead of free-form text, because the phase will not advance without a structured packet.
+- On your final action (the \`sub_agent_done\` / \`workflow_delegate_done\` completion tool), you MUST include a structured \`evidence\` envelope that maps every \`acceptanceEvidenceMatrix\` row to a \`criterionCoverage\` entry keyed by the exact criterion text from the plan, with \`evidenceKind\`, \`strength\`, \`supportingFiles\`, \`supportingCommands\`, a one-line \`summary\`, and any caveats/gaps. The canonical envelope is \`evidence: { coderEvidence: { ... }, warnings?: [...] }\` (TASK-002). The deprecated top-level \`coderEvidence\` parameter has been REMOVED from the strict delegate completion schema; new runs MUST use the canonical \`evidence\` envelope.
 - Report each validation command with an explicit \`outcome\` of \`passed\` | \`failed\` | \`skipped\` and a short \`summary\`. Do not claim runtime behavior from source-string / static-only / prompt-only inspection alone — runtime-behavior / behavior-test criteria require runnable supporting commands that actually passed.
-- Surface failed/retry/auto-exit history in \`delegateHistory\` (attempts, warnings, retries) and a one-line caveat per known gap. The lightweight / summary-only exception applies ONLY to non-matrix-gated work (tiny / admin / debug / docs); a ready matrix-gated plan always requires the structured \`coderEvidence\` packet, and a lightweight bypass is refused.`;
+- Surface failed/retry/auto-exit history in \`delegateHistory\` (attempts, warnings, retries) and a one-line caveat per known gap. The lightweight / summary-only exception applies ONLY to non-matrix-gated work (tiny / admin / debug / docs); a ready matrix-gated plan always requires the structured \`evidence.coderEvidence\` packet, and a lightweight bypass is refused.`;
 
 export const REVIEWER_INSTRUCTIONS = `You are Reviewer, the independent review agent in a Pi brain -> coder -> reviewer workflow.
 
@@ -117,7 +117,12 @@ Return one of:
 - APPROVED: with brief rationale and any non-blocking notes.
 - CHANGES_REQUESTED: with prioritized issues, file paths/lines when possible, and concrete fixes.
 
-Start your response with APPROVED or CHANGES_REQUESTED as the first token. If Brain assigns a specific review goal/target, focus only on that goal.`
+Start your response with APPROVED or CHANGES_REQUESTED as the first token. If Brain assigns a specific review goal/target, focus only on that goal.
+
+Reviewer typed completion (TASK-002):
+- On your final action (the \`sub_agent_done\` / \`workflow_delegate_done\` completion tool), pass an \`evidence\` envelope with \`reviewerEvidence\` describing your role, verdict, blocking reasons, weak evidence, prompt-only caveats, and unresolved risks. The canonical envelope is \`evidence: { reviewerEvidence: { ... } }\`; the deprecated top-level \`reviewerEvidence\` parameter has been REMOVED from the strict delegate completion schema.
+- A bare \`{ present: true }\` / \`{ explicitDeclaration: true }\` object is NOT enough to satisfy a required reviewer role; you must include typed content (non-empty \`criterionCoverage\` or \`commandsRun\`) so the matrix-gated reviewer role gate can recognize structured evidence and suppress provisional auto-exit / process-exit blocking.
+- Reviewer approval cannot rely on free-form Markdown prose alone. The role gate reads canonical \`reviewerEvidence.verdict\` / \`effectiveVerdict\` / \`blockingReasons\` schema only; final text / Markdown-only approvals are diagnostic and cannot satisfy matrix-gated work. Free-form English or non-English approval phrases never satisfy the gate.`;
 
 export const KARPATHY_GUIDELINES_PROMPT = `# Karpathy Guidelines
 

@@ -9,6 +9,28 @@ export type ActivityPhase = "starting" | "active" | "waiting" | "done";
 export type DoneCompletionKind = "explicit" | "auto_exit" | "process_exit";
 export type DoneSidecarSource = "tool" | "agent_end" | "shell_exit";
 
+/**
+ * Canonical done-sidecar evidence envelope for TASK-002.
+ *
+ * New delegate runs (coder / reviewer / headless) should write structured
+ * evidence here, with `coderEvidence` and `reviewerEvidence` as the
+ * simple current-run payloads. Optional `warnings` is a list of human-
+ * readable warning strings attached to the current completion. Optional
+ * `event` lets the tool carry a single canonical EvidenceEvent-like
+ * envelope (e.g. `{ kind: "coder_evidence", provenance: "canonical",
+ * payload: { ... } }`) for richer downstream projections; the
+ * canonical-evidence helper recognizes the simple envelopes here and
+ * dispatches on shape.
+ *
+ * Tiny / non-matrix work may omit this field entirely.
+ */
+export interface DoneSidecarEvidence {
+	coderEvidence?: unknown;
+	reviewerEvidence?: unknown;
+	warnings?: string[];
+	event?: unknown;
+}
+
 export interface DoneSidecar {
 	done?: boolean;
 	summary?: string;
@@ -21,11 +43,24 @@ export interface DoneSidecar {
 	from_auto_exit?: boolean;
 	stop_reason?: string;
 	warning?: string;
-	// TASK-003 Phase B: optional structured coder completion evidence. The
-	// parent completion-evidence-gate reads this field via the done sidecar
-	// parser and feeds it to the matrix-gated evaluator. Backward-compat:
-	// tiny / non-matrix coder work may omit this field and complete normally.
-	coderEvidence?: unknown;
+	// TASK-002 HARD-CUT: the only gate-authoritative structured evidence
+	// path is the canonical `evidence` envelope below. The previous
+	// top-level `coderEvidence` / `reviewerEvidence` fields have been
+	// DELETED from the strict flow. The completion tool no longer writes
+	// them, the gate no longer reads them, and they are not part of the
+	// canonical authority. Callers that still send top-level fields via
+	// the completion tool boundary are ignored (no sidecar write, no
+	// gate authority).
+	//
+	// Canonical evidence envelope. New coder / reviewer completions must
+	// write structured `evidence.coderEvidence` and / or
+	// `evidence.reviewerEvidence` here. The canonical-evidence parser
+	// reads this envelope only; legacy / free-form / parseable JSON
+	// content on top-level `summary` / `delegateHistory` / etc. is
+	// diagnostic only and fails closed on matrix-gated plans.
+	evidence?: DoneSidecarEvidence;
+	// TASK-002: structured warnings from the delegate, surfaced to gates.
+	warnings?: string[];
 }
 
 export interface ActivitySidecar {
@@ -78,6 +113,17 @@ export function parseDoneSidecar(filePath: string): DoneSidecar | undefined {
 	if (!value || typeof value !== "object" || value === null) return undefined;
 	return value;
 }
+
+// ---------- TASK-002 canonical evidence pickers (HARD-CUT) ----------
+//
+// The shared canonical envelope parser lives in
+// `extensions/workflow/delegate/canonical-evidence.ts` and reads the
+// `done.evidence` envelope only. Deprecated top-level `coderEvidence` /
+// `reviewerEvidence` / `summary` / `delegateHistory` fields on the
+// sidecar are NOT canonical and are NOT read by the gate. This module
+// therefore no longer ships its own ad-hoc picker; the completion gate
+// and the reviewer-roles gate both call into the canonical helper so
+// they share one canonical authority.
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;

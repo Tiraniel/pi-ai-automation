@@ -14,6 +14,18 @@
 //      `warnings` array (or a `legacy_import` event that documents the
 //      import).
 //   3. Free-form-only inputs never produce accepted events.
+//
+// TASK-002 hard-cut reminder: this adapter may still produce ledger /
+// migration events and may still surface mirrored `mirroredCoderEvidence`
+// / `mirroredReviewerEvidence` payloads for diagnostic / projection
+// consumers (queries, memos, dashboards). However, TASK-002 delegate
+// coder / reviewer gates MUST NOT consume these mirrors as pass/fail
+// authority: the only canonical evidence path for the strict delegate
+// completion gate is `done.evidence` (or the equivalent
+// `result.details.evidence` / `result.details.done.evidence`). Other
+// callers (legacy ledger queries, project-history views, smoke
+// fixtures) may still read the mirrors, but the matrix-gated delegate
+// advancement path ignores them by design.
 
 import {
 	appendEvent,
@@ -157,6 +169,32 @@ export interface ImportLegacyResult {
 	warnings: LegacyImportWarning[];
 	detected: LegacyImportSourceKind | "none";
 	freeFormOnly: boolean;
+	/** When the adapter found structured `coderEvidence` content and
+	 *  mirrored it, the ORIGINAL structured payload (not the
+	 *  ledger-normalized event payload) is surfaced here. The
+	 *  mirrored payload is INTENDED for diagnostic / projection
+	 *  consumers (legacy ledger queries, project-history views,
+	 *  smoke fixtures) that need the full original
+	 *  `supportingFiles` / `supportingCommands` / etc. fields. The
+	 *  ledger event is still appended for provenance / queries.
+	 *
+	 *  TASK-002 hard-cut: the strict delegate coder gate MUST NOT
+	 *  consume `mirroredCoderEvidence` as pass/fail authority. The
+	 *  coder gate reads only `done.evidence.coderEvidence` (or
+	 *  `details.evidence.coderEvidence` / `details.done.evidence.coderEvidence`).
+	 *  This mirror is kept for non-gate consumers only. */
+	mirroredCoderEvidence: unknown | undefined;
+	/** When the adapter found structured `reviewerEvidence` content
+	 *  and mirrored it, the ORIGINAL structured payload is surfaced
+	 *  here. Like `mirroredCoderEvidence`, this is for diagnostic /
+	 *  projection consumers only.
+	 *
+	 *  TASK-002 hard-cut: the strict delegate reviewer-roles gate
+	 *  MUST NOT consume `mirroredReviewerEvidence` as pass/fail
+	 *  authority. The reviewer-roles gate reads only canonical
+	 *  `done.evidence.reviewerEvidence` (or its in-memory
+	 *  equivalents). */
+	mirroredReviewerEvidence: unknown | undefined;
 }
 
 // ---------- Top-level entry point ----------
@@ -214,7 +252,7 @@ export function importLegacyEvidence(input: ImportLegacyInput): ImportLegacyResu
 		if (appended) {
 			nextLedger = markRejected(nextLedger, appended.eventId, input.now, warningStrings);
 		}
-		return { ledger: nextLedger, events: nextLedger.events.slice(ledger.events.length), warnings, detected: "freeFormOnly", freeFormOnly: true };
+		return { ledger: nextLedger, events: nextLedger.events.slice(ledger.events.length), warnings, detected: "freeFormOnly", freeFormOnly: true, mirroredCoderEvidence: undefined, mirroredReviewerEvidence: undefined };
 	}
 
 	const record = input.source as Record<string, unknown>;
@@ -349,7 +387,7 @@ function importCoderEvidence(input: SubAdapterInput): ImportLegacyResult {
 		}
 	}
 
-	return { ledger: nextLedger, events: nextLedger.events.slice(input.ledger.events.length), warnings, detected: "coderEvidence", freeFormOnly: !hasStructured };
+	return { ledger: nextLedger, events: nextLedger.events.slice(input.ledger.events.length), warnings, detected: "coderEvidence", freeFormOnly: !hasStructured, mirroredCoderEvidence: hasStructured ? input.payload : undefined, mirroredReviewerEvidence: undefined };
 }
 
 function importReviewerEvidence(input: SubAdapterInput): ImportLegacyResult {
@@ -372,12 +410,28 @@ function importReviewerEvidence(input: SubAdapterInput): ImportLegacyResult {
 	const weakEvidence = asStringArray(record.weakEvidence);
 	const promptOnlyCaveats = asStringArray(record.promptOnlyCaveats);
 	const unresolvedRisks = asStringArray(record.unresolvedRisks);
+	// TASK-002 hard-cut: a legacy `reviewerEvidence` artifact with
+	// non-empty typed reviewer-evidence content (non-empty
+	// `criterionCoverage` rows, non-empty `commandsRun` entries,
+	// verdict tokens, blocking reasons, etc.) IS recognized as
+	// structured and the adapter appends a `reviewer_evidence`
+	// ledger event with `provenance: "legacy"` and surfaces the
+	// ORIGINAL payload via `mirroredReviewerEvidence`. However,
+	// the mirrored payload is for diagnostic / projection
+	// consumers only — the TASK-002 strict delegate
+	// reviewer-roles gate MUST NOT consume it as pass/fail
+	// authority. Bare labels / final-text summaries without typed
+	// content remain free-form-only and are NOT mirrored.
+	const criterionCoverage = Array.isArray(record.criterionCoverage) ? record.criterionCoverage : [];
+	const commandsRun = Array.isArray(record.commandsRun) ? record.commandsRun : [];
+	const typedContent = criterionCoverage.length > 0 || commandsRun.length > 0;
 	const finalOutput = typeof record.finalOutput === "string" && record.finalOutput.trim() ? record.finalOutput : undefined;
 	const hasStructured = blockingReasons.length + weakEvidence.length + promptOnlyCaveats.length + unresolvedRisks.length > 0
 		|| verdict !== "UNKNOWN"
-		|| Boolean(finalOutput && finalOutput.trim());
+		|| Boolean(finalOutput && finalOutput.trim())
+		|| typedContent;
 
-	if (!hasStructured) pushWarning(warnings, "no_structured_content", "Legacy `reviewerEvidence` carries no verdict, blocking reasons, weak evidence, prompt-only caveats, or unresolved risks; not authoritative.");
+	if (!hasStructured) pushWarning(warnings, "no_structured_content", "Legacy `reviewerEvidence` carries no verdict, blocking reasons, weak evidence, prompt-only caveats, unresolved risks, criterionCoverage, or commandsRun; not authoritative.");
 	const warningStrings = formatWarningStrings(warnings);
 
 	let nextLedger = appendEvent(input.ledger, {
@@ -423,7 +477,7 @@ function importReviewerEvidence(input: SubAdapterInput): ImportLegacyResult {
 		}
 	}
 
-	return { ledger: nextLedger, events: nextLedger.events.slice(input.ledger.events.length), warnings, detected: "reviewerEvidence", freeFormOnly: !hasStructured };
+	return { ledger: nextLedger, events: nextLedger.events.slice(input.ledger.events.length), warnings, detected: "reviewerEvidence", freeFormOnly: !hasStructured, mirroredCoderEvidence: undefined, mirroredReviewerEvidence: hasStructured ? input.payload : undefined };
 }
 
 function importDelegateHistory(input: SubAdapterInput): ImportLegacyResult {
@@ -498,7 +552,7 @@ function importDelegateHistory(input: SubAdapterInput): ImportLegacyResult {
 		}
 	}
 
-	return { ledger: nextLedger, events: nextLedger.events.slice(input.ledger.events.length), warnings, detected: "delegateHistory", freeFormOnly: !hasStructured };
+	return { ledger: nextLedger, events: nextLedger.events.slice(input.ledger.events.length), warnings, detected: "delegateHistory", freeFormOnly: !hasStructured, mirroredCoderEvidence: undefined, mirroredReviewerEvidence: undefined };
 }
 
 function importSummary(input: SubAdapterInput): ImportLegacyResult {
@@ -516,13 +570,32 @@ function importSummary(input: SubAdapterInput): ImportLegacyResult {
 	if (labels.missing) pushWarning(warnings, "missing_sidecar_observed", "Legacy `summary` mentions a missing sidecar; matrix-gated work cannot rely on this for acceptance.");
 
 	const parsedRecord = asRecord(parsed);
+	const parsedCoderEvidence = asRecord(parsedRecord?.coderEvidence);
+	const parsedReviewerEvidence = asRecord(parsedRecord?.reviewerEvidence);
+	const parsedDelegateHistory = asRecord(parsedRecord?.delegateHistory);
+	// TASK-002 hard-cut: surface typed reviewer evidence stored
+	// under historical `coderEvidence.delegateHistory.reviewerEvidence`
+	// and top-level `delegateHistory.reviewerEvidence` summary
+	// shapes. These are the legacy-reviewer path that delegates used
+	// before the canonical `done.evidence.reviewerEvidence` envelope.
+	// The adapter surfaces the ORIGINAL structured payload via
+	// `mirroredReviewerEvidence` for diagnostic / projection
+	// consumers; the TASK-002 strict delegate reviewer-roles gate
+	// MUST NOT consume this mirror as pass/fail authority. This is
+	// the single central summary-JSON mirror that gates must NOT
+	// duplicate.
+	const nestedCoderDelegateHistoryReviewer = asRecord(parsedCoderEvidence?.delegateHistory)?.reviewerEvidence;
+	const nestedDelegateHistoryReviewer = asRecord(parsedDelegateHistory)?.reviewerEvidence;
+	const hasNestedReviewerEvidence = asRecord(nestedCoderDelegateHistoryReviewer) !== undefined
+		|| asRecord(nestedDelegateHistoryReviewer) !== undefined;
 	const hasStructured = parsedRecord !== undefined && (
-		parsedRecord.coderEvidence !== undefined
-		|| parsedRecord.reviewerEvidence !== undefined
+		parsedCoderEvidence !== undefined
+		|| parsedReviewerEvidence !== undefined
 		|| parsedRecord.delegateHistory !== undefined
 		|| parsedRecord.commandsRun !== undefined
 		|| parsedRecord.criterionCoverage !== undefined
 		|| parsedRecord.verdict !== undefined
+		|| hasNestedReviewerEvidence
 	);
 	if (!hasStructured) pushWarning(warnings, "no_structured_content", "Legacy `summary` does not contain parseable structured evidence; not authoritative.");
 	const warningStrings = formatWarningStrings(warnings);
@@ -548,9 +621,152 @@ function importSummary(input: SubAdapterInput): ImportLegacyResult {
 		if (imported && imported.kind === "legacy_import") {
 			nextLedger = markRejected(nextLedger, imported.eventId, input.now, warningStrings);
 		}
+		return { ledger: nextLedger, events: nextLedger.events.slice(input.ledger.events.length), warnings, detected: "summary", freeFormOnly: true, mirroredCoderEvidence: undefined, mirroredReviewerEvidence: undefined };
 	}
 
-	return { ledger: nextLedger, events: nextLedger.events.slice(input.ledger.events.length), warnings, detected: "summary", freeFormOnly: !hasStructured };
+	// Mirror structured content into typed events. The caller
+	// (legacy ledger queries, project-history views, smoke
+	// fixtures) inspects the ledger to surface legacy-mirrored
+	// events with explicit provenance; this is the single central
+	// summary-JSON mirror that gates must NOT duplicate.
+	//
+	// TASK-002 hard-cut: TASK-002 strict delegate coder / reviewer
+	// gates MUST NOT read these mirrors as pass/fail authority —
+	// the only canonical path is `done.evidence` (or its in-memory
+	// equivalents on result details).
+	if (parsedCoderEvidence !== undefined) {
+		const commandsRaw = Array.isArray(parsedCoderEvidence.commandsRun) ? parsedCoderEvidence.commandsRun : [];
+		const commandsRun: { command: string; outcome: "passed" | "failed" | "skipped"; summary?: string; exitCode?: number }[] = [];
+		for (let i = 0; i < commandsRaw.length; i += 1) {
+			const item = asRecord(commandsRaw[i]);
+			if (!item) continue;
+			const command = trimString(item.command);
+			const outcome = trimString(item.outcome);
+			if (!command) continue;
+			if (outcome !== "passed" && outcome !== "failed" && outcome !== "skipped") continue;
+			const entry: { command: string; outcome: "passed" | "failed" | "skipped"; summary?: string; exitCode?: number } = { command, outcome };
+			const itemSummary = trimString(item.summary);
+			if (itemSummary) entry.summary = itemSummary;
+			if (typeof item.exitCode === "number" && Number.isFinite(item.exitCode)) entry.exitCode = item.exitCode;
+			commandsRun.push(entry);
+		}
+		const criterionCoverage: { criterion: string; evidenceKind: string; strength: string; summary: string }[] = [];
+		const cov = Array.isArray(parsedCoderEvidence.criterionCoverage) ? parsedCoderEvidence.criterionCoverage : [];
+		for (let i = 0; i < cov.length; i += 1) {
+			const item = asRecord(cov[i]);
+			if (!item) continue;
+			const criterion = trimString(item.criterion);
+			const evidenceKind = trimString(item.evidenceKind);
+			const strength = trimString(item.strength);
+			const summary = trimString(item.summary);
+			if (!criterion || !evidenceKind || !strength || !summary) continue;
+			criterionCoverage.push({ criterion, evidenceKind, strength, summary });
+		}
+		const coderSummary = trimString(parsedCoderEvidence.summary) || undefined;
+		const filesChanged = asStringArray(parsedCoderEvidence.filesChanged);
+		nextLedger = appendEvent(nextLedger, {
+			runId: input.runId,
+			kind: "coder_evidence",
+			provenance: "legacy",
+			status: "recorded",
+			context: input.context,
+			source: input.sourceLabel ?? "done-sidecar.summary",
+			warnings: warningStrings,
+			payload: {
+				filesChanged,
+				commandsRun,
+				criterionCoverage,
+				...(coderSummary ? { summary: coderSummary } : {}),
+			},
+		}, input.now);
+	}
+	if (parsedReviewerEvidence !== undefined) {
+		const role = trimString(parsedReviewerEvidence.role) || "unknown";
+		const verdictRaw = trimString(parsedReviewerEvidence.verdict) || trimString(parsedReviewerEvidence.effectiveVerdict);
+		const verdict = verdictRaw === "APPROVED" || verdictRaw === "CHANGES_REQUESTED" || verdictRaw === "UNKNOWN" ? verdictRaw : "UNKNOWN";
+		const effectiveVerdictRaw = trimString(parsedReviewerEvidence.effectiveVerdict) || verdict;
+		const effectiveVerdict = effectiveVerdictRaw === "APPROVED" || effectiveVerdictRaw === "CHANGES_REQUESTED" || effectiveVerdictRaw === "UNKNOWN" ? effectiveVerdictRaw : verdict;
+		const blockingReasons = asStringArray(parsedReviewerEvidence.blockingReasons);
+		const weakEvidence = asStringArray(parsedReviewerEvidence.weakEvidence);
+		const promptOnlyCaveats = asStringArray(parsedReviewerEvidence.promptOnlyCaveats);
+		const unresolvedRisks = asStringArray(parsedReviewerEvidence.unresolvedRisks);
+		const finalOutput = typeof parsedReviewerEvidence.finalOutput === "string" && parsedReviewerEvidence.finalOutput.trim() ? parsedReviewerEvidence.finalOutput : undefined;
+		nextLedger = appendEvent(nextLedger, {
+			runId: input.runId,
+			kind: "reviewer_evidence",
+			provenance: "legacy",
+			status: "recorded",
+			context: input.context,
+			source: input.sourceLabel ?? "done-sidecar.summary",
+			warnings: warningStrings,
+			payload: {
+				role,
+				verdict,
+				effectiveVerdict,
+				blockingReasons,
+				weakEvidence,
+				promptOnlyCaveats,
+				unresolvedRisks,
+				...(finalOutput ? { finalOutput } : {}),
+			},
+		}, input.now);
+	}
+	// TASK-002 hard-cut: mirror the nested
+	// `coderEvidence.delegateHistory.reviewerEvidence` and
+	// `delegateHistory.reviewerEvidence` payloads as a typed
+	// `reviewer_evidence` event with `provenance: "legacy"`. The
+	// original structured payload is also surfaced via
+	// `mirroredReviewerEvidence` (preferring the top-level
+	// `reviewerEvidence` when present) for diagnostic / projection
+	// consumers. The TASK-002 strict delegate reviewer-roles gate
+	// MUST NOT consume this mirror as pass/fail authority — the
+	// only canonical path is `done.evidence.reviewerEvidence` (or
+	// its in-memory equivalents on result details).
+	let mirrorReviewerSource: Record<string, unknown> | undefined;
+	if (parsedReviewerEvidence !== undefined) mirrorReviewerSource = parsedReviewerEvidence;
+	else if (asRecord(nestedCoderDelegateHistoryReviewer) !== undefined) mirrorReviewerSource = asRecord(nestedCoderDelegateHistoryReviewer);
+	else if (asRecord(nestedDelegateHistoryReviewer) !== undefined) mirrorReviewerSource = asRecord(nestedDelegateHistoryReviewer);
+	if (mirrorReviewerSource !== undefined && parsedReviewerEvidence === undefined) {
+		const role = trimString(mirrorReviewerSource.role) || "unknown";
+		const verdictRaw = trimString(mirrorReviewerSource.verdict) || trimString(mirrorReviewerSource.effectiveVerdict);
+		const verdict = verdictRaw === "APPROVED" || verdictRaw === "CHANGES_REQUESTED" || verdictRaw === "UNKNOWN" ? verdictRaw : "UNKNOWN";
+		const effectiveVerdictRaw = trimString(mirrorReviewerSource.effectiveVerdict) || verdict;
+		const effectiveVerdict = effectiveVerdictRaw === "APPROVED" || effectiveVerdictRaw === "CHANGES_REQUESTED" || effectiveVerdictRaw === "UNKNOWN" ? effectiveVerdictRaw : verdict;
+		const blockingReasons = asStringArray(mirrorReviewerSource.blockingReasons);
+		const weakEvidence = asStringArray(mirrorReviewerSource.weakEvidence);
+		const promptOnlyCaveats = asStringArray(mirrorReviewerSource.promptOnlyCaveats);
+		const unresolvedRisks = asStringArray(mirrorReviewerSource.unresolvedRisks);
+		const finalOutput = typeof mirrorReviewerSource.finalOutput === "string" && mirrorReviewerSource.finalOutput.trim() ? mirrorReviewerSource.finalOutput : undefined;
+		nextLedger = appendEvent(nextLedger, {
+			runId: input.runId,
+			kind: "reviewer_evidence",
+			provenance: "legacy",
+			status: "recorded",
+			context: input.context,
+			source: input.sourceLabel ?? "done-sidecar.summary",
+			warnings: warningStrings,
+			payload: {
+				role,
+				verdict,
+				effectiveVerdict,
+				blockingReasons,
+				weakEvidence,
+				promptOnlyCaveats,
+				unresolvedRisks,
+				...(finalOutput ? { finalOutput } : {}),
+			},
+		}, input.now);
+	}
+
+	return {
+		ledger: nextLedger,
+		events: nextLedger.events.slice(input.ledger.events.length),
+		warnings,
+		detected: "summary",
+		freeFormOnly: !hasStructured,
+		mirroredCoderEvidence: parsedCoderEvidence,
+		mirroredReviewerEvidence: mirrorReviewerSource,
+	};
 }
 
 function importGenericObject(input: SubAdapterInput): ImportLegacyResult {
@@ -577,7 +793,7 @@ function importGenericObject(input: SubAdapterInput): ImportLegacyResult {
 	const finalLedger = imported && imported.kind === "legacy_import"
 		? markRejected(nextLedger, imported.eventId, input.now, warningStrings)
 		: nextLedger;
-	return { ledger: finalLedger, events: finalLedger.events.slice(input.ledger.events.length), warnings, detected: "freeFormOnly", freeFormOnly: true };
+	return { ledger: finalLedger, events: finalLedger.events.slice(input.ledger.events.length), warnings, detected: "freeFormOnly", freeFormOnly: true, mirroredCoderEvidence: undefined, mirroredReviewerEvidence: undefined };
 }
 
 interface FreeFormFallbackInput extends SubAdapterInput {
@@ -609,7 +825,7 @@ function importFreeFormFallback(input: FreeFormFallbackInput): ImportLegacyResul
 	const finalLedger = imported && imported.kind === "legacy_import"
 		? markRejected(nextLedger, imported.eventId, input.now, warningStrings)
 		: nextLedger;
-	return { ledger: finalLedger, events: finalLedger.events.slice(input.ledger.events.length), warnings, detected: "freeFormOnly", freeFormOnly: true };
+	return { ledger: finalLedger, events: finalLedger.events.slice(input.ledger.events.length), warnings, detected: "freeFormOnly", freeFormOnly: true, mirroredCoderEvidence: undefined, mirroredReviewerEvidence: undefined };
 }
 
 // ---------- Detection helpers ----------
@@ -669,3 +885,40 @@ export function importLegacyDoneSidecar(input: {
 /** Re-export snapshotLedger for callers that want to read the updated
  *  ledger state without mutating it. */
 export { snapshotLedger };
+
+// ---------- Typed payload projection from a legacy import result ----------
+
+/** Pick the typed `coder_evidence` payload mirrored by the legacy
+ *  import adapter. Returns the ORIGINAL structured payload (not the
+ *  ledger-normalized event payload) so the caller can consume the
+ *  full set of fields (including `supportingFiles` /
+ *  `supportingCommands` on criterionCoverage rows, which the ledger
+ *  type strips). Returns `undefined` when the legacy adapter did not
+ *  produce a structured coder_evidence mirror (i.e. the input was
+ *  free-form only or no coder-shaped fields were found).
+ *
+ *  TASK-002 hard-cut: this helper is retained for non-gate
+ *  consumers (legacy ledger queries, project-history views, smoke
+ *  fixtures) that may still want the original payload. The TASK-002
+ *  strict delegate coder gate MUST NOT consume this mirror as
+ *  pass/fail authority; the gate reads only `done.evidence.coderEvidence`
+ *  (or its in-memory equivalents on result details). */
+export function pickLegacyCoderEvidence(result: ImportLegacyResult): unknown | undefined {
+	return result.mirroredCoderEvidence;
+}
+
+/** Pick the typed `reviewer_evidence` payload mirrored by the legacy
+ *  import adapter. Returns the ORIGINAL structured payload (not the
+ *  ledger-normalized event payload). Returns `undefined` when the
+ *  legacy adapter did not produce a structured reviewer_evidence
+ *  mirror.
+ *
+ *  TASK-002 hard-cut: this helper is retained for non-gate
+ *  consumers. The TASK-002 strict delegate reviewer-roles gate
+ *  MUST NOT consume this mirror as pass/fail authority; the
+ *  reviewer-roles gate reads only canonical
+ *  `done.evidence.reviewerEvidence` (or its in-memory
+ *  equivalents). */
+export function pickLegacyReviewerEvidence(result: ImportLegacyResult): unknown | undefined {
+	return result.mirroredReviewerEvidence;
+}

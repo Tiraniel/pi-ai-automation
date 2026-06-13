@@ -114,9 +114,19 @@ export function buildReviewerGoalTask(task: string, goal: string): string {
 /** Build a `ReviewerResultLike` for the role evaluator from a runtime
  *  `ReviewerTargetResult`. When the underlying delegate `result` exposes a
  *  pane done sidecar path via `result.doneFile`, read and forward the parsed
- *  sidecar under `details.done` so the role evaluator's fallback evidence
- *  paths (`details.done.coderEvidence`, `details.done.summary`, ...) can
- *  see structured coder/reviewer evidence stored in the sidecar.
+ *  sidecar under `details.done` so the reviewer role gate can read the
+ *  canonical `details.done.evidence.reviewerEvidence` envelope stored in
+ *  the sidecar.
+ *
+ *  Canonical-only (TASK-002 hard-cut): under the hard-cut, the
+ *  reviewer role gate consumes ONLY the canonical
+ *  `details.done.evidence.reviewerEvidence` envelope. Top-level
+ *  `coderEvidence` / `reviewerEvidence` / `summary` JSON on the
+ *  sidecar are diagnostic only and FAIL CLOSED — the gate's
+ *  canonical parser never promotes them. The helper never injects
+ *  `coderEvidence` / `reviewerEvidence` / `summary` fields into
+ *  `details.done` itself; whatever the sidecar carries is forwarded
+ *  as-is and the gate decides canonical authority.
  *
  *  Fail-closed: an unreadable / missing / empty sidecar simply omits
  *  `details.done`; existing delegate `details` are preserved; the helper
@@ -277,9 +287,12 @@ export async function runReviewerSwarm(
 
 	if (roleState && reviewContext?.plan) {
 		// Build `resultLikes` via the canonical helper so pane done sidecar
-		// data (coderEvidence / summary / etc.) is forwarded as
-		// `details.done` and the role evaluator's fallback evidence paths
-		// can suppress false provisional / static-only blockers.
+		// data is forwarded as `details.done`. Under the TASK-002
+		// hard-cut, the reviewer role gate consumes ONLY the canonical
+		// `details.done.evidence.reviewerEvidence` envelope from the
+		// forwarded sidecar. Top-level `coderEvidence` / `reviewerEvidence`
+		// / summary JSON are diagnostic only and FAIL CLOSED — they cannot
+		// suppress provisional / static-only blockers or approve a role.
 		const resultLikes: ReviewerResultLike[] = results.map((r) => buildReviewerResultLikeForRoleEvaluation(r));
 		// Use the canonical helper so synthetic and runtime paths share one
 		// derivation/evaluation path. Pass `goals` so the consolidated memo

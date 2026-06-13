@@ -21,6 +21,7 @@ import type {
 	DelegateRunResult,
 	ReviewerTargetResult,
 } from "../types";
+import { extractCanonicalEvidence, type CanonicalExtraction } from "./canonical-evidence";
 
 // ---------- Constants ----------
 
@@ -439,79 +440,170 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Check whether a candidate value is a typed reviewer-evidence object with
- *  meaningful content (non-empty `criterionCoverage` or non-empty
- *  `commandsRun`). Bare `{ present: true }` / `{ explicitDeclaration: true }`
- *  objects are intentionally NOT accepted. */
+ *  meaningful content. A payload is considered typed when ANY of the
+ *  following holds:
+ *    - non-empty `criterionCoverage` (typed evidence row);
+ *    - non-empty `commandsRun` (typed command outcomes);
+ *    - a CHANGES_REQUESTED canonical verdict (`verdict` /
+ *      `effectiveVerdict`) paired with non-empty `blockingReasons`
+ *      (a typed rejection that does not need separate coverage rows
+ *      to be authoritative under the canonical-only contract).
+ *  Bare `{ present: true }` / `{ explicitDeclaration: true }` objects
+ *  without any of the above are intentionally NOT accepted. */
 function isTypedReviewerEvidenceObject(value: unknown): boolean {
 	const record = asRecord(value);
 	if (!record) return false;
 	if (hasNonEmptyCriterionCoverage(record.criterionCoverage)) return true;
 	if (hasNonEmptyCommandOutcomes(record.commandsRun)) return true;
+	const verdict = record.effectiveVerdict ?? record.verdict;
+	if (verdict === "CHANGES_REQUESTED") {
+		if (Array.isArray(record.blockingReasons)) {
+			for (const reason of record.blockingReasons) {
+				if (typeof reason === "string" && reason.trim().length > 0) return true;
+			}
+		}
+	}
 	return false;
 }
 
-function hasExplicitStructuredReviewerEvidence(input: ReviewerResultLike): boolean {
-	// Fail-closed: a bare `present: true` or `explicitDeclaration: true` flag
-	// is NOT enough to suppress auto_exit provisional blocking. We require
-	// meaningful typed content (non-empty `criterionCoverage` or non-empty
-	// `commandsRun`) on the supported reviewer-evidence containers.
-	// Final-output label detection is intentionally NOT used: vague labels
-	// like "evidence packet: ok ok" or "reviewer evidence: ok ok" in the
-	// final text are NOT structured reviewer evidence and must not suppress
-	// provisional blocking. The supported containers, in order, are:
-	//   1. `input.reviewerEvidence`
-	//   2. `input.details.reviewerEvidence`
-	//   3. `input.details.done.reviewerEvidence`
-	//   4. `input.details.done.coderEvidence` when that object itself carries
-	//      non-empty `criterionCoverage` or `commandsRun` (reviewer used the
-	//      only available sidecar field name)
-	//   5. `input.details.done.coderEvidence.delegateHistory.reviewerEvidence`
-	//   6. parseable JSON in `input.details.done.summary` whose root object
-	//      may contain `reviewerEvidence`, `coderEvidence`,
-	//      `coderEvidence.delegateHistory.reviewerEvidence`, or top-level
-	//      `delegateHistory.reviewerEvidence`
-	if (isTypedReviewerEvidenceObject(input.reviewerEvidence)) return true;
+/** Result of resolving explicit structured reviewer evidence from a
+ *  reviewer-result-like input. Under the TASK-002 HARD-CUT, the
+ *  resolver is a pure canonical envelope parser: `found` is true ONLY
+ *  when a typed reviewer payload (non-empty `criterionCoverage` or
+ *  `commandsRun`) is located on a CANONICAL envelope
+ *  (`details.evidence` or `details.done.evidence` / `done.evidence`).
+ *  Legacy sidecar fields (`input.reviewerEvidence`,
+ *  `details.done.coderEvidence`, `details.done.reviewerEvidence`,
+ *  parseable `details.done.summary` JSON, etc.) are NOT a fallback
+ *  authority: the resolver returns `found: false` and `provenance:
+ *  "none"` for them, and the role evaluator must downgrade the role
+ *  to `CHANGES_REQUESTED` / `provisional` when no canonical reviewer
+ *  evidence is found. The previous `legacyAdaptersUsed` accounting
+ *  has been DELETED along with the legacy-import adapter bridge. */
+export interface ResolvedReviewerExplicitEvidence {
+	found: boolean;
+	provenance: "canonical" | "none";
+	mirroredReviewerEvidence: unknown | undefined;
+	warnings: string[];
+	/** TASK-002 hard-cut: number of legacy-import adapter calls performed
+	 *  by the resolver. Always `0` under the canonical-only contract (the
+	 *  legacy adapter no longer runs from the resolver). Retained as a
+	 *  stable structured field so callers and smoke tests can assert the
+	 *  resolver is canonical-only. */
+	legacyAdaptersUsed: number;
+}
+
+export interface ResolveReviewerExplicitEvidenceOptions {
+	runId?: string;
+	now?: string;
+	deliveryContextFactory?: (runId: string) => { runId: string };
+}
+
+/** Resolve typed reviewer evidence from a `ReviewerResultLike` using
+ *  canonical-only precedence. The resolver is a pure canonical envelope
+ *  parser: it inspects `details.evidence` and `details.done.evidence`
+ *  (i.e. canonical envelopes attached directly to the result, or
+ *  parsed from a done sidecar) and looks for a typed
+ *  `reviewer_evidence` payload (non-empty `criterionCoverage` or
+ *  `commandsRun`). All legacy / free-form / summary-JSON /
+ *  nested-delegateHistory inputs are refused: the resolver returns
+ *  `found: false` and `provenance: "none"` so the role evaluator
+ *  treats the role as `provisional` and downgrades to
+ *  `CHANGES_REQUESTED` (or `UNKNOWN` when no verdict is supplied). */
+export function resolveReviewerExplicitEvidence(
+	input: ReviewerResultLike,
+	_options: ResolveReviewerExplicitEvidenceOptions = {},
+): ResolvedReviewerExplicitEvidence {
 	const details = asRecord(input.details);
-	if (!details) return false;
-	if (isTypedReviewerEvidenceObject(details.reviewerEvidence)) return true;
-	const done = asRecord(details.done);
-	if (done) {
-		if (isTypedReviewerEvidenceObject(done.reviewerEvidence)) return true;
-		const coderEvidence = asRecord(done.coderEvidence);
-		if (coderEvidence) {
-			if (isTypedReviewerEvidenceObject(coderEvidence)) return true;
-			const delegateHistory = asRecord(coderEvidence.delegateHistory);
-			if (delegateHistory && isTypedReviewerEvidenceObject(delegateHistory.reviewerEvidence)) return true;
+	const done = asRecord(details?.done);
+	// Canonical path: walk the well-known envelope locations.
+	const candidates: unknown[] = [
+		details?.evidence,
+		done?.evidence,
+	];
+	for (const candidate of candidates) {
+		if (candidate === undefined || candidate === null) continue;
+		const extracted: CanonicalExtraction = extractCanonicalEvidence(candidate);
+		if (extracted.provenance === "canonical" && isTypedReviewerEvidenceObject(extracted.reviewerEvidence)) {
+			return {
+				found: true,
+				provenance: "canonical",
+				mirroredReviewerEvidence: extracted.reviewerEvidence,
+				warnings: extracted.warnings.slice(),
+				legacyAdaptersUsed: 0,
+			};
 		}
 	}
-	// Parseable JSON in `done.summary` is a known pane-sidecar fallback when
-	// the structured object was serialized into a single summary string.
-	// Malformed or non-object JSON (arrays, numbers, primitives) is ignored.
-	if (done && typeof done.summary === "string" && done.summary.trim().length > 0) {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(done.summary);
-		} catch {
-			parsed = undefined;
-		}
-		const parsedRecord = asRecord(parsed);
-		if (parsedRecord) {
-			if (isTypedReviewerEvidenceObject(parsedRecord.reviewerEvidence)) return true;
-			const parsedCoderEvidence = asRecord(parsedRecord.coderEvidence);
-			if (parsedCoderEvidence) {
-				if (isTypedReviewerEvidenceObject(parsedCoderEvidence)) return true;
-				const parsedDelegateHistory = asRecord(parsedCoderEvidence.delegateHistory);
-				if (parsedDelegateHistory && isTypedReviewerEvidenceObject(parsedDelegateHistory.reviewerEvidence)) return true;
-			}
-			const topDelegateHistory = asRecord(parsedRecord.delegateHistory);
-			if (topDelegateHistory && isTypedReviewerEvidenceObject(topDelegateHistory.reviewerEvidence)) return true;
-		}
-	}
-	return false;
+	// TASK-002 HARD-CUT: legacy paths (input.reviewerEvidence,
+	// details.reviewerEvidence, details.done.reviewerEvidence,
+	// details.done.coderEvidence, nested delegateHistory.reviewerEvidence,
+	// details.done.summary) are NOT canonical. The resolver returns
+	// `found: false` and `provenance: "none"` so the role evaluator
+	// downgrades the role to provisional / CHANGES_REQUESTED. The
+	// resolver never invokes the legacy-import adapter under the
+	// hard-cut, so `legacyAdaptersUsed` is always `0`.
+	return { found: false, provenance: "none", mirroredReviewerEvidence: undefined, warnings: [], legacyAdaptersUsed: 0 };
 }
 
 function isProvisionalCompletionSource(source: DelegateCompletionSource | string | undefined): boolean {
 	return source === "auto_exit" || source === "process_exit" || source === "missing" || source === "legacy";
+}
+
+// ---------- Canonical reviewer-verdict helpers (TASK-002 hard-cut) ----------
+//
+// The reviewer role gate must derive its verdict from the canonical
+// `reviewerEvidence.verdict` / `effectiveVerdict` schema on a
+// `details.evidence` / `details.done.evidence` / `done.evidence`
+// envelope. `input.verdict` (parsed final output) is diagnostic only
+// and is NEVER approval authority. The helpers below let
+// `evaluateReviewerResult` walk the canonical payload, fold typed
+// arrays into the evaluation, and refuse any other shape.
+
+/** Closed set of canonical reviewer-verdict tokens. `UNKNOWN` is
+ *  included so the helper has a stable return type that maps to the
+ *  evaluation's verdict/effectiveVerdict union. */
+type ReviewerVerdictToken = "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN";
+
+/** Narrow a value to a canonical reviewer-verdict token. Returns
+ *  `undefined` for any value that is not one of the exact strings
+ *  `"APPROVED"`, `"CHANGES_REQUESTED"`, or `"UNKNOWN"`. The check is
+ *  intentionally strict (no coercion, no lowercasing): the canonical
+ *  envelope stores these tokens verbatim and the gate must not
+ *  accept language-localized approval phrases. */
+function asReviewerVerdict(value: unknown): ReviewerVerdictToken | undefined {
+	if (value === "APPROVED" || value === "CHANGES_REQUESTED" || value === "UNKNOWN") return value;
+	return undefined;
+}
+
+/** Return the trimmed strings from a candidate array value. Non-string
+ *  elements, empty strings, and non-array values are filtered out.
+ *  Used to fold canonical arrays (`blockingReasons`, `weakEvidence`,
+ *  `promptOnlyCaveats`, `unresolvedRisks`) from the reviewer-evidence
+ *  payload into the evaluation. */
+function asStringList(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const out: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string") continue;
+		const trimmed = item.trim();
+		if (trimmed.length > 0) out.push(trimmed);
+	}
+	return out;
+}
+
+/** Pick the canonical reviewer-verdict token from a candidate
+ *  reviewer-evidence record. `effectiveVerdict` wins over `verdict`
+ *  when both are present; the result is narrowed through
+ *  `asReviewerVerdict` so any non-token value (language-localized
+ *  phrase, free-form text, malformed payload) returns `undefined`.
+ *  This is the ONLY path that should ever set approval authority
+ *  inside `evaluateReviewerResult`. */
+function pickCanonicalReviewerEvidenceVerdict(value: unknown): ReviewerVerdictToken | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const effective = asReviewerVerdict(record.effectiveVerdict);
+	if (effective !== undefined) return effective;
+	return asReviewerVerdict(record.verdict);
 }
 
 /** Evaluate a single reviewer result against a role target. */
@@ -520,11 +612,40 @@ export function evaluateReviewerResult(
 	input: ReviewerResultLike,
 ): ReviewerEvaluation {
 	const output = typeof input.finalOutput === "string" ? input.finalOutput : "";
-	const baseVerdict = input.verdict ?? "UNKNOWN";
-	const status = input.status ?? (baseVerdict === "APPROVED" || baseVerdict === "CHANGES_REQUESTED" ? "completed" : "unknown");
+	// `inputVerdict` is parsed from the final text prefix and is
+	// diagnostic only under the TASK-002 hard-cut. Approval authority
+	// belongs to the canonical `reviewerEvidence.verdict` /
+	// `effectiveVerdict` schema on the canonical envelope.
+	const inputVerdict: "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN" = input.verdict ?? "UNKNOWN";
+	const status = input.status ?? (inputVerdict === "APPROVED" || inputVerdict === "CHANGES_REQUESTED" ? "completed" : "unknown");
 	const failed = status === "failed" || status === "aborted";
 	const provisionalSource = isProvisionalCompletionSource(input.completionSource);
-	const explicitEvidence = hasExplicitStructuredReviewerEvidence(input);
+	const resolvedEvidence = resolveReviewerExplicitEvidence(input);
+	const explicitEvidence = resolvedEvidence.found;
+	// Canonical verdict authority (TASK-002 hard-cut):
+	//   1. If the canonical envelope carries `effectiveVerdict` or
+	//      `verdict`, that token is the authority.
+	//   2. Otherwise, an input/final-text CHANGES_REQUESTED still
+	//      blocks (it is the safer fail-closed choice for an
+	//      inconsistent legacy fixture).
+	//   3. Otherwise the role is UNKNOWN — final-text APPROVED never
+	//      approves without canonical reviewerEvidence under the
+	//      hard-cut contract.
+	const canonicalRecord = asRecord(resolvedEvidence.mirroredReviewerEvidence);
+	const canonicalVerdict = pickCanonicalReviewerEvidenceVerdict(canonicalRecord);
+	const baseVerdict: "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN" = canonicalVerdict
+		?? (inputVerdict === "CHANGES_REQUESTED" ? "CHANGES_REQUESTED" : "UNKNOWN");
+	// `finalTextApprovalClaimed` records whether the parsed final-text
+	// prefix asserted APPROVED. Under the TASK-002 hard-cut, final text
+	// is diagnostic only and NEVER approval authority (canonical
+	// `reviewerEvidence.verdict` / `effectiveVerdict` is the only path
+	// that approves a role). The flag is used to keep the
+	// source-string / prompt-only diagnostic paths alive when the
+	// canonical verdict is missing or UNKNOWN but the final text
+	// claimed APPROVED — those diagnostics must still surface as
+	// blockers / weak evidence / caveats so the memo records the
+	// degrade, even though they cannot upgrade the verdict.
+	const finalTextApprovalClaimed = inputVerdict === "APPROVED";
 
 	const blockingReasons: string[] = [];
 	const weakEvidence: string[] = [];
@@ -532,9 +653,22 @@ export function evaluateReviewerResult(
 	const unresolvedRisks: string[] = [];
 	const notes: string[] = [];
 
+	// Fold canonical arrays from the typed reviewer-evidence envelope
+	// into the evaluation. These are the structured counterparts of
+	// the parsed final-text heuristics below and are the
+	// gate-authoritative inputs for the canonical verdict path.
+	if (canonicalRecord) {
+		blockingReasons.push(...asStringList(canonicalRecord.blockingReasons));
+		weakEvidence.push(...asStringList(canonicalRecord.weakEvidence));
+		promptOnlyCaveats.push(...asStringList(canonicalRecord.promptOnlyCaveats));
+		unresolvedRisks.push(...asStringList(canonicalRecord.unresolvedRisks));
+	}
+
 	if (failed) blockingReasons.push(`Reviewer status is ${status}.`);
 	if (roleTarget.required && baseVerdict === "UNKNOWN") {
-		blockingReasons.push("Reviewer verdict is UNKNOWN; required role did not return a parseable APPROVED/CHANGES_REQUESTED prefix.");
+		blockingReasons.push(
+			"Reviewer verdict is UNKNOWN; canonical reviewerEvidence verdict/effectiveVerdict is missing on the canonical `done.evidence` envelope (final text and free-form prose are diagnostic only and never satisfy role-gated approval).",
+		);
 	}
 	if (provisionalSource) {
 		if (!explicitEvidence) {
@@ -544,43 +678,72 @@ export function evaluateReviewerResult(
 			notes.push(`Completion source is ${String(input.completionSource)} but explicit structured reviewer evidence is present; provisional flag suppressed.`);
 		}
 	}
-	if (baseVerdict === "APPROVED" && (roleTarget.role === "behavior" || roleTarget.role === "evidence-test" || roleTarget.role === "regression")) {
-		// Fail-closed for behavior / evidence-test / regression on runtime-behavior
-		// scope: an APPROVED result must cite acceptable runtime evidence (runnable
-		// behavior test, runtime gate, observed tool output, explicit
-		// "behavior test passed" / "exit code 0" / similar) OR carry explicit
-		// structured reviewer evidence. Code-walk / source-inspection only
-		// approvals (e.g. "I walked the code and confirmed ...") are
-		// downgraded even when no static-only phrase is present.
-		// Source-string / static-only / read-the-source / skipped-running /
-		// no-runtime-run claims OVERRIDE broad positive runtime phrases:
-		// an output that mixes "test passed" with "no runtime run" is still
-		// downgraded, unless explicit structured reviewer evidence is
-		// supplied. Regression role is included because its hard role rules
-		// already reject source-string / static-only / skipped-running
-		// evidence; the evaluator must enforce what the prompt requires.
+	// TASK-002 HARD-CUT: the legacy-import adapter no longer runs from
+	// the resolver, so there are no `legacyAdaptersUsed` accounting
+	// markers and no legacy-adapter warnings to surface here. The
+	// resolver returns `provenance: "canonical"` when the typed
+	// reviewer evidence came from a canonical envelope, otherwise
+	// `provenance: "none"`. The note preserves the diagnostic surface
+	// so the memo / notes can still show which path the resolver took.
+	if (resolvedEvidence.provenance === "canonical") {
+		notes.push("reviewer evidence resolved via canonical envelope; legacy import adapter not used (TASK-002 hard-cut)");
+	} else {
+		notes.push("reviewer evidence absent; no canonical envelope found (TASK-002 hard-cut)");
+	}
+	if ((baseVerdict === "APPROVED" || finalTextApprovalClaimed) && (roleTarget.role === "behavior" || roleTarget.role === "evidence-test" || roleTarget.role === "regression")) {
+		// TASK-002 (TIGHTENED): for behavior / evidence-test / regression
+		// roles on runtime-behavior scope, an APPROVED result MUST carry
+		// canonical typed reviewer evidence (non-empty `criterionCoverage`
+		// or `commandsRun` on the canonical envelope). Free-form English
+		// / non-English prose — even phrases like "test passed" or
+		// "exit code 0" — is diagnostic only and CANNOT satisfy the
+		// fail-closed gate. Source-string / static-only /
+		// read-the-source / skipped-running / no-runtime-run phrasing
+		// remains an additional blocker; both are required to be absent
+		// for an APPROVED role to stay APPROVED. The diagnostic
+		// condition also fires when the final text claimed APPROVED
+		// (finalTextApprovalClaimed) but the canonical verdict is
+		// missing or UNKNOWN, so the source-string / prompt-only
+		// downgrade path is preserved even when baseVerdict is
+		// UNKNOWN — the diagnostic adds blockers / weak evidence /
+		// caveats but does NOT make final text an approval authority.
 		if (hasRuntimeBehaviorScope(roleTarget)) {
 			const isStaticOnly = isSourceStringOnlyEvidence(output);
-			const hasPositiveRuntime = POSITIVE_RUNTIME_REGEX.test(output);
 			if (isStaticOnly && !explicitEvidence) {
 				blockingReasons.push(
 					"Reviewer output relies on source-string / static-only / read-the-source / skipped-running / no-runtime-run evidence for a TUI/runtime-behavior criterion, even though it also contains a positive phrase; required role is downgraded to CHANGES_REQUESTED.",
 				);
 				weakEvidence.push("source-string / static-only / read-the-source / skipped-running / no-runtime-run evidence claimed for runtime-behavior scope");
-			} else if (!hasPositiveRuntime && !explicitEvidence) {
+			} else if (!explicitEvidence) {
+				// Under the tightened contract, positive runtime phrases
+				// like "test passed" / "exit code 0" are NOT sufficient.
+				// Canonical typed reviewer evidence is the only path
+				// that satisfies the role. The diagnostic message names
+				// the missing authority so operators see what the gate
+				// actually needs.
 				const reasonSuffix = isStaticOnly
-					? "code-walk / source-inspection evidence only; no runnable behavior test, runtime gate, observed tool output, or explicit structured reviewer evidence"
-					: "no runnable behavior test, runtime gate, observed tool output, or explicit structured reviewer evidence";
+					? "code-walk / source-inspection evidence only; no canonical typed reviewer evidence (criterionCoverage / commandsRun on the canonical `done.evidence` envelope)"
+					: "no canonical typed reviewer evidence (criterionCoverage / commandsRun on the canonical `done.evidence` envelope); free-form final text is diagnostic only and never sufficient for matrix-gated reviewer work";
 				blockingReasons.push(`Reviewer output relies on ${reasonSuffix} for a TUI/runtime-behavior criterion. Required role is downgraded to CHANGES_REQUESTED.`);
 				weakEvidence.push(`${reasonSuffix} claimed for runtime-behavior scope`);
 			}
 		}
 	}
-	if (baseVerdict === "APPROVED" && hasRuntimeBehaviorScope(roleTarget) && isPromptOnlyCaveatFromMatrix(roleTarget, output)) {
+	if ((baseVerdict === "APPROVED" || finalTextApprovalClaimed) && hasRuntimeBehaviorScope(roleTarget) && isPromptOnlyCaveatFromMatrix(roleTarget, output)) {
+		// Final-text APPROVED is diagnostic only — the prompt-only
+		// caveat still fires (and adds a blocker / caveat) so the
+		// memo records the degrade, but it cannot promote the role
+		// to APPROVED. Canonical verdict authority is unchanged.
 		blockingReasons.push("Reviewer output approves a prompt-only / instructions-only mitigation for runtime behavior. Required role is downgraded to CHANGES_REQUESTED.");
 		promptOnlyCaveats.push("prompt-only runtime mitigation observed");
 	}
-	if (roleTarget.required && baseVerdict === "CHANGES_REQUESTED") blockingReasons.push("Reviewer returned CHANGES_REQUESTED.");
+	if (roleTarget.required && baseVerdict === "CHANGES_REQUESTED") {
+		if (canonicalVerdict === "CHANGES_REQUESTED") {
+			blockingReasons.push("Reviewer returned CHANGES_REQUESTED (canonical reviewerEvidence verdict authority).");
+		} else if (!blockingReasons.some((r) => r === "Reviewer returned CHANGES_REQUESTED.")) {
+			blockingReasons.push("Reviewer returned CHANGES_REQUESTED.");
+		}
+	}
 	if (/\bunresolved\b|\bneed more evidence\b|\bto be confirmed\b/i.test(output)) {
 		unresolvedRisks.push("Reviewer flagged unresolved / needs-more-evidence items in the output.");
 	}

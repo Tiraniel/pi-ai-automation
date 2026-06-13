@@ -177,11 +177,14 @@ function main(): void {
 		const completeEvidence = makeCompleteEvidencePacket();
 
 		// (1) Pane explicit sidecar with complete structured evidence PASSES.
+		//     TASK-002 tightened: sidecar carries canonical `evidence:
+		//     { coderEvidence: ... }` envelope; legacy top-level
+		//     `coderEvidence` is diagnostic only and is NOT authority.
 		{
 			const doneFile = writeSidecar(tmpDir, "explicit-complete.json", {
 				done: true, completion: "explicit", source: "tool", tool: "sub_agent_done",
 				summary: "explicit completion", at: new Date().toISOString(), exit_code: 0,
-				coderEvidence: completeEvidence,
+				evidence: { coderEvidence: completeEvidence },
 			});
 			const result = makeDelegateResult({ completionSource: "explicit" as DelegateCompletionSource, doneFile });
 			const gate = runCompletionEvidenceGate(plan, result);
@@ -229,6 +232,7 @@ function main(): void {
 
 		// (3) Pane process_exit sidecar REJECTS with process_exit_incomplete even when structured
 		//     coderEvidence is present in the result details (free-form is still never sufficient).
+		//     TASK-002 tightened: details carry canonical `evidence: { coderEvidence }` envelope.
 		{
 			const doneFile = writeSidecar(tmpDir, "process-exit.json", {
 				done: true, from_exit: true, completion: "process_exit", source: "shell_exit",
@@ -241,7 +245,7 @@ function main(): void {
 				stopReason: "interrupted",
 				exitCode: 1,
 				// even if the runner has structured details, process_exit must still be rejected.
-				details: { coderEvidence: completeEvidence },
+				details: { evidence: { coderEvidence: completeEvidence } },
 			});
 			const gate = runCompletionEvidenceGate(plan, result);
 			check(gate.ok === false, "3: pane process_exit sidecar blocks coder_completed");
@@ -271,13 +275,14 @@ function main(): void {
 			check(gate.evaluation.rejectionCodes.includes("free_form_only"), `5: free_form_only reported (got: ${gate.evaluation.rejectionCodes.join(",")})`);
 			expectSource(gate.structuredSource, "free-form-only", "5");
 
-			// Intentionally supported structured result details (e.g. via runner.details.coderEvidence)
+			// Intentionally supported structured result details (e.g. via runner.details.evidence)
 			// must be parsed and accepted. Re-run with structured details to confirm precedence.
+			// TASK-002 tightened: details carry canonical `evidence: { coderEvidence }` envelope.
 			const structuredResult = makeDelegateResult({
 				completionSource: "explicit" as DelegateCompletionSource,
 				display: "headless",
 				finalOutput: "Generic completion message; no structured evidence.",
-				details: { coderEvidence: completeEvidence },
+				details: { evidence: { coderEvidence: completeEvidence } },
 			});
 			const structuredGate = runCompletionEvidenceGate(plan, structuredResult);
 			check(structuredGate.ok === true, "5: headless structured result details with complete evidence advance");
@@ -286,6 +291,7 @@ function main(): void {
 
 		// (6) Static-only / source-string evidence for behavior-test and runtime-gate criteria
 		//     still blocks matrix advancement even with a passing explicit sidecar.
+		//     TASK-002 tightened: sidecar carries canonical `evidence: { coderEvidence }` envelope.
 		{
 			const staticOnlyPacket = {
 				...completeEvidence,
@@ -308,7 +314,7 @@ function main(): void {
 			const doneFile = writeSidecar(tmpDir, "static-only.json", {
 				done: true, completion: "explicit", source: "tool", tool: "sub_agent_done",
 				at: new Date().toISOString(), exit_code: 0,
-				coderEvidence: staticOnlyPacket,
+				evidence: { coderEvidence: staticOnlyPacket },
 			});
 			const result = makeDelegateResult({ completionSource: "explicit" as DelegateCompletionSource, doneFile });
 			const gate = runCompletionEvidenceGate(plan, result);
@@ -319,6 +325,7 @@ function main(): void {
 		}
 
 		// (7) Missing matrix criterion still blocks even with passing commands and explicit sidecar.
+		//     TASK-002 tightened: sidecar carries canonical `evidence: { coderEvidence }` envelope.
 		{
 			const incomplete = { ...completeEvidence };
 			incomplete.criterionCoverage = [completeEvidence.criterionCoverage[0]!]; // only alpha
@@ -326,7 +333,7 @@ function main(): void {
 			const doneFile = writeSidecar(tmpDir, "missing-criterion.json", {
 				done: true, completion: "explicit", source: "tool", tool: "sub_agent_done",
 				at: new Date().toISOString(), exit_code: 0,
-				coderEvidence: incomplete,
+				evidence: { coderEvidence: incomplete },
 			});
 			const result = makeDelegateResult({ completionSource: "explicit" as DelegateCompletionSource, doneFile });
 			const gate = runCompletionEvidenceGate(plan, result);
@@ -337,6 +344,7 @@ function main(): void {
 		}
 
 		// (8) Failed / retried delegate history is visible in diagnostics and rejection reasons.
+		//     TASK-002 tightened: sidecar carries canonical `evidence: { coderEvidence }` envelope.
 		{
 			const failedPacket = {
 				...completeEvidence,
@@ -356,7 +364,7 @@ function main(): void {
 			const doneFile = writeSidecar(tmpDir, "retry-history.json", {
 				done: true, completion: "explicit", source: "tool", tool: "sub_agent_done",
 				at: new Date().toISOString(), exit_code: 0,
-				coderEvidence: failedPacket,
+				evidence: { coderEvidence: failedPacket },
 			});
 			const result = makeDelegateResult({
 				completionSource: "explicit" as DelegateCompletionSource,
