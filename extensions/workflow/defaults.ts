@@ -38,6 +38,20 @@ export const DEFAULT_CONFIG: WorkflowConfig = {
 	autoApplyBrain: true,
 	delegateDisplay: "headless",
 	delegatePaneAutoClose: true,
+	semanticNavigation: {
+		enabled: false,
+		provider: "serena",
+		mode: "disabled",
+		fallbackToBuiltinTools: true,
+		roles: {
+			brain: "readonly",
+			coder: "edit",
+			reviewer: "readonly",
+		},
+		serenaReadonlyTools: [],
+		serenaEditTools: [],
+		serenaProjectTools: [],
+	},
 	reviewerSwarm: {
 		enabled: true,
 		maxConcurrency: 2,

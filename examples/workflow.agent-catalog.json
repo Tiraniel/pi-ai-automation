@@ -31,6 +31,36 @@
 				"review-goal-regression",
 				"review-goal-docs-config"
 			]
+		},
+		{
+			"id": "brain-serena-readonly",
+			"role": "brain",
+			"modelPreset": "premium-brain",
+			"toolProfile": "brain-serena-readonly",
+			"promptPacks": ["brain-orchestrator-core"]
+		},
+		{
+			"id": "coder-serena-and-edit",
+			"role": "coder",
+			"modelPreset": "premium-coder",
+			"toolProfile": "coder-serena-and-edit",
+			"promptPacks": ["coder-implementer-core", "coder-karpathy"],
+			"qualityGates": ["gate-typescript-strict", "gate-git-diff-check"]
+		},
+		{
+			"id": "reviewer-serena-readonly",
+			"role": "reviewer",
+			"modelPreset": "premium-reviewer",
+			"toolProfile": "reviewer-serena-readonly",
+			"promptPacks": ["reviewer-judge-core"],
+			"qualityGates": [
+				"review-goal-behavior",
+				"review-goal-evidence-test",
+				"review-goal-implementation",
+				"review-goal-maintainability",
+				"review-goal-regression",
+				"review-goal-docs-config"
+			]
 		}
 	]
 }

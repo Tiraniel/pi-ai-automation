@@ -1,0 +1,216 @@
+{
+  "planId": "serena-semantic-navigation-task-001",
+  "createdAt": "2026-06-12T12:34:00.391Z",
+  "updatedAt": "2026-06-12T18:42:49.356Z",
+  "status": "ready",
+  "businessPlan": "Add the first MVP slice of optional Serena semantic navigation support: users must be able to leave semantic navigation absent/disabled with unchanged workflow behavior, or opt into an external Serena MCP setup through project workflow config without editing TypeScript. The business invariant is that workflow truth and evidence gates remain unchanged; Serena is only an optional navigation backend. Invalid Serena provider/mode values must be visible as configuration diagnostics and must not crash normal workflow config loading.",
+  "technicalPlan": "Implement this as synchronous configuration plumbing only. Add typed SemanticNavigation config shapes to extensions/workflow/types.ts with supported provider `serena`, supported modes `disabled` and `external`, role access levels, fallback flag, and configurable Serena tool-name lists. Add conservative disabled defaults in extensions/workflow/defaults.ts. Extend v1 normalization in extensions/workflow/config/normalize.ts so semanticNavigation is accepted and invalid fields are dropped instead of thrown. Extend extensions/workflow/runtime/config.ts load paths to normalize semanticNavigation from v1/v2 compatibility overlays and append warning diagnostics for unsupported provider/mode values, including `managed` as future/not implemented. Add smoke tests in scripts/task-001-serena-semantic-navigation-config-smokes.ts for absent/default, enabled external config, and invalid provider/mode diagnostics. Update docs/workflow-config-v2.md and docs/prd-serena-semantic-navigation.md with external MCP setup, supported modes, non-goals/limitations, and managed future scope. No MCP lifecycle, tool-profile wiring, prompt guidance, repo-memory rewrite, or finalization evidence changes in this task.",
+  "parallelAssessment": "Decision: serial. Although code/tests and documentation look separable, the documentation must reflect the exact normalized schema and diagnostic codes introduced in code, and the touched files are a small coherent config slice. Brain marker parallel=auto is therefore assessed as not safely worth parallel execution for TASK-001; no workflow room is needed.",
+  "contractBlockPlan": "Blocks: (1) Config contract/types owned by extensions/workflow/types.ts: SemanticNavigationProvider, SemanticNavigationMode, role access, and SemanticNavigationConfig. (2) Defaults owned by extensions/workflow/defaults.ts: semanticNavigation disabled, provider serena, mode disabled, fallback enabled, standard role policy, empty tool lists. (3) Normalization owned by extensions/workflow/config/normalize.ts: accept semanticNavigation, normalize booleans/strings/roles/tool arrays, drop invalid provider/mode without throwing. (4) Runtime diagnostics owned by extensions/workflow/runtime/config.ts: collect warning diagnostics for unsupported provider/mode on both .pi/workflow.json and .pi/workflow.local.json normal load paths. (5) Smoke tests owned by scripts/task-001-serena-semantic-navigation-config-smokes.ts. (6) Documentation owned by docs/workflow-config-v2.md and docs/prd-serena-semantic-navigation.md. Build all blocks serially and keep default profiles/tool profiles unchanged.",
+  "acceptanceCriteria": [
+    "Config loader accepts absent config and defaults to disabled.",
+    "Config loader accepts enabled external Serena config without TypeScript source edits.",
+    "Invalid provider/mode emits diagnostics instead of throwing in normal load paths.",
+    "Documentation explains external MCP setup, supported modes, non-goals, and limitations.",
+    "Managed mode remains documented future scope, not implemented in MVP."
+  ],
+  "phases": {
+    "phaseA": {
+      "status": "review_approved",
+      "updatedAt": "2026-06-12T18:42:49.356Z",
+      "evidence": [
+        {
+          "at": "2026-06-12T18:11:49.625Z",
+          "note": "Delegation coder returned completed"
+        },
+        {
+          "at": "2026-06-12T18:20:58.337Z",
+          "note": "Delegation reviewer returned failed"
+        },
+        {
+          "at": "2026-06-12T18:23:38.461Z",
+          "note": "Delegation coder returned completed"
+        },
+        {
+          "at": "2026-06-12T18:32:32.957Z",
+          "note": "Delegation reviewer returned failed"
+        },
+        {
+          "at": "2026-06-12T18:35:52.324Z",
+          "note": "Delegation coder returned completed"
+        },
+        {
+          "at": "2026-06-12T18:40:00.781Z",
+          "note": "Delegation reviewer returned failed"
+        },
+        {
+          "at": "2026-06-12T18:42:49.356Z",
+          "note": "Brain corrected phase status to review_approved after latest raw reviewer outputs all approved; reviewer memo was corrected for verdict-parser artifact."
+        }
+      ]
+    },
+    "phaseB": {
+      "status": "not_started",
+      "updatedAt": "2026-06-12T12:34:00.391Z",
+      "evidence": []
+    }
+  },
+  "taskId": "TASK-001",
+  "title": "Config Model and Documentation for Serena semanticNavigation",
+  "files": [
+    "extensions/workflow/types.ts",
+    "extensions/workflow/config/normalize.ts",
+    "extensions/workflow/runtime/config.ts",
+    "extensions/workflow/defaults.ts",
+    "docs/workflow-config-v2.md",
+    "docs/prd-serena-semantic-navigation.md",
+    "scripts/task-001-serena-semantic-navigation-config-smokes.ts"
+  ],
+  "acceptanceEvidenceMatrix": [
+    {
+      "criterion": "Config loader accepts absent config and defaults to disabled.",
+      "criterionKind": "configuration",
+      "businessRiskIfWrong": "Existing projects could unexpectedly enable semantic navigation or see changed workflow behavior when no config is present.",
+      "enforcementLevel": [
+        "config-default",
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke test checks DEFAULT_CONFIG/load normalization exposes semanticNavigation disabled for absent config.",
+          "command": "npx tsx scripts/task-001-serena-semantic-navigation-config-smokes.ts"
+        },
+        {
+          "kind": "diff",
+          "description": "Diff shows no changes to default tool profiles or default agent tool allowlists beyond adding a disabled semanticNavigation config block."
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "regression",
+        "docs-config"
+      ],
+      "blockingConditions": [
+        "Absent config enables Serena or external mode.",
+        "Default coder/reviewer/brain tool allowlists change as part of this task.",
+        "Config loading throws for missing semanticNavigation."
+      ]
+    },
+    {
+      "criterion": "Config loader accepts enabled external Serena config without TypeScript source edits.",
+      "criterionKind": "configuration",
+      "businessRiskIfWrong": "Users would need code changes to opt into Serena, defeating the configuration UX goal.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke test writes a project-local workflow config with semanticNavigation enabled/provider serena/mode external/configurable tool lists and verifies loadWorkflowConfig returns the configured values.",
+          "command": "npx tsx scripts/task-001-serena-semantic-navigation-config-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "behavior",
+        "regression"
+      ],
+      "blockingConditions": [
+        "External Serena mode requires editing TypeScript constants rather than workflow JSON.",
+        "Configured Serena tool-name lists are not preserved in loaded config.",
+        "External mode is rejected despite provider serena and valid mode external."
+      ]
+    },
+    {
+      "criterion": "Invalid provider/mode emits diagnostics instead of throwing in normal load paths.",
+      "criterionKind": "runtime-behavior",
+      "businessRiskIfWrong": "A typo in project config could prevent agents from starting or silently mislead users about active Serena behavior.",
+      "enforcementLevel": [
+        "runtime-gate",
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke test loads invalid provider and mode through loadWorkflowConfig and verifies warning diagnostics are returned while a config object is still produced.",
+          "command": "npx tsx scripts/task-001-serena-semantic-navigation-config-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "behavior",
+        "evidence-test",
+        "implementation"
+      ],
+      "blockingConditions": [
+        "Invalid provider/mode throws out of loadWorkflowConfig.",
+        "Invalid provider/mode is accepted silently with no diagnostic.",
+        "Diagnostic severity is an error that blocks normal loading for MVP external config typos."
+      ]
+    },
+    {
+      "criterion": "Documentation explains external MCP setup, supported modes, non-goals, and limitations.",
+      "criterionKind": "documentation",
+      "businessRiskIfWrong": "Users may attempt unsupported managed startup or treat Serena output as workflow evidence.",
+      "enforcementLevel": [
+        "manual-validation",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "diff",
+          "description": "Docs diff adds a semanticNavigation section with JSON config example, external MCP TOML snippet, supported disabled/external modes, non-goals, fallback behavior, and evidence boundaries."
+        },
+        {
+          "kind": "static-check",
+          "description": "Smoke test or reviewer source check confirms docs mention external mode, managed future scope, and limitations.",
+          "command": "npx tsx scripts/task-001-serena-semantic-navigation-config-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "docs-config",
+        "maintainability"
+      ],
+      "blockingConditions": [
+        "Docs omit the external MCP setup snippet.",
+        "Docs imply Serena is required or replaces workflow evidence/finalization.",
+        "Docs say managed mode is implemented in the MVP."
+      ],
+      "manualValidationPlan": "Reviewer reads docs/workflow-config-v2.md and docs/prd-serena-semantic-navigation.md sections added for TASK-001 and checks they match the implemented schema."
+    },
+    {
+      "criterion": "Managed mode remains documented future scope, not implemented in MVP.",
+      "criterionKind": "configuration",
+      "businessRiskIfWrong": "Users may rely on unsupported MCP lifecycle automation, creating broken setup expectations and runtime complexity.",
+      "enforcementLevel": [
+        "behavior-test",
+        "manual-validation",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke test treats mode managed as unsupported/diagnostic rather than as a supported normalized mode.",
+          "command": "npx tsx scripts/task-001-serena-semantic-navigation-config-smokes.ts"
+        },
+        {
+          "kind": "diff",
+          "description": "Diff shows no MCP lifecycle/startup implementation and documents managed as future scope."
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "docs-config",
+        "regression"
+      ],
+      "blockingConditions": [
+        "The type/normalizer accepts managed as an implemented supported mode.",
+        "New code attempts to start, install, or manage Serena MCP servers.",
+        "Docs fail to mark managed mode as future scope."
+      ]
+    }
+  ]
+}

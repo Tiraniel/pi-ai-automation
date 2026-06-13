@@ -11,6 +11,24 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
 	"xhigh",
 ] as const;
 export type AgentName = "brain" | "coder" | "reviewer";
+export type SemanticNavigationProvider = "serena";
+export const SEMANTIC_NAVIGATION_PROVIDERS: readonly SemanticNavigationProvider[] = ["serena"] as const;
+export type SemanticNavigationMode = "disabled" | "external";
+export const SEMANTIC_NAVIGATION_MODES: readonly SemanticNavigationMode[] = ["disabled", "external"] as const;
+export type SemanticNavigationRoleAccess = "off" | "readonly" | "edit";
+export const SEMANTIC_NAVIGATION_ROLE_ACCESS: readonly SemanticNavigationRoleAccess[] = ["off", "readonly", "edit"] as const;
+export type SemanticNavigationRolePolicy = Partial<Record<AgentName, SemanticNavigationRoleAccess>>;
+
+export interface SemanticNavigationConfig {
+	enabled?: boolean;
+	provider?: SemanticNavigationProvider;
+	mode?: SemanticNavigationMode;
+	fallbackToBuiltinTools?: boolean;
+	roles?: SemanticNavigationRolePolicy;
+	serenaReadonlyTools?: string[];
+	serenaEditTools?: string[];
+	serenaProjectTools?: string[];
+}
 export type DelegateAgentName = "coder" | "reviewer";
 /** v2 alias for `AgentName`. The two are structurally identical; v2 code
  *  uses `AgentRole` for clarity while v1 callers keep using `AgentName`. */
@@ -106,6 +124,8 @@ export interface WorkflowConfig {
 	delegatePaneAutoClose?: boolean;
 	/** Optional fallback model overrides used when a coder/reviewer delegate's primary model is unavailable. */
 	delegateFallbacks?: DelegateFallbacksConfig;
+	/** Optional semantic code navigation backend config. Disabled by default. */
+	semanticNavigation?: SemanticNavigationConfig;
 }
 
 /** v1 aliases used by the v2 normalizer. The v1 shape is intentionally

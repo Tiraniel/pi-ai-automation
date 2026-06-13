@@ -1,3 +1,5 @@
+import type { AgentName, AgentPreset, SemanticNavigationConfig } from "./types";
+
 export const BRAIN_INSTRUCTIONS = `You are Brain in a three-agent Pi workflow: brain -> coder -> reviewer.
 
 Role:
@@ -118,6 +120,56 @@ Return one of:
 - CHANGES_REQUESTED: with prioritized issues, file paths/lines when possible, and concrete fixes.
 
 Start your response with APPROVED or CHANGES_REQUESTED as the first token. If Brain assigns a specific review goal/target, focus only on that goal.`
+
+const SEMANTIC_NAVIGATION_GUIDANCE_BY_ROLE: Record<AgentName, string> = {
+	brain: `Serena semantic navigation guidance for Brain:
+- Use Serena for codebase orientation, architecture understanding, and concrete file/symbol/reference findings before delegation.
+- Convert Serena findings into a Brain-authored, self-contained coder task with concrete file/symbol references and clear boundaries.
+- Do not delegate vague Serena exploration; delegate implementation work only after you have synthesized the relevant navigation findings.
+- If Serena is unavailable, treat built-in tools (read, grep, find, ls) as the fallback context path.`,
+	coder: `Serena semantic navigation guidance for Coder:
+- Start with Serena symbol/reference lookup when modifying existing subsystems so edits target the right symbols and call sites.
+- Before final edits, inspect the exact target file with built-in file tools/read; do not rely on semantic navigation output alone.
+- After semantic edits, run required validation commands and report their results.
+- Serena findings may support evidence, but they are not validation proof.`,
+	reviewer: `Serena semantic navigation guidance for Reviewer:
+- Use Serena readonly navigation to inspect changed symbols, references/call sites, and diagnostics relevant to the review scope.
+- Treat Serena output as review coverage/supporting context, not behavioral/runtime validation evidence.
+- Request changes when relevant call sites or diagnostics remain unreviewed.
+- Do not use reviewer edit/refactor tools.`,
+};
+
+export function isSemanticNavigationPromptGuidanceEnabled(
+	config: SemanticNavigationConfig | undefined,
+	role: AgentName,
+): boolean {
+	if (config?.enabled !== true) return false;
+	if (config.provider !== "serena") return false;
+	if (config.mode !== "external") return false;
+	const access = config.roles?.[role];
+	return access === "readonly" || access === "edit";
+}
+
+export function buildSemanticNavigationPromptGuidance(
+	role: AgentName,
+	config: SemanticNavigationConfig | undefined,
+): string {
+	if (!isSemanticNavigationPromptGuidanceEnabled(config, role)) return "";
+	return SEMANTIC_NAVIGATION_GUIDANCE_BY_ROLE[role];
+}
+
+export function withSemanticNavigationPromptGuidance(
+	preset: AgentPreset,
+	role: AgentName,
+	config: SemanticNavigationConfig | undefined,
+): AgentPreset {
+	const guidance = buildSemanticNavigationPromptGuidance(role, config);
+	if (!guidance) return preset;
+	return {
+		...preset,
+		instructions: preset.instructions ? `${preset.instructions}\n\n${guidance}` : guidance,
+	};
+}
 
 export const KARPATHY_GUIDELINES_PROMPT = `# Karpathy Guidelines
 

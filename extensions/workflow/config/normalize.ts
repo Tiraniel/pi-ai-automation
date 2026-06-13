@@ -30,10 +30,18 @@ import {
 import { readDeepPlanningConfig } from "./deep-planning.js";
 import {
 	AGENT_ROLES,
+	SEMANTIC_NAVIGATION_MODES,
+	SEMANTIC_NAVIGATION_PROVIDERS,
+	SEMANTIC_NAVIGATION_ROLE_ACCESS,
+	type AgentName,
 	type AgentRole,
 	type FlowDirection,
 	type V1AgentPreset,
 	type V1ReviewerSwarmConfig,
+	type SemanticNavigationConfig,
+	type SemanticNavigationMode,
+	type SemanticNavigationProvider,
+	type SemanticNavigationRoleAccess,
 	type V1WorkflowConfig,
 	type V2AgentCatalog,
 	type V2AgentCatalogEntry,
@@ -98,6 +106,66 @@ function normalizeV1DelegateFallbacks(value: unknown): V1WorkflowConfig["delegat
 	return out.coder || out.reviewer ? out : undefined;
 }
 
+function asSemanticNavigationProvider(value: unknown): SemanticNavigationProvider | undefined {
+	const s = asString(value);
+	if (!s) return undefined;
+	return (SEMANTIC_NAVIGATION_PROVIDERS as readonly string[]).includes(s) ? (s as SemanticNavigationProvider) : undefined;
+}
+
+function asSemanticNavigationMode(value: unknown): SemanticNavigationMode | undefined {
+	const s = asString(value);
+	if (!s) return undefined;
+	return (SEMANTIC_NAVIGATION_MODES as readonly string[]).includes(s) ? (s as SemanticNavigationMode) : undefined;
+}
+
+function asSemanticNavigationRoleAccess(value: unknown): SemanticNavigationRoleAccess | undefined {
+	const s = asString(value);
+	if (!s) return undefined;
+	return (SEMANTIC_NAVIGATION_ROLE_ACCESS as readonly string[]).includes(s) ? (s as SemanticNavigationRoleAccess) : undefined;
+}
+
+function normalizeSemanticNavigationRoles(
+	value: unknown,
+	fillOmittedRoles = false,
+): SemanticNavigationConfig["roles"] | undefined {
+	const record = asRecord(value);
+	if (!record) {
+		if (!fillOmittedRoles) return undefined;
+		return Object.fromEntries(AGENT_ROLES.map((role) => [role, "off"])) as NonNullable<SemanticNavigationConfig["roles"]>;
+	}
+	const roles: NonNullable<SemanticNavigationConfig["roles"]> = {};
+	for (const role of AGENT_ROLES) {
+		const access = asSemanticNavigationRoleAccess(record[role]);
+		if (access !== undefined) roles[role as AgentName] = access;
+		else if (fillOmittedRoles) roles[role as AgentName] = "off";
+	}
+	return Object.keys(roles).length > 0 ? roles : undefined;
+}
+
+export function normalizeSemanticNavigationConfig(value: unknown): SemanticNavigationConfig | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const out: SemanticNavigationConfig = {};
+	const enabled = asBoolean(record.enabled);
+	if (enabled !== undefined) out.enabled = enabled;
+	const provider = asSemanticNavigationProvider(record.provider);
+	if (provider !== undefined) out.provider = provider;
+	const mode = asSemanticNavigationMode(record.mode);
+	if (mode !== undefined) out.mode = mode;
+	const fallback = asBoolean(record.fallbackToBuiltinTools);
+	if (fallback !== undefined) out.fallbackToBuiltinTools = fallback;
+	const hasRoles = Object.prototype.hasOwnProperty.call(record, "roles");
+	const roles = hasRoles ? normalizeSemanticNavigationRoles(record.roles, true) : undefined;
+	if (roles) out.roles = roles;
+	const readonlyTools = asStringArray(record.serenaReadonlyTools);
+	if (readonlyTools !== undefined) out.serenaReadonlyTools = readonlyTools;
+	const editTools = asStringArray(record.serenaEditTools);
+	if (editTools !== undefined) out.serenaEditTools = editTools;
+	const projectTools = asStringArray(record.serenaProjectTools);
+	if (projectTools !== undefined) out.serenaProjectTools = projectTools;
+	return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /**
  * Normalize a v1 workflow config. Pass-through: every preserved field keeps
  * its v1 meaning so the resolved effective config is identical to what
@@ -127,6 +195,8 @@ export function normalizeV1Config(input: unknown): V1WorkflowConfig | undefined 
 	if (delegateFallbacks) out.delegateFallbacks = delegateFallbacks;
 	const deepPlanning = readDeepPlanningConfig(record);
 	if (deepPlanning) out.deepPlanning = deepPlanning;
+	const semanticNavigation = normalizeSemanticNavigationConfig(record.semanticNavigation);
+	if (semanticNavigation) out.semanticNavigation = semanticNavigation;
 	const display = asDelegateDisplayMode(record.delegateDisplay);
 	if (display !== undefined) out.delegateDisplay = display;
 	const paneAutoClose = asBoolean(record.delegatePaneAutoClose);

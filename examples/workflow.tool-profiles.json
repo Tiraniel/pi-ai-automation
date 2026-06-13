@@ -53,6 +53,76 @@
 				"room_job_done",
 				"room_status"
 			]
+		},
+		{
+			"id": "brain-serena-readonly",
+			"tools": [
+				"read",
+				"bash",
+				"grep",
+				"find",
+				"ls",
+				"room_create",
+				"room_job_start",
+				"room_send",
+				"room_read",
+				"room_job_done",
+				"room_status",
+				"workflow_deep_plan",
+				"mcp__serena__activate_project",
+				"mcp__serena__get_symbols_overview",
+				"mcp__serena__find_symbol",
+				"mcp__serena__find_referencing_symbols",
+				"mcp__serena__search_for_pattern"
+			]
+		},
+		{
+			"id": "coder-serena-and-edit",
+			"tools": [
+				"read",
+				"bash",
+				"edit",
+				"write",
+				"grep",
+				"find",
+				"ls",
+				"room_create",
+				"room_job_start",
+				"room_send",
+				"room_read",
+				"room_job_done",
+				"room_status",
+				"mcp__serena__activate_project",
+				"mcp__serena__get_symbols_overview",
+				"mcp__serena__find_symbol",
+				"mcp__serena__find_referencing_symbols",
+				"mcp__serena__search_for_pattern",
+				"mcp__serena__replace_symbol_body",
+				"mcp__serena__insert_before_symbol",
+				"mcp__serena__insert_after_symbol"
+			],
+			"includeKarpathyGuidelines": true
+		},
+		{
+			"id": "reviewer-serena-readonly",
+			"tools": [
+				"read",
+				"bash",
+				"grep",
+				"find",
+				"ls",
+				"room_create",
+				"room_job_start",
+				"room_send",
+				"room_read",
+				"room_job_done",
+				"room_status",
+				"mcp__serena__activate_project",
+				"mcp__serena__get_symbols_overview",
+				"mcp__serena__find_symbol",
+				"mcp__serena__find_referencing_symbols",
+				"mcp__serena__search_for_pattern"
+			]
 		}
 	]
 }

@@ -1,0 +1,206 @@
+{
+  "planId": "serena-tool-profiles-task-002",
+  "createdAt": "2026-06-12T19:35:24.943Z",
+  "updatedAt": "2026-06-12T20:33:03.939Z",
+  "status": "ready",
+  "businessPlan": "Provide opt-in Serena-aware workflow catalog examples so projects can choose semantic navigation role variants without changing default Brain/Coder/Reviewer behavior or making Serena mandatory. The user-facing invariant is additive adoption: existing installations that keep the default workflow and disabled/absent semanticNavigation config must resolve the same tool lists, while projects that explicitly bind Serena variants get Brain/Reviewer readonly navigation and Coder navigation plus explicitly cataloged edit tools.",
+  "technicalPlan": "Make the change in catalog/data/docs/tests only unless a failing smoke exposes a resolver regression. Add optional profile entries to examples/workflow.tool-profiles.json using the exact requested ids: brain-serena-readonly, coder-serena-and-edit, reviewer-serena-readonly. Preserve existing profile ids and tool arrays exactly. Add optional agent catalog entries in examples/workflow.agent-catalog.json that bind the Serena profiles to the existing premium model presets, prompt packs, and reviewer quality gates while leaving default agent ids unchanged. Keep Serena MCP tool names in JSON examples/catalog entries and documentation, not in runtime role logic. Add a TASK-002 smoke script that first proves current absence fails, then verifies default resolution, Serena variant resolution, reviewer readonly exclusion, coder edit opt-in, and override precedence.",
+  "parallelAssessment": "Serial execution. The task has brain:parallel=auto, but the safe contracts are small and tightly coupled across the same JSON catalogs, docs, and one smoke script; splitting would create unnecessary coordination risk over shared profile ids/tool lists.",
+  "contractBlockPlan": "Blocks: (1) Test block owns scripts/task-002-serena-tool-profiles-smokes.ts and encodes exact default profile baselines plus Serena variant assertions. (2) Tool-profile catalog block owns examples/workflow.tool-profiles.json and adds only the three optional Serena profiles. (3) Agent-catalog block owns examples/workflow.agent-catalog.json and adds only optional Serena agent entries that reference existing model/prompt/quality-gate catalogs. (4) Documentation block owns docs/workflow-config-v2.md and explains how to opt into these examples, fallback/evidence limits, and override precedence. Shared contract: readonly Serena tools are mcp__serena__activate_project, mcp__serena__get_symbols_overview, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__search_for_pattern; edit tools allowed only in coder-serena-and-edit are mcp__serena__replace_symbol_body, mcp__serena__insert_before_symbol, and mcp__serena__insert_after_symbol. Reviewer profiles must never include the edit-tool list.",
+  "acceptanceCriteria": [
+    "Default tool profiles remain unchanged when Serena is disabled/absent.",
+    "Serena profile examples include Brain readonly, Coder navigation plus configured edit tools, and Reviewer readonly.",
+    "Reviewer profile excludes Serena edit/refactor tools.",
+    "Coder includes Serena edit tools only when explicitly configured.",
+    "Override precedence for existing profile resolution remains intact."
+  ],
+  "phases": {
+    "phaseA": {
+      "status": "review_approved",
+      "updatedAt": "2026-06-12T20:33:03.939Z",
+      "evidence": [
+        {
+          "at": "2026-06-12T19:47:59.746Z",
+          "note": "Delegation coder returned completed"
+        },
+        {
+          "at": "2026-06-12T19:55:10.594Z",
+          "note": "Delegation reviewer returned failed"
+        },
+        {
+          "at": "2026-06-12T19:58:21.766Z",
+          "note": "Delegation coder returned completed"
+        },
+        {
+          "at": "2026-06-12T20:04:59.936Z",
+          "note": "Delegation reviewer returned failed"
+        },
+        {
+          "at": "2026-06-12T20:07:28.346Z",
+          "note": "Delegation coder returned completed"
+        },
+        {
+          "at": "2026-06-12T20:19:15.375Z",
+          "note": "Delegation reviewer returned failed"
+        },
+        {
+          "at": "2026-06-12T20:21:36.745Z",
+          "note": "Delegation coder returned completed"
+        },
+        {
+          "at": "2026-06-12T20:33:03.939Z",
+          "note": "Delegation reviewer returned completed"
+        }
+      ]
+    },
+    "phaseB": {
+      "status": "not_started",
+      "updatedAt": "2026-06-12T19:35:24.943Z",
+      "evidence": []
+    }
+  },
+  "taskId": "TASK-002",
+  "title": "Additive Serena-aware tool profiles and catalog examples",
+  "files": [
+    "examples/workflow.tool-profiles.json",
+    "examples/workflow.agent-catalog.json",
+    "docs/workflow-config-v2.md",
+    "scripts/task-002-serena-tool-profiles-smokes.ts"
+  ],
+  "acceptanceEvidenceMatrix": [
+    {
+      "criterion": "Default tool profiles remain unchanged when Serena is disabled/absent.",
+      "criterionKind": "configuration",
+      "businessRiskIfWrong": "Existing users could unexpectedly receive Serena MCP tools or lose built-in tools just by upgrading, making an optional feature disruptive.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke asserts the three default profile tool arrays and the default workflow's resolved role tools exactly match the pre-Serena baseline.",
+          "command": "npx tsx --conditions import scripts/task-002-serena-tool-profiles-smokes.ts"
+        },
+        {
+          "kind": "regression-test",
+          "description": "Existing TASK-001 semanticNavigation config smoke still passes after additive catalog changes.",
+          "command": "npx tsx --conditions import scripts/task-001-serena-semantic-navigation-config-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "regression",
+        "implementation"
+      ],
+      "blockingConditions": [
+        "Any existing default profile id is removed or renamed.",
+        "Any existing default profile tool array changes.",
+        "The default examples/workflow.json role bindings select Serena agents by default."
+      ]
+    },
+    {
+      "criterion": "Serena profile examples include Brain readonly, Coder navigation plus configured edit tools, and Reviewer readonly.",
+      "criterionKind": "configuration",
+      "businessRiskIfWrong": "Users would not have a copyable opt-in path for role-appropriate Serena adoption.",
+      "enforcementLevel": [
+        "behavior-test",
+        "manual-validation"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke resolves the optional Serena agent/profile entries and verifies Brain/Reviewer get readonly Serena navigation and Coder gets navigation plus explicit edit tools.",
+          "command": "npx tsx --conditions import scripts/task-002-serena-tool-profiles-smokes.ts"
+        },
+        {
+          "kind": "diff",
+          "description": "Examples and docs include the three expected profile ids and agent catalog entries."
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "docs-config"
+      ],
+      "blockingConditions": [
+        "Any expected Serena profile id is missing.",
+        "Serena tool names are generated in runtime TypeScript instead of catalog/data/docs.",
+        "Docs omit how to bind optional Serena agent/profile examples."
+      ],
+      "manualValidationPlan": "Reviewer inspects examples/workflow.tool-profiles.json, examples/workflow.agent-catalog.json, and docs/workflow-config-v2.md for the documented opt-in profile ids and binding instructions."
+    },
+    {
+      "criterion": "Reviewer profile excludes Serena edit/refactor tools.",
+      "criterionKind": "configuration",
+      "businessRiskIfWrong": "Reviewer agents could mutate source while performing independent verification, weakening the review boundary.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke asserts reviewer-serena-readonly contains none of the configured Serena edit/refactor tool names.",
+          "command": "npx tsx --conditions import scripts/task-002-serena-tool-profiles-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "behavior",
+        "regression"
+      ],
+      "blockingConditions": [
+        "Reviewer Serena profile includes replace/insert/rename/refactor/delete/write Serena tools.",
+        "Reviewer Serena agent overrides tools to include edit/refactor capabilities."
+      ]
+    },
+    {
+      "criterion": "Coder includes Serena edit tools only when explicitly configured.",
+      "criterionKind": "configuration",
+      "businessRiskIfWrong": "Coder could receive edit/refactor tools implicitly from semanticNavigation enablement rather than a deliberate catalog choice.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke asserts only coder-serena-and-edit contains the explicit Serena edit tools and readonly profiles do not; no runtime resolver appends edit tools automatically.",
+          "command": "npx tsx --conditions import scripts/task-002-serena-tool-profiles-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "behavior",
+        "implementation"
+      ],
+      "blockingConditions": [
+        "Runtime role logic appends Serena edit tools based on role or semanticNavigation config.",
+        "Brain or Reviewer readonly profile receives configured edit tools.",
+        "Coder default profile receives Serena edit tools."
+      ]
+    },
+    {
+      "criterion": "Override precedence for existing profile resolution remains intact.",
+      "criterionKind": "runtime-behavior",
+      "businessRiskIfWrong": "Users relying on agent.overrides.tools could lose explicit override behavior when additive profiles are introduced.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "Smoke constructs a resolver scenario where agent.overrides.tools replaces a Serena profile's tool list and verifies the resolved source/tools come from the override.",
+          "command": "npx tsx --conditions import scripts/task-002-serena-tool-profiles-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "regression",
+        "maintainability"
+      ],
+      "blockingConditions": [
+        "agent.overrides.tools merges with profile tools instead of replacing them.",
+        "Adding Serena catalog entries changes resolveToolsForAgent precedence.",
+        "Existing resolver diagnostics or fallback behavior regresses."
+      ]
+    }
+  ]
+}

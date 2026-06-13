@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "visibility": "committed",
+  "autoCreate": "ask",
+  "defaultTracker": "linear",
+  "linear": {
+    "enabled": false,
+    "teamKey": null,
+    "projectId": null
+  }
+}

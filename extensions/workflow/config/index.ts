@@ -12,6 +12,7 @@ export {
 	normalizePromptPacksCatalog,
 	normalizeQualityGatesCatalog,
 	normalizeToolProfilesCatalog,
+	normalizeSemanticNavigationConfig,
 	normalizeV1Config,
 	normalizeV2Workflow,
 	v1ConfigToV2Workflow,

@@ -18,10 +18,15 @@ import * as path from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_CONFIG } from "../defaults";
+import { withSemanticNavigationPromptGuidance } from "../prompts";
 import { GONKA_DOTENV_KEYS, GONKA_DOTENV_PATH, WORKFLOW_PROFILES } from "../profiles";
 import { adaptV2ResolvedWorkflow } from "./v2-adapter";
-import { detectConfigVersion, loadV2Workflow, normalizeV1Config } from "../config";
+import { detectConfigVersion, loadV2Workflow, normalizeSemanticNavigationConfig, normalizeV1Config } from "../config";
 import { readDeepPlanningConfig } from "../config/deep-planning.js";
+import {
+	SEMANTIC_NAVIGATION_MODES,
+	SEMANTIC_NAVIGATION_PROVIDERS,
+} from "../types";
 import type {
 	AgentName,
 	AgentPreset,
@@ -179,6 +184,77 @@ function mapV2Diagnostics(
 	return diagnostics.map((diag) => makeWorkflowDiagnostic(scope, diag.severity as WorkflowConfigLoadDiagnostic["severity"], diag.code, diag.message, diag.ref?.id));
 }
 
+function hasOwnProperty(record: Record<string, unknown>, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function formatDiagnosticValue(value: unknown): string {
+	const formatted = JSON.stringify(value);
+	return formatted === undefined ? String(value) : formatted;
+}
+
+function hasInvalidSemanticNavigationProvider(record: Record<string, unknown>): boolean {
+	if (!hasOwnProperty(record, "provider")) return false;
+	const value = record.provider;
+	return typeof value !== "string"
+		|| !(SEMANTIC_NAVIGATION_PROVIDERS as readonly string[]).includes(value);
+}
+
+function hasInvalidSemanticNavigationMode(record: Record<string, unknown>): boolean {
+	if (!hasOwnProperty(record, "mode")) return false;
+	const value = record.mode;
+	return typeof value !== "string"
+		|| !(SEMANTIC_NAVIGATION_MODES as readonly string[]).includes(value);
+}
+
+function collectSemanticNavigationDiagnostics(
+	scope: WorkflowConfigLoadDiagnostic["scope"],
+	rawConfig: unknown,
+): WorkflowConfigLoadDiagnostic[] {
+	if (!isPlainObject(rawConfig) || !isPlainObject(rawConfig.semanticNavigation)) return [];
+	const diagnostics: WorkflowConfigLoadDiagnostic[] = [];
+	const semanticNavigation = rawConfig.semanticNavigation;
+	if (hasInvalidSemanticNavigationProvider(semanticNavigation)) {
+		diagnostics.push(makeWorkflowDiagnostic(
+			scope,
+			"warning",
+			"semantic-navigation-provider-unsupported",
+			`semanticNavigation.provider ${formatDiagnosticValue(semanticNavigation.provider)} is unsupported; supported provider: serena. Falling back to the default disabled Serena config.`,
+			"semanticNavigation.provider",
+		));
+	}
+	if (hasInvalidSemanticNavigationMode(semanticNavigation)) {
+		const futureNote = semanticNavigation.mode === "managed" ? " Managed mode is future scope and is not implemented in this MVP." : "";
+		diagnostics.push(makeWorkflowDiagnostic(
+			scope,
+			"warning",
+			"semantic-navigation-mode-unsupported",
+			`semanticNavigation.mode ${formatDiagnosticValue(semanticNavigation.mode)} is unsupported; supported modes: disabled, external.${futureNote} Falling back to disabled mode.`,
+			"semanticNavigation.mode",
+		));
+	}
+	return diagnostics;
+}
+
+function normalizeRuntimeSemanticNavigationOverride(raw: unknown): WorkflowConfig["semanticNavigation"] | undefined {
+	if (!isPlainObject(raw) || !("semanticNavigation" in raw)) return undefined;
+	const semanticNavigation = raw.semanticNavigation;
+	if (!isPlainObject(semanticNavigation)) return undefined;
+	if (hasInvalidSemanticNavigationProvider(semanticNavigation) || hasInvalidSemanticNavigationMode(semanticNavigation)) {
+		return { enabled: false, provider: "serena", mode: "disabled" };
+	}
+	return normalizeSemanticNavigationConfig(semanticNavigation);
+}
+
+function overlayNormalizedSemanticNavigation(raw: unknown, config: WorkflowConfig): WorkflowConfig {
+	if (!isPlainObject(raw) || !("semanticNavigation" in raw)) return config;
+	const next: WorkflowConfig = { ...config };
+	const normalized = normalizeRuntimeSemanticNavigationOverride(raw);
+	if (normalized) next.semanticNavigation = normalized;
+	else delete next.semanticNavigation;
+	return next;
+}
+
 function extractV2RuntimeOverrides(rawConfig: unknown): WorkflowConfig {
 	const normalized = normalizeV1Config(rawConfig);
 	if (!normalized) return {};
@@ -196,6 +272,8 @@ function extractV2RuntimeOverrides(rawConfig: unknown): WorkflowConfig {
 	if (normalized.delegateDisplay !== undefined) runtime.delegateDisplay = normalized.delegateDisplay;
 	if (normalized.delegatePaneAutoClose !== undefined) runtime.delegatePaneAutoClose = normalized.delegatePaneAutoClose;
 	if (normalized.delegateFallbacks !== undefined) runtime.delegateFallbacks = normalized.delegateFallbacks;
+	const semanticNavigation = normalizeRuntimeSemanticNavigationOverride(rawConfig);
+	if (semanticNavigation !== undefined) runtime.semanticNavigation = semanticNavigation;
 	return runtime;
 }
 
@@ -225,6 +303,7 @@ function loadV2WorkflowConfig(scope: "global" | "project", filePath: string): {
 	try {
 		const fileText = fs.readFileSync(filePath, "utf-8");
 		const raw = JSON.parse(fileText) as unknown;
+		sourceDiagnostics.push(...collectSemanticNavigationDiagnostics(scope, raw));
 		source.version = detectConfigVersion(raw) || 1;
 		source.format = source.version === 2 ? "v2" : "v1";
 
@@ -268,7 +347,8 @@ function loadV2WorkflowConfig(scope: "global" | "project", filePath: string): {
 			};
 		}
 
-		const config = ensureV1Config(raw);
+		let config = ensureV1Config(raw);
+		config = overlayNormalizedSemanticNavigation(raw, config);
 		if (isPlainObject(raw)) {
 			const deepPlanning = readDeepPlanningConfig(raw);
 			if (deepPlanning) {
@@ -324,12 +404,14 @@ function hasRuntimeConfigFields(config: WorkflowConfig): boolean {
 	const hasAgents = Boolean(config.agents && Object.keys(config.agents).length > 0);
 	const hasReviewerSwarm = Boolean(config.reviewerSwarm && Object.keys(config.reviewerSwarm).length > 0);
 	const hasDeepPlanning = Boolean(config.deepPlanning && Object.keys(config.deepPlanning).length > 0);
+	const hasSemanticNavigation = Boolean(config.semanticNavigation && Object.keys(config.semanticNavigation).length > 0);
 	return Boolean(
 		config.profile
 		|| config.delegateDisplay
 		|| config.delegatePaneAutoClose !== undefined
 		|| hasReviewerSwarm
 		|| hasDeepPlanning
+		|| hasSemanticNavigation
 		|| hasAgents,
 	);
 }
@@ -416,7 +498,8 @@ export function resolveModelLabel(preset: AgentPreset): string {
 }
 
 export function getAgentPreset(config: WorkflowConfig, agent: AgentName): AgentPreset {
-	return config.agents?.[agent] ?? DEFAULT_CONFIG.agents![agent];
+	const preset = config.agents?.[agent] ?? DEFAULT_CONFIG.agents![agent];
+	return withSemanticNavigationPromptGuidance(preset, agent, config.semanticNavigation);
 }
 
 export function formatPreset(agent: AgentName, preset: AgentPreset): string {

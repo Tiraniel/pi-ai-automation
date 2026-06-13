@@ -71,6 +71,77 @@ runtime safety override, not a v2 catalog identity.
 `reviewerSwarm.enabled` remains a compatibility switch only for legacy/no-matrix plans: setting it to `false` enables the legacy single-reviewer behavior there.
 For matrix-gated `ready` plans that carry an `acceptanceEvidenceMatrix`, role-based reviewer coverage remains required and still runs in role mode even when `reviewerSwarm.enabled` is `false`.
 
+### Optional semanticNavigation runtime block
+
+`semanticNavigation` is an optional runtime configuration block for semantic code navigation backends. It is disabled by default and does not change default Brain/Coder/Reviewer tool profiles or workflow evidence gates.
+
+Supported MVP values:
+
+- `provider`: only `"serena"`.
+- `mode`: `"disabled"` or `"external"`.
+- `managed` mode is future scope and is not implemented in this MVP.
+- role access: `"off"`, `"readonly"`, or `"edit"` for `brain`, `coder`, and `reviewer`.
+
+Example project `.pi/workflow.json` or local `.pi/workflow.local.json` overlay:
+
+```json
+{
+  "semanticNavigation": {
+    "enabled": true,
+    "provider": "serena",
+    "mode": "external",
+    "fallbackToBuiltinTools": true,
+    "roles": {
+      "brain": "readonly",
+      "coder": "edit",
+      "reviewer": "readonly"
+    },
+    "serenaReadonlyTools": [
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__find_symbol",
+      "mcp__serena__find_referencing_symbols"
+    ],
+    "serenaEditTools": [
+      "mcp__serena__replace_symbol_body"
+    ],
+    "serenaProjectTools": [
+      "mcp__serena__activate_project"
+    ]
+  }
+}
+```
+
+External mode expects Serena MCP to be configured outside this package, for example in the user's MCP config:
+
+```toml
+[mcp_servers.serena]
+startup_timeout_sec = 15
+command = "serena"
+args = ["start-mcp-server", "--project-from-cwd", "--context=codex"]
+```
+
+Limitations and evidence boundaries: this block only records configuration. It does not start, install, manage, or validate Serena MCP servers; it does not wire Serena tools into default profiles in this task; and Serena output is navigation context only, not workflow validation evidence. Role-specific Serena prompt guidance is appended only when semantic navigation is enabled for that role with provider `serena` and mode `external`; disabled configs and roles set to `off` keep the base prompts unchanged. When a `roles` map is provided, omitted roles are treated as `off` rather than inheriting default role access. Coder/reviewer completion still requires the same runnable checks and structured evidence as before. If `fallbackToBuiltinTools` is true, agents should continue with built-in `read`, `grep`, `find`, and `ls` when Serena tools are unavailable.
+
+### Opt-in Serena-aware catalog examples
+
+The example catalogs include optional Serena-aware agent/profile variants for projects that already run Serena MCP externally. These entries are additive examples only: `examples/workflow.json` remains bound to `brain-default`, `coder-default`, and `reviewer-default`, and the default profiles `brain-room-only`, `coder-room-and-edit`, and `reviewer-readonly` are unchanged.
+
+To opt in, bind roles to these optional agent ids in a project workflow or overlay:
+
+```json
+{
+  "roles": [
+    { "role": "brain", "agent": "brain-serena-readonly" },
+    { "role": "coder", "agent": "coder-serena-and-edit" },
+    { "role": "reviewer", "agent": "reviewer-serena-readonly" }
+  ]
+}
+```
+
+The readonly Serena profiles (`brain-serena-readonly` and `reviewer-serena-readonly`) add only navigation tools: `mcp__serena__activate_project`, `mcp__serena__get_symbols_overview`, `mcp__serena__find_symbol`, `mcp__serena__find_referencing_symbols`, and `mcp__serena__search_for_pattern`. The coder opt-in profile (`coder-serena-and-edit`) adds those navigation tools plus explicit edit tools: `mcp__serena__replace_symbol_body`, `mcp__serena__insert_before_symbol`, and `mcp__serena__insert_after_symbol`. Reviewer profiles must stay readonly and must not include Serena edit/refactor/delete/write tools.
+
+Tool resolution precedence is unchanged: `agent.overrides.tools`, when present, replaces the selected tool profile list instead of merging with it. Use an override only for deliberate one-off tool lists; otherwise select one of the catalog profiles above.
+
 - `deepPlanning` remains the explicit runtime-wired planning exception and is
   resolved through the model preset catalog via `loadV2Workflow` + adapter.
 - `loadWorkflowConfig` routes `version: 2` files through `loadV2Workflow` and

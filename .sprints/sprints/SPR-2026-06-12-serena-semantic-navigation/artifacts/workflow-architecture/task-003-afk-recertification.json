@@ -1,0 +1,214 @@
+{
+  "planId": "task-003-afk-recertification",
+  "createdAt": "2026-06-13T09:21:07.397Z",
+  "updatedAt": "2026-06-13T09:51:19.541Z",
+  "status": "ready",
+  "businessPlan": "AFK recertification for the already-scoped TASK-003 outcome: projects that explicitly enable semanticNavigation for Serena in external mode should receive role-specific prompt guidance only for roles enabled in config. Brain guidance must support orientation, architecture understanding, and self-contained delegation with concrete file/symbol references; Coder guidance must require semantic lookup plus exact built-in file inspection and runnable validation; Reviewer guidance must use semantic navigation for coverage only, never as behavior proof. Disabled/default configs and roles set to off must keep existing prompts behavior-compatible.",
+  "technicalPlan": "Use the existing prompt/runtime config seam. The implementation surface is extensions/workflow/prompts.ts for pure role-specific guidance helpers, extensions/workflow/runtime/config.ts for getAgentPreset composition using config.semanticNavigation, scripts/task-003-serena-prompt-guidance-smokes.ts for behavior/regression coverage, and docs/workflow-config-v2.md for the user-facing role/evidence boundary. For this AFK run, coder should inspect the current implementation and make no changes if it already satisfies the matrix; if a gap is found, patch only the listed files with minimal TDD-style smoke coverage. Preserve DEFAULT_CONFIG prompt constants, default tool/profile behavior, delegate/reviewer/finalization evidence semantics, and avoid hard-coding Serena MCP tool names in prompt-gating runtime logic.",
+  "parallelAssessment": "serial. TASK-003 has brain:parallel=auto, but the code shape is a tightly coupled prompt/runtime/test/doc contract. Safe independent ownership boundaries are not available because changing guidance text, getAgentPreset composition, and smoke assertions must stay synchronized. No workflow room is needed for implementation or review.",
+  "contractBlockPlan": "Single AFK recertification phase using phaseA: (1) verify role-specific guidance text/helpers in extensions/workflow/prompts.ts; (2) verify getAgentPreset appends guidance through config.semanticNavigation in extensions/workflow/runtime/config.ts; (3) verify smoke coverage in scripts/task-003-serena-prompt-guidance-smokes.ts for enabled Brain/Coder/Reviewer text, disabled/default config, role-off config, stable repeated calls, and non-Serena prompt compatibility; (4) verify docs/workflow-config-v2.md states prompt guidance is role-gated and Serena output is not validation evidence. Required checks: npx tsx --conditions import scripts/task-003-serena-prompt-guidance-smokes.ts; npx tsx --conditions import scripts/task-001-serena-semantic-navigation-config-smokes.ts; npx tsx --conditions import scripts/task-002-serena-tool-profiles-smokes.ts; git diff --check -- extensions/workflow/prompts.ts extensions/workflow/runtime/config.ts docs/workflow-config-v2.md scripts/task-003-serena-prompt-guidance-smokes.ts.",
+  "acceptanceCriteria": [
+    "Brain guidance emphasizes orientation, architecture understanding, and concrete file/symbol refs before delegation.",
+    "Coder guidance requires exact built-in file inspection before final edits and validation commands after semantic edits.",
+    "Reviewer guidance treats Serena output as review coverage, not behavioral evidence.",
+    "Serena guidance is absent when semanticNavigation is disabled or role is not enabled.",
+    "Existing non-Serena prompts remain behavior-compatible."
+  ],
+  "phases": {
+    "phaseA": {
+      "status": "review_approved",
+      "updatedAt": "2026-06-13T09:51:19.540Z",
+      "evidence": [
+        {
+          "at": "2026-06-13T09:31:16.000Z",
+          "note": "Admin artifact correction after AFK recertification: coder pane attempts ran TASK-003/TASK-001/TASK-002/diff-check successfully and final explicit sidecar contained usable command evidence, but the matrix validator rejected one packet for empty filesChanged and comma-separated evidenceKind strings. No task code edited by Brain; correction opens read-only reviewer delegation while preserving caveat in sprint progress/AFK report.",
+          "source": "brain-admin-correction"
+        },
+        {
+          "at": "2026-06-13T09:37:03.777Z",
+          "note": "Delegation reviewer returned failed"
+        },
+        {
+          "at": "2026-06-13T09:43:08.035Z",
+          "note": "Delegation coder returned completed"
+        },
+        {
+          "at": "2026-06-13T09:51:19.540Z",
+          "note": "Delegation reviewer returned completed"
+        }
+      ]
+    },
+    "phaseB": {
+      "status": "not_started",
+      "updatedAt": "2026-06-13T09:21:07.397Z",
+      "evidence": []
+    }
+  },
+  "taskId": "TASK-003",
+  "title": "TASK-003 AFK recertification for role-specific Serena prompt guidance",
+  "files": [
+    "extensions/workflow/prompts.ts",
+    "extensions/workflow/runtime/config.ts",
+    "scripts/task-003-serena-prompt-guidance-smokes.ts",
+    "docs/workflow-config-v2.md",
+    ".sprints/sprints/SPR-2026-06-12-serena-semantic-navigation/tasks/TASK-003-role-specific-serena-prompt-guidance.md"
+  ],
+  "acceptanceEvidenceMatrix": [
+    {
+      "criterion": "Brain guidance emphasizes orientation, architecture understanding, and concrete file/symbol refs before delegation.",
+      "criterionKind": "runtime-behavior",
+      "businessRiskIfWrong": "Brain may delegate vague work or miss architecture context, weakening the Brain-to-Coder contract and increasing implementation guesswork.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "TASK-003 smoke asserts enabled Brain effective guidance contains orientation, architecture understanding, concrete file/symbol/reference findings, and self-contained delegation boundaries.",
+          "command": "npx tsx --conditions import scripts/task-003-serena-prompt-guidance-smokes.ts"
+        },
+        {
+          "kind": "diff",
+          "description": "Diff/inspection shows Brain guidance is role-specific and added through semanticNavigation-gated prompt composition."
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "evidence-test",
+        "maintainability"
+      ],
+      "blockingConditions": [
+        "Brain guidance is shared/generic instead of role-specific.",
+        "Brain guidance omits architecture understanding, concrete file/symbol references, or self-contained delegation boundaries.",
+        "Brain guidance appears when semanticNavigation is disabled, unsupported, or role access is off."
+      ]
+    },
+    {
+      "criterion": "Coder guidance requires exact built-in file inspection before final edits and validation commands after semantic edits.",
+      "criterionKind": "runtime-behavior",
+      "businessRiskIfWrong": "Coder could rely on semantic edits without reading exact source or running validation, causing unsafe edits and false completion evidence.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "TASK-003 smoke asserts enabled Coder effective guidance requires exact built-in file/read inspection before final edits and validation commands after semantic edits.",
+          "command": "npx tsx --conditions import scripts/task-003-serena-prompt-guidance-smokes.ts"
+        },
+        {
+          "kind": "diff",
+          "description": "Diff/inspection shows Coder guidance preserves validation/evidence requirements and says Serena findings are not validation proof."
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "evidence-test",
+        "behavior",
+        "regression"
+      ],
+      "blockingConditions": [
+        "Coder guidance implies Serena output can replace built-in file reads.",
+        "Coder guidance omits validation commands after semantic edits.",
+        "Coder guidance weakens existing coder evidence or validation gates."
+      ]
+    },
+    {
+      "criterion": "Reviewer guidance treats Serena output as review coverage, not behavioral evidence.",
+      "criterionKind": "runtime-behavior",
+      "businessRiskIfWrong": "Reviewer could approve based on semantic inspection alone, weakening behavioral evidence and finalization reliability.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "TASK-003 smoke asserts enabled Reviewer guidance covers changed symbols/references/diagnostics as review coverage/supporting context and not behavioral/runtime validation evidence.",
+          "command": "npx tsx --conditions import scripts/task-003-serena-prompt-guidance-smokes.ts"
+        },
+        {
+          "kind": "diff",
+          "description": "Diff/inspection shows Reviewer guidance is readonly/no-edit and requests changes when relevant call sites or diagnostics remain unreviewed."
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "evidence-test",
+        "behavior",
+        "regression"
+      ],
+      "blockingConditions": [
+        "Reviewer guidance states or implies semantic navigation proves behavior.",
+        "Reviewer guidance omits runtime/behavior evidence boundaries.",
+        "Reviewer guidance encourages reviewer edit/refactor tools."
+      ]
+    },
+    {
+      "criterion": "Serena guidance is absent when semanticNavigation is disabled or role is not enabled.",
+      "criterionKind": "configuration",
+      "businessRiskIfWrong": "Default users or disabled roles would receive irrelevant Serena instructions and might assume unavailable tools or altered evidence semantics are active.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof",
+        "config-default"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "TASK-003 smoke asserts absent/default, disabled, unsupported, and per-role off configs do not append Serena guidance.",
+          "command": "npx tsx --conditions import scripts/task-003-serena-prompt-guidance-smokes.ts"
+        },
+        {
+          "kind": "regression-test",
+          "description": "TASK-001 config smoke remains green for absent/default disabled semanticNavigation and malformed provider/mode handling.",
+          "command": "npx tsx --conditions import scripts/task-001-serena-semantic-navigation-config-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "evidence-test",
+        "regression"
+      ],
+      "blockingConditions": [
+        "Guidance appears for default disabled config.",
+        "Guidance appears for roles set to off or omitted.",
+        "Invalid/unsupported provider or mode enables prompt guidance."
+      ]
+    },
+    {
+      "criterion": "Existing non-Serena prompts remain behavior-compatible.",
+      "criterionKind": "runtime-behavior",
+      "businessRiskIfWrong": "Existing installations could silently receive changed Brain/Coder/Reviewer behavior without opting into Serena.",
+      "enforcementLevel": [
+        "behavior-test",
+        "regression-proof"
+      ],
+      "requiredEvidence": [
+        {
+          "kind": "behavior-test",
+          "description": "TASK-003 smoke compares disabled/default effective prompts to base prompt constants and verifies no Serena guidance is appended.",
+          "command": "npx tsx --conditions import scripts/task-003-serena-prompt-guidance-smokes.ts"
+        },
+        {
+          "kind": "regression-test",
+          "description": "TASK-002 Serena profile smoke remains green, proving default tool/profile behavior is unchanged.",
+          "command": "npx tsx --conditions import scripts/task-002-serena-tool-profiles-smokes.ts"
+        }
+      ],
+      "reviewerRoles": [
+        "implementation",
+        "evidence-test",
+        "regression",
+        "maintainability"
+      ],
+      "blockingConditions": [
+        "DEFAULT_CONFIG prompt constants or base prompts change for disabled semanticNavigation behavior.",
+        "Default role tool/profile resolution changes.",
+        "Finalization, completion evidence, or reviewer gates are modified for this prompt task."
+      ]
+    }
+  ]
+}
