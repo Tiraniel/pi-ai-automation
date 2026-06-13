@@ -7,25 +7,37 @@ import { resolveSprintPathForStore } from "./architecture/sprint-path";
 import { getPlanStoragePath, readArchitecturePlan } from "./architecture/store";
 import type { WorkflowArchitecturePlan } from "./architecture/types";
 import { DELEGATE_MANIFEST_DIR } from "./delegate/constants";
+import type { DoneSidecar, DoneSidecarEvidence } from "./delegate/pane-status";
 import type { ReviewerMemo } from "./delegate/reviewer-roles";
 import type { DelegateCompletionSource } from "./types";
 import { runAndPersistWorkflowQualityAudit } from "./quality-audit-tools";
 import { evaluateFinalizationGate, isFinalizationStatus, type FinalizationGateResult, type FinalizationMode } from "./finalization-gate";
 
-interface DoneSidecar {
-	done?: boolean;
-	summary?: string;
-	at?: string;
-	exit_code?: number;
-	from_exit?: boolean;
-	tool?: string;
-	completion?: "explicit" | "auto_exit" | "process_exit";
-	source?: "tool" | "agent_end" | "shell_exit";
-	from_auto_exit?: boolean;
-	stop_reason?: string;
-	warning?: string;
-	coderEvidence?: unknown;
-}
+// TASK-002 HARD-CUT (Phase B): the finalization disk adapter no longer
+// reads top-level `coderEvidence` from done sidecars. The canonical
+// structured evidence path is `sidecar.evidence.coderEvidence` (and /
+// or `sidecar.evidence.reviewerEvidence` for reviewer runs), written
+// by the strict `sub_agent_done` / `workflow_delegate_done` tools as
+// `done.evidence`. Top-level `coderEvidence` / `reviewerEvidence` /
+// `summary` / `delegateHistory` / `from_exit` / etc. on a parsed done
+// sidecar are LEGACY diagnostic fields and cannot satisfy strict
+// finalization under the TASK-002 contract. The previous top-level
+// `coderEvidence?: unknown` field has been DELETED from this local
+// shape and is intentionally absent below.
+//
+// We re-declare the local `DoneSidecar` interface here so the adapter
+// has a stable, narrow view of the fields it consumes (no
+// `coderEvidence` / `reviewerEvidence` at the top level). The
+// canonical `evidence` envelope is the ONLY gate-authoritative input
+// for coder evidence in finalization.
+type AdapterDoneSidecar = DoneSidecar & {
+	// Local diagnostic copy of canonical envelope. Not part of the
+	// shared `DoneSidecar` strict type but accessible via the JSON
+	// parser. Top-level `coderEvidence` / `reviewerEvidence` are NOT
+	// re-declared here — they are intentionally absent under TASK-002
+	// hard-cut.
+	evidence?: DoneSidecarEvidence;
+};
 
 interface PaneManifest {
 	agent: "coder" | "reviewer";
@@ -47,9 +59,28 @@ function readJsonFile<T>(filePath: string): T | undefined {
 		return undefined;
 	}
 }
-function parseDoneSidecar(filePath: string): DoneSidecar | undefined {
+function parseDoneSidecar(filePath: string): AdapterDoneSidecar | undefined {
 	const value = readJsonFile<Record<string, unknown>>(filePath);
 	if (!value || typeof value !== "object") return undefined;
+	// TASK-002 HARD-CUT (Phase B): the parser no longer reads top-level
+	// `coderEvidence` / `reviewerEvidence` as finalization authority.
+	// The canonical envelope `evidence: { coderEvidence, reviewerEvidence,
+	// warnings?, event? }` (or legacy `done.evidence.*` / `details.evidence.*`)
+	// is the SOLE gate-readable path. The top-level `coderEvidence` field
+	// is intentionally DROPPED on read: even if a legacy delegate wrote
+	// it under the old protocol, it is diagnostic only and must not be
+	// used to satisfy strict finalization.
+	const evidenceRaw = value.evidence;
+	const evidence: DoneSidecarEvidence | undefined = evidenceRaw && typeof evidenceRaw === "object" && !Array.isArray(evidenceRaw)
+		? {
+			coderEvidence: (evidenceRaw as Record<string, unknown>).coderEvidence,
+			reviewerEvidence: (evidenceRaw as Record<string, unknown>).reviewerEvidence,
+			warnings: Array.isArray((evidenceRaw as Record<string, unknown>).warnings)
+				? ((evidenceRaw as Record<string, unknown>).warnings as unknown[]).filter((w): w is string => typeof w === "string")
+				: undefined,
+			event: (evidenceRaw as Record<string, unknown>).event,
+		}
+		: undefined;
 	return {
 		done: typeof value.done === "boolean" ? value.done : undefined,
 		summary: typeof value.summary === "string" ? value.summary : undefined,
@@ -66,7 +97,7 @@ function parseDoneSidecar(filePath: string): DoneSidecar | undefined {
 		from_auto_exit: typeof value.from_auto_exit === "boolean" ? value.from_auto_exit : undefined,
 		stop_reason: typeof value.stop_reason === "string" ? value.stop_reason : undefined,
 		warning: typeof value.warning === "string" ? value.warning : undefined,
-		coderEvidence: value.coderEvidence,
+		evidence,
 	};
 }
 
@@ -328,14 +359,22 @@ function readMatchingManifests(cwd: string, planId: string | undefined): Manifes
 				? "completed"
 				: "aborted";
 		const at = trimText(sidecar?.at) || trimText(manifest.updatedAt) || trimText(manifest.startedAt) || new Date().toISOString();
+		// TASK-002 HARD-CUT (Phase B): coder evidence is read SOLELY from the
+		// canonical `sidecar.evidence.coderEvidence` envelope. Top-level
+		// `sidecar.coderEvidence` is diagnostic/legacy only and must not
+		// satisfy `hasCoderEvidence` / `coderEvidence` for finalization.
+		// A legacy-only sidecar (top-level `coderEvidence` only) is
+		// therefore treated as missing coder evidence by this adapter,
+		// and strict finalization must block.
+		const canonicalCoderEvidence = manifest.agent === "coder" ? sidecar?.evidence?.coderEvidence : undefined;
 		out.push({
 			manifest,
 			sidecar,
 			completionSource,
 			hasSidecar,
 			attemptStatus,
-			hasCoderEvidence: manifest.agent === "coder" && Boolean(sidecar?.coderEvidence),
-			coderEvidence: manifest.agent === "coder" ? sidecar?.coderEvidence : undefined,
+			hasCoderEvidence: manifest.agent === "coder" && Boolean(canonicalCoderEvidence),
+			coderEvidence: canonicalCoderEvidence,
 			at,
 			preview: trimText(sidecar?.summary || sidecar?.warning || manifest.done?.summary),
 		});

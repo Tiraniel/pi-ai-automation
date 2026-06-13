@@ -180,6 +180,13 @@ function writeDelegateManifest(cwd: string, input: {
 	at?: string;
 	withCoderEvidence: boolean;
 	note?: string;
+	// TASK-002 Phase B: optional sidecar format override. The default
+	// (`"canonical"`) writes the canonical `evidence: { coderEvidence }`
+	// envelope. `"legacy-top-level"` deliberately writes top-level
+	// `coderEvidence` only (no `evidence` envelope) so a regression
+	// smoke can prove strict finalization blocks on a legacy-only
+	// sidecar. The legacy format is NEVER used in success-path smokes.
+	sidecarFormat?: "canonical" | "legacy-top-level";
 }): void {
 	const root = path.join(cwd, ".pi", "workflow-runs", "delegates");
 	fs.mkdirSync(root, { recursive: true });
@@ -205,13 +212,33 @@ function writeDelegateManifest(cwd: string, input: {
 		state: input.status,
 	};
 	if (input.hasSidecar) {
-		writeJson(donePath, {
+		// TASK-002 HARD-CUT (Phase B): successful coder sidecars must
+		// write the canonical `evidence: { coderEvidence }` envelope,
+		// not top-level `coderEvidence`. The top-level `coderEvidence`
+		// field is a legacy diagnostic and cannot satisfy strict
+		// finalization. The fixture therefore writes the canonical
+		// envelope as the strict success path; the
+		// `sidecarFormat: "legacy-top-level"` option below lets a
+		// regression case deliberately write a legacy-only sidecar
+		// to prove strict finalization blocks on it.
+		const envelope: Record<string, unknown> | undefined = input.withCoderEvidence && evidence
+			? { coderEvidence: evidence }
+			: undefined;
+		const sidecarBody: Record<string, unknown> = {
 			done: input.status === "completed",
 			summary: input.note || `${input.runId} completed`,
 			at: now,
 			completion: input.completion,
-			coderEvidence: evidence,
-		});
+		};
+		if (input.sidecarFormat === "legacy-top-level") {
+			// Legacy-only: writes top-level `coderEvidence` and NO
+			// `evidence` envelope. Used to prove strict finalization
+			// must fail closed on this path.
+			sidecarBody.coderEvidence = evidence;
+		} else if (envelope !== undefined) {
+			sidecarBody.evidence = envelope;
+		}
+		writeJson(donePath, sidecarBody);
 	}
 	writeJson(path.join(root, `${input.runId}.json`), manifest);
 }
@@ -373,6 +400,53 @@ function main(): void {
 	check(reviewerEvidenceOnly.ok === false, "runtime: reviewer-side coderEvidence-only should not satisfy coder evidence requirement");
 	check(reviewerEvidenceOnly.blockers.some((reason) => reason.toLowerCase().includes("coder") || reason.toLowerCase().includes("evidence")),
 		"runtime: reviewer-only evidence sidecar is rejected for coder proof");
+
+	// TASK-002 Phase B regression: a coder sidecar that contains ONLY a
+	// top-level `coderEvidence` field (the old legacy shape) and NO
+	// canonical `evidence: { coderEvidence }` envelope must NOT
+	// satisfy strict finalization. The adapter treats this as
+	// missing coder evidence, so the gate must block.
+	const legacyTopLevelOnly = withTempWorkspace("task-005-adapter-legacy-top-level", (cwd) => {
+		const plan = makePlan({
+			planId: "task-005-legacy-top-level",
+			taskId: "TASK-005-12",
+			phases: {
+				phaseA: { status: "review_approved" as const, updatedAt: new Date().toISOString(), evidence: [] },
+				phaseB: { status: "not_started" as const, updatedAt: new Date().toISOString(), evidence: [] },
+			},
+		});
+		writePlanFixture(cwd, plan.planId, "TASK-005-12", { phases: plan.phases, taskId: "TASK-005-12" });
+		writeReviewerMemoFixture(cwd, plan.planId, "phaseA", "APPROVED");
+		writeDelegateManifest(cwd, {
+			runId: "task-005-legacy-top-level-coder",
+			planId: plan.planId,
+			agent: "coder",
+			status: "completed",
+			completion: "explicit",
+			hasSidecar: true,
+			withCoderEvidence: true,
+			sidecarFormat: "legacy-top-level",
+			note: "Legacy top-level coderEvidence, no evidence envelope",
+		});
+		return evaluateSprintTaskFinalizationFromDisk({
+			cwd,
+			taskId: "TASK-005-12",
+			requestedStatus: "done",
+			mode: "strict",
+		});
+	});
+	check(legacyTopLevelOnly.ok === false, "runtime: legacy top-level coderEvidence-only sidecar must NOT satisfy strict finalization");
+	check(legacyTopLevelOnly.blockers.some((reason) => reason.toLowerCase().includes("coder") || reason.toLowerCase().includes("evidence")),
+		"runtime: legacy top-level sidecar is rejected with coder/evidence blocker");
+	// The adapter falls back to an empty coder evidence packet for
+	// legacy-only sidecars, so `present` is true but `ok` is false
+	// and the gate has no runnable coverage rows to satisfy the
+	// matrix. The strict decision must still block and the coder
+	// section must report it as not ok.
+	check(legacyTopLevelOnly.details?.coder.ok === false,
+		"runtime: legacy top-level sidecar yields non-ok coder section in gate details");
+	check((legacyTopLevelOnly.details?.coder.evidenceRows ?? 0) === 0,
+		"runtime: legacy top-level sidecar yields zero runnable coverage rows");
 
 	const retryWarnings = withTempWorkspace("task-005-adapter-retry", (cwd) => {
 		const now = new Date();
