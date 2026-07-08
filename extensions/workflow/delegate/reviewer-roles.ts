@@ -380,7 +380,7 @@ export function buildReviewerRoleTask(task: string, roleTarget: ReviewerRoleTarg
 	s.push("- Start your response with APPROVED or CHANGES_REQUESTED as the first token — plain text, no markdown decoration around the word.");
 	s.push("- If the role's hard rules or blocking conditions apply, you MUST return CHANGES_REQUESTED with the specific reason and the file/line where the issue occurs.");
 	s.push("- Free-form completion (no APPROVED/CHANGES_REQUESTED prefix) is provisional and does NOT satisfy the role; Brain will treat it as a blocker for required roles.");
-	s.push("- Do not validate, approve, or critique Brain-owned plan quality. Focus only on implementation diffs, behavior, evidence, and the role criteria above.");
+	s.push("- Focus only on implementation diffs, behavior, evidence, and the role criteria above (the plan-quality rule from the hard role rules applies).");
 	s.push("- This role focus takes precedence over the general reviewer checklist in your system prompt: report out-of-role findings briefly, but your verdict is decided by THIS role's criteria.");
 	return s.join("\n");
 }

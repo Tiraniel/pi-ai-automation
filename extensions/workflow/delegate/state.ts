@@ -50,6 +50,8 @@ export interface DelegateEventState {
 	lastThinkingChars: number;
 	lastThinkingEmitAt: number;
 	latestThinkingChars: number;
+	/** Count of child stream lines that failed JSON.parse and were dropped. */
+	malformedEventLines: number;
 }
 
 export function createDelegateEventState(): DelegateEventState {
@@ -66,7 +68,18 @@ export function createDelegateEventState(): DelegateEventState {
 		lastThinkingChars: 0,
 		lastThinkingEmitAt: 0,
 		latestThinkingChars: 0,
+		malformedEventLines: 0,
 	};
+}
+
+// A dropped line can carry `message_end` / usage / the final assistant text,
+// so a silent drop can turn a failed child into a "completed with empty
+// output" result. Count and surface the first occurrence in stderr.
+function recordMalformedLine(state: DelegateEventState): void {
+	state.malformedEventLines += 1;
+	if (state.malformedEventLines === 1) {
+		state.stderr = `${state.stderr}${state.stderr ? "\n" : ""}[delegate] dropped malformed JSON line(s) from the child stream; usage/final output may be incomplete`;
+	}
 }
 
 function pushProgress(state: DelegateEventState, item: DelegateProgressItem): void {
@@ -108,6 +121,7 @@ export function processEventLine(state: DelegateEventState, line: string, agent:
 	try {
 		event = JSON.parse(line);
 	} catch {
+		recordMalformedLine(state);
 		return;
 	}
 
@@ -239,6 +253,7 @@ export function processSessionLine(state: DelegateEventState, line: string, agen
 	try {
 		entry = JSON.parse(line);
 	} catch {
+		recordMalformedLine(state);
 		return;
 	}
 

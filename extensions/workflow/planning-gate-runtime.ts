@@ -10,7 +10,10 @@
 //      tools/commands can return so the caller knows exactly which flags are
 //      missing and which durable artifact paths the user must update.
 //
-// The helper is intentionally side-effect free: it only reads from disk. All
+// The helper reads from disk with one deliberate exception: when a planning
+// room is resolved through the volatile `.pi/workflow-runs/current.json`
+// fallback, the dedicated planning pointer is pinned (adopt-and-persist) so
+// later resolutions no longer race against unrelated room activity. All
 // transitions / scope changes / invalidations are still produced by the
 // `workflow_planning_state` AI tool (in `planning-tools.ts`) which calls the
 // pure Phase A writers.
@@ -32,6 +35,7 @@ import {
 	readWorkflowCurrentRoomPointer,
 	planningCurrentRoomPointerPath,
 	workflowCurrentRoomPointerPath,
+	writePlanningCurrentRoomPointer,
 } from "./planning-pointer";
 
 // ----- room pointer resolution -------------------------------------------------
@@ -95,6 +99,15 @@ export function resolvePlanningRoomId(cwd: string, explicitRoomId: unknown): Pla
 	try {
 		const workflowRoomId = validatePlanningRoomId(workflowPointer);
 		if (planningRoomHasStateFile(cwd, workflowRoomId)) {
+			// Adopt-and-persist: `.pi/workflow-runs/current.json` is a volatile
+			// global pointer that any room_create rewrites; once a planning room
+			// is resolved through it, pin the dedicated planning pointer so the
+			// resolution stays stable for this cwd (legacy-room migration path).
+			try {
+				writePlanningCurrentRoomPointer(cwd, workflowRoomId);
+			} catch {
+				// best effort — resolution still succeeds without the pin
+			}
 			return { planningRoomId: workflowRoomId, source: "activePointer", pointerPath: workflowCurrentRoomPointerPath(cwd) };
 		}
 		return planningPointerRoomId

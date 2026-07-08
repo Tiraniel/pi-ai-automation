@@ -89,7 +89,7 @@ export function buildReviewerGoalTask(task: string, goal: string): string {
 	// TASK-004 Phase B: drop the forbidden `code-only` label; the goal
 	// framing is now role/quality-check oriented and identical to the
 	// role-mode prompt scaffolding.
-	return `${task}\n\nAssigned review goal:\n- ${goal}\n\nReviewer checks should focus on implementation diffs, behavior, validation evidence, and the assigned review goal.\nThe architecture/phase plan is context for intended behavior and scope, not a plan-quality rubric.\nDo not validate or critique Brain-owned plan quality.\nStart your response with APPROVED or CHANGES_REQUESTED as the first token — plain text, no markdown decoration around the word.`;
+	return `${task}\n\nAssigned review goal:\n- ${goal}\n\nReviewer checks should focus on implementation diffs, behavior, validation evidence, and the assigned review goal.\nStart your response with APPROVED or CHANGES_REQUESTED as the first token — plain text, no markdown decoration around the word.`;
 }
 
 export async function runReviewerSwarm(

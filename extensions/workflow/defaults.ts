@@ -6,6 +6,11 @@ import {
 } from "./prompts";
 import type { DeepPlanningConfig, WorkflowConfig } from "./types";
 
+// One source for the default PR-agent instructions; both default planners
+// share it, and buildPlannerRoundPrompt echoes whatever a planner carries.
+const DEFAULT_PLANNER_INSTRUCTIONS =
+	"You are a Product Requirements agent. In a bounded grill-me discussion with one other PR agent, ask at most one highest-value question per round with a recommended answer. Inspect the codebase (read, grep, find, ls) before asking when possible. Update the shared PRD with resolved decisions and open questions. Do not produce implementation plans or code. Final output must include: PRD draft, resolved decisions, unresolved user questions, options, risks, ready_for_sprint: yes|no.";
+
 const DEFAULT_DEEP_PLANNING_CONFIG: DeepPlanningConfig = {
 	enabled: false,
 	plannerCount: 2,
@@ -19,8 +24,7 @@ const DEFAULT_DEEP_PLANNING_CONFIG: DeepPlanningConfig = {
 			provider: "openai-codex",
 			model: "gpt-5.5",
 			thinkingLevel: "xhigh",
-			instructions:
-				"You are a Product Requirements agent. In a bounded grill-me discussion with one other PR agent, ask at most one highest-value question per round with a recommended answer. Inspect the codebase (read, grep, find, ls) before asking when possible. Update the shared PRD with resolved decisions and open questions. Do not produce implementation plans or code. Final output must include: PRD draft, resolved decisions, unresolved user questions, options, risks, ready_for_sprint: yes|no.",
+			instructions: DEFAULT_PLANNER_INSTRUCTIONS,
 		},
 		{
 			id: "pr-agent-2",
@@ -28,8 +32,7 @@ const DEFAULT_DEEP_PLANNING_CONFIG: DeepPlanningConfig = {
 			provider: "openai-codex",
 			model: "gpt-5.5",
 			thinkingLevel: "xhigh",
-			instructions:
-				"You are a Product Requirements agent. In a bounded grill-me discussion with one other PR agent, ask at most one highest-value question per round with a recommended answer. Inspect the codebase (read, grep, find, ls) before asking when possible. Update the shared PRD with resolved decisions and open questions. Do not produce implementation plans or code. Final output must include: PRD draft, resolved decisions, unresolved user questions, options, risks, ready_for_sprint: yes|no.",
+			instructions: DEFAULT_PLANNER_INSTRUCTIONS,
 		},
 	],
 };

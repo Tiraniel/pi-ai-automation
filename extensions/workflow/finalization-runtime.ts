@@ -3,6 +3,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { architecturePlanTaskHeader } from "./architecture/gate";
 import { resolveSprintPathForStore } from "./architecture/sprint-path";
 import { getPlanStoragePath, readArchitecturePlan } from "./architecture/store";
 import type { WorkflowArchitecturePlan } from "./architecture/types";
@@ -84,6 +85,11 @@ interface EvaluateDebugFinalizationInput {
 	itemId: string;	requestedStatus: string;	mode?: FinalizationMode;	finalNote?: string;	finalEvidence?: string;	debugChain?: { repeatedInAreaCount?: number; priorFailureCount?: number };
 }
 type ReviewPhase = "phaseA" | "phaseB";
+
+// Scan/accumulation ceilings: finalization cost must not grow unbounded with
+// project age (the delegates/ manifest dir is never pruned).
+const MAX_MANIFEST_SCAN = 300;
+const MAX_HISTORY_ATTEMPTS = 50;
 
 interface DelegateHistory {
 	attempts: Array<{ attempt: number; completionSource: DelegateCompletionSource; status: "completed" | "failed" | "aborted"; finalOutputPreview?: string; at?: string }>;
@@ -284,7 +290,25 @@ function readMatchingManifests(cwd: string, planId: string | undefined): Manifes
 	} catch {
 		return [];
 	}
-	const expected = `architecture plan ${planId}`.toLowerCase();
+	// Derived from the same helper that renders the task header; the leading
+	// markdown "# " is stripped so pre-existing manifests (and fixtures) that
+	// carry the bare phrase still match.
+	const expected = architecturePlanTaskHeader(planId).replace(/^#\s*/, "").toLowerCase();
+	// Bound the scan: the delegates/ dir is never pruned, so cap how many
+	// manifests one finalization parses (newest first by mtime).
+	if (manifestFiles.length > MAX_MANIFEST_SCAN) {
+		manifestFiles = manifestFiles
+			.map((file) => {
+				try {
+					return { file, mtime: fs.statSync(file).mtimeMs };
+				} catch {
+					return { file, mtime: 0 };
+				}
+			})
+			.sort((a, b) => b.mtime - a.mtime)
+			.slice(0, MAX_MANIFEST_SCAN)
+			.map((entry) => entry.file);
+	}
 	const out: ManifestRecord[] = [];
 	for (const file of manifestFiles) {
 		let manifest: PaneManifest;
@@ -366,6 +390,8 @@ function mergeManifestHistory(records: ManifestRecord[]): { history: DelegateHis
 		}
 	});
 	history.warnings = [...new Set(history.warnings)].slice(0, 20);
+	// Records are sorted newest-first; keep the newest attempts.
+	history.attempts = history.attempts.slice(0, MAX_HISTORY_ATTEMPTS);
 	return { history, source: latestSource, latestEvidence };
 }
 
@@ -385,8 +411,8 @@ function mergeEvidenceWithHistory(evidence: unknown, history: DelegateHistory): 
 		...evidence,
 		delegateHistory: {
 			...history,
-			attempts: [...(existingHistory?.attempts as unknown[] | undefined || []), ...history.attempts],
-			warnings: [...(existingHistory?.warnings as unknown[] | undefined || []), ...history.warnings],
+			attempts: [...(existingHistory?.attempts as unknown[] | undefined || []), ...history.attempts].slice(0, MAX_HISTORY_ATTEMPTS),
+			warnings: [...new Set([...(existingHistory?.warnings as unknown[] | undefined || []), ...history.warnings])].slice(0, 20),
 			retries: Math.max(Number(existingHistory?.retries ?? 0), history.retries),
 			autoExitObserved: Boolean(existingHistory?.autoExitObserved) || history.autoExitObserved,
 			processExitObserved: Boolean(existingHistory?.processExitObserved) || history.processExitObserved,

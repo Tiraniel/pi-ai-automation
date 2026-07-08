@@ -124,21 +124,31 @@ export function validatePhaseGate(
 	return { ok: rejections.length === 0, rejections };
 }
 
+/**
+ * First line of every delegated task built from an architecture plan.
+ * Single source of truth: finalization joins delegate manifests back to a
+ * plan by matching this header in `manifest.task` — deriving both sides from
+ * one helper means a wording change can never silently break the join.
+ */
+export function architecturePlanTaskHeader(planId: string): string {
+	return `# Architecture plan ${planId}`;
+}
+
 export function buildArchitectureContext(
 	plan: WorkflowArchitecturePlan,
 	options: { phase: WorkflowPhaseId; forAgent?: "coder" | "reviewer" },
 ): string {
 	const gate = validatePhaseGate(plan, options.phase, { forAgent: options.forAgent });
 	const lines: string[] = [];
-	lines.push(`# Architecture plan ${plan.planId}`);
+	lines.push(architecturePlanTaskHeader(plan.planId));
 	if (plan.title) lines.push(`Title: ${plan.title}`);
 	if (plan.taskId) lines.push(`Task: ${plan.taskId}`);
 	lines.push(`Status: ${plan.status}`);
 	lines.push(`Current phase statuses: A=${plan.phases.phaseA.status}, B=${plan.phases.phaseB.status}`);
 	if (options.forAgent === "reviewer") {
 		lines.push("Reviewer context:");
-		lines.push("- Architecture plans are context for intended behavior and implementation scope only, not approval criteria.");
-		lines.push("- Review changed code, validation evidence, and behavior against this scope context.");
+		// Plan-quality scoping lives in REVIEWER_INSTRUCTIONS (system prompt);
+		// only the phase-specific semantics are stated here.
 		lines.push("- `review_approved` means implementation review passed for this phase, not that the Brain plan text was approved.");
 		lines.push("- Review implementation and validation evidence against the acceptance/evidence matrix; do not approve if required evidence or required reviewer-role coverage is missing.");
 		lines.push("");

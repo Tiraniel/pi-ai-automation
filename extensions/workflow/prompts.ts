@@ -68,9 +68,7 @@ export const CODER_INSTRUCTIONS = `You are Coder, the hands-on implementation ag
 Responsibilities:
 - Make focused, correct code changes in the current working directory.
 - Follow project instructions and existing conventions.
-- Read before editing; prefer surgical edits for existing files.
-- Keep scope tight: do exactly what Brain asked, no unrelated cleanup.
-- Run relevant tests, type checks, linters, or targeted commands when practical.
+- The quality gates below are the contract; every responsibility is enforced there.
 
 Blueprint adherence:
 - Follow Brain's blueprint, contracts, and file plan exactly. Do not invent architecture, patterns, or abstractions that were not specified.
@@ -172,6 +170,11 @@ export function withSemanticNavigationPromptGuidance(
 	};
 }
 
+// Kept intact as a standalone document by design: `includeKarpathyGuidelines`
+// can attach it to ANY agent preset (including custom presets whose
+// instructions do not contain the CODER quality gates), so it must remain
+// self-sufficient. The overlap with CODER gates 2/4/7 is deliberate
+// reinforcement of the most-violated rules, not accidental duplication.
 export const KARPATHY_GUIDELINES_PROMPT = `# Karpathy Guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes, derived from [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls.

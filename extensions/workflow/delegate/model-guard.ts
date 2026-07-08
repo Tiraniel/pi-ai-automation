@@ -13,8 +13,18 @@ function isPresetModelAvailable(
 ): { available: true } | { available: false; reason: string } {
 	const provider = preset.provider;
 	const model = preset.model;
-	if (!provider || !model) {
+	// Nothing configured — nothing to validate (Pi session defaults apply).
+	if (!provider && !model) {
 		return { available: true };
+	}
+	// Half-configured preset used to fail OPEN and die later as an opaque
+	// child startup error; treat it as unavailable so the guard/fallback
+	// path produces an actionable message instead.
+	if (!provider || !model) {
+		return {
+			available: false,
+			reason: `preset is missing ${!provider ? "provider" : "model"} (${provider ? `provider=${provider}` : `model=${model}`}); set both or clear both`,
+		};
 	}
 	const registry = (ctx as any).modelRegistry;
 	if (!registry || typeof registry.find !== "function") {
