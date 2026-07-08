@@ -1,0 +1,45 @@
+{
+  "run": "calibration",
+  "command": "node agent-harness/runner/calibrate.ts",
+  "osot": {
+    "requirement_sha256": "7783c7658cdce6875dc36c55aea6117e972a9b36700078972b5ab74f1db3d415",
+    "handoff_sha256": "b2e0cf88a24b52340b2080c753da5bc5d8d7b603ddf0ef75c432ffff9494fe84"
+  },
+  "fixtures": [
+    {
+      "fixture": "button_loader_success",
+      "expected": "pass",
+      "actual": "pass",
+      "classification": "calibrated",
+      "failed_gates": []
+    },
+    {
+      "fixture": "button_loader_failure",
+      "expected": "fail",
+      "actual": "fail",
+      "classification": "calibrated",
+      "failed_gates": ["G9:tests_pass"],
+      "note": "failure path unimplemented; honest tests fail on the broken build"
+    },
+    {
+      "fixture": "false_success_case",
+      "expected": "fail",
+      "actual": "fail",
+      "classification": "calibrated",
+      "failed_gates": ["G10:mutants_killed"],
+      "note": "fake-but-green tests tagged with every matrix id; exposed only because all three mutants survive"
+    },
+    {
+      "fixture": "false_failure_case",
+      "expected": "pass",
+      "actual": "pass",
+      "classification": "calibrated",
+      "failed_gates": [],
+      "note": "correct implementation in a different allowed style; contract gates do not reject taste"
+    }
+  ],
+  "false_successes": 0,
+  "false_failures": 0,
+  "verdict": "CALIBRATED",
+  "per_fixture_reports": "agent-harness/reports/<fixture>.final_review.{json,md}"
+}

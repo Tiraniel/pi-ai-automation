@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-harness/review.schema.json",
+  "title": "review",
+  "type": "object",
+  "required": ["review"],
+  "properties": {
+    "review": {
+      "type": "object",
+      "required": [
+        "reviewer",
+        "verdict",
+        "blocking_issues",
+        "non_blocking_issues",
+        "evidence",
+        "required_fixes",
+        "scope_creep_detected"
+      ],
+      "properties": {
+        "reviewer": {
+          "type": "string",
+          "enum": [
+            "test_reviewer",
+            "architecture_reviewer",
+            "business_logic_reviewer",
+            "dependency_reviewer",
+            "diff_minimality_reviewer"
+          ]
+        },
+        "verdict": { "type": "string", "enum": ["pass", "fail"] },
+        "blocking_issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "description", "evidence"],
+            "properties": {
+              "id": { "type": "string" },
+              "case_id": { "type": "string" },
+              "description": { "type": "string" },
+              "evidence": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "non_blocking_issues": { "type": "array", "items": { "type": "object" } },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "required_fixes": { "type": "array", "items": { "type": "string" } },
+        "scope_creep_detected": { "type": "array", "items": { "type": "string" } },
+        "ignored": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["feedback", "reason"],
+            "properties": {
+              "feedback": { "type": "string" },
+              "reason": { "type": "string", "enum": ["outside_scope", "no_evidence", "opinion_only"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

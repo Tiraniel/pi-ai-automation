@@ -1,0 +1,5 @@
+{
+  "expected": "fail",
+  "reason": "failure shows a success toast, but the fake test suite is fully green and tags every matrix case; only the mutation gate proves the tests cannot detect a broken implementation",
+  "must_fail_gates": ["G10"]
+}

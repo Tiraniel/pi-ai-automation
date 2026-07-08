@@ -1,0 +1,38 @@
+{
+  "final_review": {
+    "task_id": "TASK-BTN-001",
+    "verdict": "fail",
+    "blocking_issues": [
+      {
+        "description": "tests_pass gate failed",
+        "evidence": "✔ [S1] click blocks the button and shows the loader while the request is in flight (0.491ms)\n✔ [S2] resolved request unblocks the button, hides the loader, shows the success toast (0.085292ms)\n✖ [F1] rejected request unblocks the button, hides the loader, shows the failure toast (0.455167ms)\n✔ [FS1] clicking while submitting does not send a second request (0.081ms)\n✔ [FF1] slow success still ends unblocked with a success toast (1.680167ms)\nℹ tests 5\nℹ suites 0\nℹ pass 4\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 86.207292\n\n✖ failing tests:\n\ntest at tests/submit-controller.test.ts:57:1\n✖ [F1] rejected request unblocks the button, hides the loader, shows the failure toast (0.455167ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  false !== true\n  \n      at TestContext.<anonymous> (file:///private/var/folders/8g/8bf8_lw92b78xj5_9jx__8w80000gn/T/agent-harness-HXAQHk/tests/submit-controller.test.ts:62:9)\n      at async Test.run (node:internal/test_runner/test:1113:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:788:7) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: true,\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n",
+        "sources": [
+          "test_reviewer",
+          "business_logic_reviewer"
+        ]
+      }
+    ],
+    "required_fixes": [
+      "satisfy gate G9 (tests_pass)"
+    ],
+    "ignored_opinion_feedback": [],
+    "confidence": "high",
+    "gates": {
+      "G1:contract_validation": "pass",
+      "G2:osot_freeze": "pass",
+      "G3:allowed_files_only": "pass",
+      "G4:forbidden_files_untouched": "pass",
+      "G5:forbidden_patterns_absent": "pass",
+      "G6:dependency_freeze": "pass",
+      "G7:report_matches_diff": "pass",
+      "G8:test_matrix_coverage": "pass",
+      "G9:tests_pass": "fail",
+      "G10:mutants_killed": "pass",
+      "G11:state_machine_states_present": "pass"
+    },
+    "osot": {
+      "requirement_sha256": "7783c7658cdce6875dc36c55aea6117e972a9b36700078972b5ab74f1db3d415",
+      "handoff_sha256": "b2e0cf88a24b52340b2080c753da5bc5d8d7b603ddf0ef75c432ffff9494fe84"
+    }
+  }
+}

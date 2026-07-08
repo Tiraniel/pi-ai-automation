@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-harness/implementation_report.schema.json",
+  "title": "implementation_report",
+  "type": "object",
+  "required": ["implementation_report"],
+  "properties": {
+    "implementation_report": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "changed_files",
+        "added_files",
+        "removed_files",
+        "dependency_changes",
+        "architecture_changes",
+        "business_logic_changes",
+        "tests_added",
+        "tests_updated",
+        "assumptions_used",
+        "deviations_from_handoff"
+      ],
+      "properties": {
+        "task_id": { "type": "string" },
+        "changed_files": { "type": "array", "items": { "type": "string" } },
+        "added_files": { "type": "array", "items": { "type": "string" } },
+        "removed_files": { "type": "array", "items": { "type": "string" } },
+        "dependency_changes": { "type": "array", "items": { "type": "string" } },
+        "architecture_changes": { "type": "array", "items": { "type": "string" } },
+        "business_logic_changes": { "type": "array", "items": { "type": "string" } },
+        "tests_added": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "case_id"],
+            "properties": {
+              "name": { "type": "string" },
+              "case_id": { "type": "string", "pattern": "^(S|F|FS|FF)[0-9]+$" }
+            }
+          }
+        },
+        "tests_updated": { "type": "array", "items": { "type": "string" } },
+        "assumptions_used": { "type": "array", "items": { "type": "string" } },
+        "deviations_from_handoff": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

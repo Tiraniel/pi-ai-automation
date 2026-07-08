@@ -1,0 +1,21 @@
+{
+  "implementation_report": {
+    "task_id": "TASK-BTN-001",
+    "changed_files": ["src/submit-controller.ts"],
+    "added_files": ["tests/submit-controller.test.ts"],
+    "removed_files": [],
+    "dependency_changes": [],
+    "architecture_changes": [],
+    "business_logic_changes": [],
+    "tests_added": [
+      { "name": "[S1] click blocks the button and shows the loader while the request is in flight", "case_id": "S1" },
+      { "name": "[S2] resolved request unblocks the button, hides the loader, shows the success toast", "case_id": "S2" },
+      { "name": "[F1] rejected request unblocks the button, hides the loader, shows the failure toast", "case_id": "F1" },
+      { "name": "[FS1] clicking while submitting does not send a second request", "case_id": "FS1" },
+      { "name": "[FF1] slow success still ends unblocked with a success toast", "case_id": "FF1" }
+    ],
+    "tests_updated": [],
+    "assumptions_used": ["A1", "A2"],
+    "deviations_from_handoff": []
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "business_requirement": {
+    "summary": "After clicking the submit button the customer sees a loader while the request is processed; the button is blocked during processing; when the request finishes the button unblocks and the customer receives a toast with the result.",
+    "actor": "customer",
+    "trigger": "customer clicks the submit button",
+    "expected_behavior": [
+      { "id": "B1", "description": "immediately after click, a loader indicating request processing is visible" },
+      { "id": "B2", "description": "while the request is in flight, the button is blocked (not clickable)" },
+      { "id": "B3", "description": "when the request finishes (success or failure), the button unblocks" },
+      { "id": "B4", "description": "when the request finishes, the loader disappears" },
+      { "id": "B5", "description": "when the request finishes, the customer receives a toast describing the result (success or failure)" }
+    ],
+    "success_path": [
+      "customer clicks button",
+      "button blocks, loader appears",
+      "request resolves successfully",
+      "loader disappears, button unblocks",
+      "success toast is shown"
+    ],
+    "failure_path": [
+      "customer clicks button",
+      "button blocks, loader appears",
+      "request fails",
+      "loader disappears, button unblocks",
+      "failure toast is shown"
+    ],
+    "edge_cases": [
+      { "id": "E1", "description": "customer clicks the button again while a request is in flight" },
+      { "id": "E2", "description": "request takes a long time to finish" }
+    ],
+    "forbidden_behavior": [
+      { "id": "X1", "description": "a second request is sent while one is already in flight" },
+      { "id": "X2", "description": "button remains blocked after the request has finished" },
+      { "id": "X3", "description": "request finishes without any toast shown to the customer" }
+    ],
+    "assumptions": [
+      { "id": "A1", "description": "clicks during an in-flight request are ignored (not queued)", "covers_question": "Q1" },
+      { "id": "A2", "description": "no client-side timeout is applied; the request settles when the transport settles", "covers_question": "Q2" }
+    ],
+    "open_questions": [
+      { "id": "Q1", "question": "Should clicks during processing be queued or ignored?", "blocking": false },
+      { "id": "Q2", "question": "Is there a timeout after which the request counts as failed?", "blocking": false }
+    ]
+  }
+}

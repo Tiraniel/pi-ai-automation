@@ -1,0 +1,5 @@
+{
+  "expected": "fail",
+  "reason": "failure path not implemented: on rejection the button stays blocked and no failure toast appears; the honest test suite fails",
+  "must_fail_gates": ["G9"]
+}

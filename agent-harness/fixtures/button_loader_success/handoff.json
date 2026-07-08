@@ -1,0 +1,105 @@
+{
+  "implementation_handoff": {
+    "task_id": "TASK-BTN-001",
+    "original_requirement": { "ref": "requirement.json", "sha256": "7783c7658cdce6875dc36c55aea6117e972a9b36700078972b5ab74f1db3d415" },
+    "architecture_summary": "UI stays dumb: the view layer binds to a framework-agnostic submit controller in the application layer. The controller owns the idle/submitting/success/failure state machine and emits an immutable view-model on every transition. Transport stays behind the injected request function (infrastructure); the controller never imports transport code. No new abstractions beyond the single controller factory this codebase already uses for interactive widgets.",
+    "affected_layers": ["ui", "application"],
+    "allowed_files": ["src/submit-controller.ts", "tests/submit-controller.test.ts"],
+    "forbidden_files": ["package.json", "src/api/**", "src/domain/**"],
+    "allowed_patterns": [
+      "factory function returning a controller object (matches existing widget controllers)",
+      "dependency injection of the request function",
+      "observer callback (onChange) emitting an immutable view-model"
+    ],
+    "forbidden_patterns": [
+      { "pattern": "\\bfetch\\s*\\(|XMLHttpRequest", "reason": "transport is injected; controller must not call the network" },
+      { "pattern": "\\bsetTimeout\\s*\\(", "reason": "no timer-based state guessing; state changes only on promise settlement" },
+      { "pattern": "\\bdocument\\.|\\bwindow\\.", "reason": "controller is UI-framework-agnostic; no DOM access" }
+    ],
+    "required_behavior": [
+      { "id": "R1", "description": "click in idle/success/failure starts exactly one request and enters submitting", "derived_from": "B1" },
+      { "id": "R2", "description": "submitting view-model: buttonEnabled=false, loaderVisible=true, toast=null", "derived_from": "B2" },
+      { "id": "R3", "description": "resolved request enters success: buttonEnabled=true, loaderVisible=false, toast=success", "derived_from": "B3" },
+      { "id": "R4", "description": "rejected request enters failure: buttonEnabled=true, loaderVisible=false, toast=failure", "derived_from": "B5" },
+      { "id": "R5", "description": "click while submitting is ignored: no state change, no second request", "derived_from": "X1" }
+    ],
+    "state_machine": {
+      "states": {
+        "idle": { "button_enabled": true, "loader_visible": false, "toast": null },
+        "submitting": { "button_enabled": false, "loader_visible": true, "toast": null },
+        "success": { "button_enabled": true, "loader_visible": false, "toast": "success" },
+        "failure": { "button_enabled": true, "loader_visible": false, "toast": "failure" }
+      },
+      "transitions": [
+        { "from": "idle", "on": "click", "to": "submitting", "note": "invokes request() exactly once" },
+        { "from": "submitting", "on": "request_resolved", "to": "success" },
+        { "from": "submitting", "on": "request_rejected", "to": "failure" },
+        { "from": "success", "on": "click", "to": "submitting", "note": "new cycle; toast cleared" },
+        { "from": "failure", "on": "click", "to": "submitting", "note": "new cycle; toast cleared" }
+      ],
+      "forbidden_transitions": [
+        { "from": "submitting", "on": "click", "reason": "X1: no double submit; click is ignored" }
+      ]
+    },
+    "data_contracts": {
+      "SubmitView": {
+        "phase": "idle|submitting|success|failure",
+        "buttonEnabled": "boolean",
+        "loaderVisible": "boolean",
+        "toast": "success|failure|null"
+      },
+      "RequestFn": "() => Promise<void>; injected; resolve = success, reject = failure"
+    },
+    "side_effects": [
+      "invokes the injected request() exactly once per accepted click",
+      "emits SubmitView via onChange on every state transition"
+    ],
+    "dependency_policy": "none",
+    "test_matrix": {
+      "success_cases": [
+        { "id": "S1", "given": "controller in idle", "when": "click", "then": "buttonEnabled=false and loaderVisible=true while request in flight", "covers": "AC1" },
+        { "id": "S2", "given": "request in flight", "when": "request resolves", "then": "buttonEnabled=true, loaderVisible=false, toast=success", "covers": "AC2" }
+      ],
+      "failure_cases": [
+        { "id": "F1", "given": "request in flight", "when": "request rejects", "then": "buttonEnabled=true, loaderVisible=false, toast=failure", "covers": "AC3" }
+      ],
+      "false_success_cases": [
+        { "id": "FS1", "given": "request in flight", "when": "button clicked again", "then": "request function invoked exactly once (no double submit)", "covers": "AC4" }
+      ],
+      "false_failure_cases": [
+        { "id": "FF1", "given": "request that settles only after a long delay", "when": "it finally resolves", "then": "controller still ends buttonEnabled=true with toast=success (slowness is not failure)", "covers": "AC2" }
+      ]
+    },
+    "acceptance_criteria": [
+      { "id": "AC1", "criterion": "clicking the button immediately shows the loader and blocks the button" },
+      { "id": "AC2", "criterion": "successful request ends with unblocked button, hidden loader, success toast" },
+      { "id": "AC3", "criterion": "failed request ends with unblocked button, hidden loader, failure toast" },
+      { "id": "AC4", "criterion": "clicks while processing never send a second request" }
+    ],
+    "reviewer_contract": {
+      "test_reviewer": [
+        "every test_matrix id has a real test",
+        "tests fail on all provided mutants",
+        "assertions target SubmitView values, not mock internals"
+      ],
+      "architecture_reviewer": [
+        "only allowed_files touched",
+        "no transport/DOM/timer code in controller",
+        "factory pattern matches existing widget controllers"
+      ],
+      "business_logic_reviewer": [
+        "state machine implemented exactly as specified",
+        "no extra states, toasts, or behavior",
+        "forbidden behaviors X1..X3 impossible per code paths"
+      ],
+      "dependency_reviewer": [
+        "zero dependency/config changes",
+        "side effects limited to request() and onChange"
+      ],
+      "diff_minimality_reviewer": [
+        "diff limited to the two allowed files",
+        "implementation_report matches the diff exactly"
+      ]
+    }
+  }
+}

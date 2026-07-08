@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-harness/requirement.schema.json",
+  "title": "business_requirement",
+  "type": "object",
+  "required": ["business_requirement"],
+  "properties": {
+    "business_requirement": {
+      "type": "object",
+      "required": [
+        "summary",
+        "actor",
+        "trigger",
+        "expected_behavior",
+        "success_path",
+        "failure_path",
+        "edge_cases",
+        "forbidden_behavior",
+        "assumptions",
+        "open_questions"
+      ],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "actor": { "type": "string", "minLength": 1 },
+        "trigger": { "type": "string", "minLength": 1 },
+        "expected_behavior": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "description"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^B[0-9]+$" },
+              "description": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "success_path": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "failure_path": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "edge_cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "description"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^E[0-9]+$" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "forbidden_behavior": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "description"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^X[0-9]+$" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "description"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^A[0-9]+$" },
+              "description": { "type": "string" },
+              "covers_question": { "type": "string" }
+            }
+          }
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "question", "blocking"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^Q[0-9]+$" },
+              "question": { "type": "string" },
+              "blocking": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

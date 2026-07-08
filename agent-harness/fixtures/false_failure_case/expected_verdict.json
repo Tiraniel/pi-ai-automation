@@ -1,0 +1,4 @@
+{
+  "expected": "pass",
+  "reason": "behaviorally identical to the reference implementation, honest tests, minimal diff — written in a different but handoff-permitted style. An opinion-based reviewer would reject it; the contract harness must not."
+}

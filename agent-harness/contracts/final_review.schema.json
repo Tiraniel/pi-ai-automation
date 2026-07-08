@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-harness/final_review.schema.json",
+  "title": "final_review",
+  "type": "object",
+  "required": ["final_review"],
+  "properties": {
+    "final_review": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "verdict",
+        "blocking_issues",
+        "required_fixes",
+        "ignored_opinion_feedback",
+        "confidence",
+        "gates"
+      ],
+      "properties": {
+        "task_id": { "type": "string" },
+        "verdict": { "type": "string", "enum": ["pass", "fail"] },
+        "blocking_issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["description", "evidence", "sources"],
+            "properties": {
+              "description": { "type": "string" },
+              "evidence": { "type": "string" },
+              "sources": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "required_fixes": { "type": "array", "items": { "type": "string" } },
+        "ignored_opinion_feedback": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["feedback", "reason"],
+            "properties": {
+              "feedback": { "type": "string" },
+              "source_reviewer": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+        "gates": {
+          "type": "object",
+          "description": "deterministic gate results keyed by gate id",
+          "additionalProperties": { "type": "string", "enum": ["pass", "fail", "skipped"] }
+        },
+        "osot": {
+          "type": "object",
+          "description": "immutability proof: sha256 of frozen requirement and handoff",
+          "properties": {
+            "requirement_sha256": { "type": "string" },
+            "handoff_sha256": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}
