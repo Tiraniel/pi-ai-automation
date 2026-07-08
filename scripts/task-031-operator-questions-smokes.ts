@@ -35,6 +35,7 @@ import {
 } from "../extensions/workflow/operator-questions";
 import { registerOperatorQuestionTools } from "../extensions/workflow/operator-question-tools";
 import { registerPlanningTools } from "../extensions/workflow/planning-tools";
+import { writePrdContractFile } from "../extensions/workflow/planning-prd-contract";
 import { buildChildEnv } from "../extensions/workflow/delegate/child";
 import { evaluateFinalizationGate } from "../extensions/workflow/finalization-gate";
 import { BRAIN_INSTRUCTIONS, OPERATOR_ESCALATION_RULE } from "../extensions/workflow/prompts";
@@ -249,6 +250,8 @@ async function main(): Promise<void> {
 		}
 
 		// (7) Planning: prd_ready_for_sprint refused while a blocking question is open.
+		//     (WP3 also requires a valid prd.json; this case provides a ready
+		//     contract so the ad-hoc WP1 queue block is what is under test.)
 		{
 			const cwd = makeTempCwd("task-031-planning-");
 			cleanups.push(cwd);
@@ -258,6 +261,11 @@ async function main(): Promise<void> {
 			const ctx = createFakeContext(cwd);
 			const created = await planningTool.execute("t1", { action: "create", roomId: "wp1-room", scopeClassification: "non_trivial" }, undefined, undefined, ctx);
 			check(created.isError !== true, "7: planning state created");
+			writePrdContractFile(cwd, "wp1-room", {
+				summary: "task-031 planning smoke",
+				expected_behavior: [{ id: "B1", description: "flagged flow works" }],
+				edge_cases: [], forbidden_behavior: [], assumptions: [], open_questions: [],
+			});
 			appendOperatorQuestionToFile(operatorQuestionsPathForRoom(cwd, "wp1-room"), {
 				question: "Blocked: which storage backend?", from: "brain", blocking: true, id: "q-storage",
 			});

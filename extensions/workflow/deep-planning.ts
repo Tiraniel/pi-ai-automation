@@ -8,24 +8,29 @@ import { Type } from "typebox";
 import {
 	ThinkingLevelSchema,
 	type DeepPlanningSummary,
+	type DeepPlanningVerifierSummary,
 	type PlannerRoundResult,
 	appendRoomMessage,
 	buildPlannerPreset,
+	buildVerifierPreset,
 	ensurePlanningRoom,
 	isEnabledByConfig,
 	mergeDeepPlanningConfig,
 	normalizeDeepPlanningToolPlanners,
+	parseVerifierFinding,
 	readRoomTranscriptPreview,
 	roomReadCommand,
 	summarizeResult,
 	TOOL_NAME,
 	MAX_ROOM_PREVIEW_LINES,
+	VERIFIER_AGENT_ID,
 	plannerDescriptor,
 	readDeepPlanningTranscript as readCoreDeepPlanningTranscript,
 } from "./deep-planning-core";
 import { sanitizeAgentId } from "./rooms/store";
 import { loadWorkflowConfig } from "./runtime/config";
 import { runAgentPresetHeadless } from "./delegate/headless";
+import { appendOperatorQuestionToFile, operatorQuestionsPathForRoom } from "./operator-questions";
 
 export function registerDeepPlanningTool(pi: ExtensionAPI): void {
 	pi.registerTool({
@@ -46,6 +51,7 @@ export function registerDeepPlanningTool(pi: ExtensionAPI): void {
 			plannerCount: Type.Optional(Type.Integer({ minimum: 1 })),
 			rounds: Type.Optional(Type.Integer({ minimum: 1 })),
 			maxConcurrency: Type.Optional(Type.Integer({ minimum: 1 })),
+			verifier: Type.Optional(Type.Boolean({ description: "Run the adversarial verifier round after the planner rounds (default true; its questions are ingested as non-blocking operator questions)." })),
 			planners: Type.Optional(
 				Type.Array(
 					Type.Object({
@@ -93,6 +99,7 @@ export function registerDeepPlanningTool(pi: ExtensionAPI): void {
 				rounds: (params as any)?.rounds,
 				maxConcurrency: (params as any)?.maxConcurrency,
 				planners: requestedPlanners,
+				verifier: typeof (params as any)?.verifier === "boolean" ? (params as any).verifier : undefined,
 			});
 			const explicitPlannerOverride = requestedPlanners.length > 0;
 			const explicitTuning = (params as any)?.plannerCount !== undefined
@@ -208,6 +215,55 @@ export function registerDeepPlanningTool(pi: ExtensionAPI): void {
 				await Promise.all(Array.from({ length: workerConcurrency }, () => runPlanner()));
 			}
 
+			// WP3: adversarial verifier round — one agent attacks the PRD after
+			// the planner rounds; its questions are ingested into the room's
+			// operator-question queue as NON-blocking (Brain decides whether to
+			// escalate any of them to blocking).
+			let verifierSummary: DeepPlanningVerifierSummary | undefined;
+			if (effective.verifier !== false && !signal?.aborted) {
+				const verifierId = sanitizeAgentId(VERIFIER_AGENT_ID);
+				await appendRoomMessage(workflowRoot, room.roomId, verifierId, "verifier", "Starting adversarial verifier round", "round-start");
+				const verifierResult = await runAgentPresetHeadless(
+					ctx,
+					"reviewer",
+					buildVerifierPreset(selectedPlanners[0], task),
+					`Adversarial PRD verification for deep-planning: ${task}`,
+					plannerCwd,
+					signal,
+					undefined,
+					{ roomId: room.roomId, agentId: verifierId, role: "verifier" },
+				);
+				const finding = parseVerifierFinding(verifierResult.finalOutput ?? "");
+				verifierSummary = {
+					ran: true,
+					status: verifierResult.status ?? "completed",
+					exitCode: verifierResult.exitCode,
+					gaps: finding?.gaps ?? [],
+					questionIds: [],
+					...(finding ? {} : { parseWarning: "Verifier output carried no parsable fenced JSON block; no questions were ingested — review the verifier transcript manually." }),
+				};
+				if (finding) {
+					const questionsFile = operatorQuestionsPathForRoom(workflowRoot, room.roomId);
+					for (const question of finding.questions) {
+						const record = appendOperatorQuestionToFile(questionsFile, {
+							question: question.question,
+							recommendedDefault: question.recommendedDefault,
+							from: verifierId,
+							blocking: false,
+						});
+						verifierSummary.questionIds.push(record.id);
+					}
+				}
+				await appendRoomMessage(
+					workflowRoot,
+					room.roomId,
+					verifierId,
+					"verifier",
+					`verifier round done (status=${verifierSummary.status}; gaps=${verifierSummary.gaps.length}; questions=${verifierSummary.questionIds.length}${verifierSummary.parseWarning ? "; output unparsable" : ""})`,
+					"round-complete",
+				);
+			}
+
 			const transcript = readRoomTranscriptPreview(workflowRoot, room.roomId, MAX_ROOM_PREVIEW_LINES);
 			const summary: DeepPlanningSummary = {
 				roomId: room.roomId,
@@ -219,6 +275,7 @@ export function registerDeepPlanningTool(pi: ExtensionAPI): void {
 				planners: selectedPlanners.map(plannerDescriptor),
 				plannerResults: results,
 				transcriptPreview: transcript,
+				...(verifierSummary ? { verifier: verifierSummary } : {}),
 			};
 			const failed = results.some((result) => result.status !== "completed" || result.exitCode !== 0);
 			return {

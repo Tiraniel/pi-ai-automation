@@ -55,6 +55,16 @@ export type PlannerRoundResult = {
 	outputPreview: string;
 };
 
+export type DeepPlanningVerifierSummary = {
+	ran: boolean;
+	status?: string;
+	exitCode?: number;
+	gaps: string[];
+	/** Operator-queue ids of the ingested (non-blocking) verifier questions. */
+	questionIds: string[];
+	parseWarning?: string;
+};
+
 export type DeepPlanningSummary = {
 	roomId: string;
 	roomDir: string;
@@ -71,6 +81,7 @@ export type DeepPlanningSummary = {
 	}>;
 	plannerResults: PlannerRoundResult[];
 	transcriptPreview: string[];
+	verifier?: DeepPlanningVerifierSummary;
 };
 
 export function truncate(value: string, max: number): string {
@@ -142,6 +153,7 @@ export function mergeDeepPlanningConfig(
 		rounds?: number;
 		maxConcurrency?: number;
 		planners?: DeepPlanningPlannerConfig[];
+		verifier?: boolean;
 	},
 ): DeepPlanningConfig {
 	const source = base ?? DEFAULT_CONFIG.deepPlanning;
@@ -160,6 +172,9 @@ export function mergeDeepPlanningConfig(
 		rounds: clampPositive(request.rounds, source?.rounds ?? 2),
 		roomIdPrefix: source?.roomIdPrefix ?? "deep-plan",
 		planners: dedupePlanners(hasPlannerOverrides ? (request.planners ?? []) : (source?.planners ?? [])),
+		// WP3 adversarial verifier round: default ON; explicit request wins,
+		// then config, then the default.
+		verifier: request.verifier !== undefined ? request.verifier : (source?.verifier !== false),
 	};
 	if ((out.planners?.length ?? 0) > (out.plannerCount ?? 0)) {
 		out.planners = (out.planners ?? []).slice(0, out.plannerCount);
@@ -202,6 +217,88 @@ export function buildPlannerPreset(planner: DeepPlanningPlannerConfig, task: str
 		tools: PLANNER_TOOLS,
 		instructions: buildPlannerRoundPrompt(task, planner, round, rounds),
 	};
+}
+
+// ---------- WP3 adversarial verifier round ----------
+
+export const VERIFIER_AGENT_ID = "prd-verifier";
+
+export interface VerifierFinding {
+	gaps: string[];
+	questions: Array<{ question: string; recommendedDefault?: string }>;
+}
+
+export function buildVerifierPrompt(task: string): string {
+	return `Adversarial PRD verification round.
+
+Task under planning:
+${task}
+
+You are an adversarial requirements verifier inside a workflow room. The planner rounds are finished; your job is to attack the PRD, not to extend it.
+- Read the room transcript (room_read) and inspect the codebase (read, grep, find, ls) as needed.
+- Find: ambiguities, untestable or unmeasurable requirements, holes in failure paths, contradictions between decisions, and unstated assumptions.
+- Do not edit files, write files, or run edit/bash commands. Do not produce implementation plans.
+- Use room_job_start before analysis and room_job_done after your final message.
+
+Your FINAL message MUST end with exactly one fenced JSON block of this shape (no prose after it):
+\`\`\`json
+{"gaps": ["<gap description>", ...], "questions": [{"question": "<question for the operator>", "recommendedDefault": "<answer you would pick>"}, ...]}
+\`\`\`
+Empty arrays are valid when the PRD genuinely has no holes.`;
+}
+
+export function buildVerifierPreset(planner: DeepPlanningPlannerConfig | undefined, task: string): AgentPreset {
+	return {
+		provider: planner?.provider,
+		model: planner?.model,
+		thinkingLevel: planner?.thinkingLevel,
+		tools: PLANNER_TOOLS,
+		instructions: buildVerifierPrompt(task),
+	};
+}
+
+/** Parse the verifier's final fenced JSON block. Returns undefined when no
+ *  parsable block exists — the caller records a parse warning instead of
+ *  guessing at prose (string heuristics over LLM prose are banned for gates;
+ *  this ingestion simply refuses to ingest unparsable output). */
+export function parseVerifierFinding(output: string): VerifierFinding | undefined {
+	if (!output) return undefined;
+	const blocks = [...output.matchAll(/```(?:json)?\s*\n([\s\S]*?)```/g)].map((m) => m[1] ?? "");
+	for (let i = blocks.length - 1; i >= 0; i -= 1) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(blocks[i]!);
+		} catch {
+			continue;
+		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
+		const record = parsed as Record<string, unknown>;
+		if (!Array.isArray(record.gaps) && !Array.isArray(record.questions)) continue;
+		const gaps: string[] = [];
+		for (const gap of Array.isArray(record.gaps) ? record.gaps : []) {
+			if (typeof gap === "string" && gap.trim()) gaps.push(gap.trim());
+			else if (typeof gap === "object" && gap !== null && typeof (gap as { description?: unknown }).description === "string") {
+				const description = String((gap as { description: string }).description).trim();
+				if (description) gaps.push(description);
+			}
+		}
+		const questions: VerifierFinding["questions"] = [];
+		for (const q of Array.isArray(record.questions) ? record.questions : []) {
+			if (typeof q === "string" && q.trim()) {
+				questions.push({ question: q.trim() });
+				continue;
+			}
+			if (typeof q !== "object" || q === null) continue;
+			const question = typeof (q as { question?: unknown }).question === "string" ? String((q as { question: string }).question).trim() : "";
+			if (!question) continue;
+			const recommendedDefault = typeof (q as { recommendedDefault?: unknown }).recommendedDefault === "string"
+				? String((q as { recommendedDefault: string }).recommendedDefault).trim()
+				: "";
+			questions.push(recommendedDefault ? { question, recommendedDefault } : { question });
+		}
+		return { gaps, questions };
+	}
+	return undefined;
 }
 
 export function isEnabledByConfig(config: DeepPlanningConfig): boolean {

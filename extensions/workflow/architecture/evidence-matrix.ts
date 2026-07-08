@@ -1,4 +1,5 @@
 import { KNOWN_REVIEWER_ROLES } from "../reviewer-protocol";
+import { PRD_COVERS_ID_PATTERN, PRD_CRITERION_ID_PATTERN } from "../planning-prd-contract";
 import {
 	isPlainObject,
 	normalizeStringArray,
@@ -218,6 +219,32 @@ export function normalizeMatrixEntry(input: unknown, index: number): {
 	}
 	const promptOnlyCaveat = trimString(input.promptOnlyCaveat) || undefined;
 	const manualValidationPlan = trimString(input.manualValidationPlan) || undefined;
+	// WP3 traceability fields (optional). Malformed values are rejected, not
+	// silently dropped, so a typo'd covers id cannot fake X* coverage.
+	const criterionId = trimString(input.criterionId) || undefined;
+	if (criterionId && !PRD_CRITERION_ID_PATTERN.test(criterionId)) {
+		pushEntryIssue(issues, "entry_invalid_value", `Matrix entry criterionId ${JSON.stringify(criterionId)} does not match ${PRD_CRITERION_ID_PATTERN}.`, index);
+		return { value: undefined, issues };
+	}
+	let covers: string[] | undefined;
+	if (input.covers !== undefined && input.covers !== null) {
+		covers = normalizeStringArray(input.covers);
+		for (const covered of covers) {
+			if (!PRD_COVERS_ID_PATTERN.test(covered)) {
+				pushEntryIssue(issues, "entry_invalid_value", `Matrix entry covers id ${JSON.stringify(covered)} does not match ${PRD_COVERS_ID_PATTERN} (expected B<N> or X<N>).`, index);
+				return { value: undefined, issues };
+			}
+		}
+		if (covers.length === 0) covers = undefined;
+	}
+	let negative: boolean | undefined;
+	if (input.negative !== undefined && input.negative !== null) {
+		if (typeof input.negative !== "boolean") {
+			pushEntryIssue(issues, "entry_invalid_value", "Matrix entry negative must be a boolean when provided.", index);
+			return { value: undefined, issues };
+		}
+		negative = input.negative;
+	}
 	const value: AcceptanceEvidenceMatrixEntry = {
 		criterion,
 		criterionKind: criterionKindRaw as CriterionKind,
@@ -229,6 +256,9 @@ export function normalizeMatrixEntry(input: unknown, index: number): {
 	};
 	if (promptOnlyCaveat) value.promptOnlyCaveat = promptOnlyCaveat;
 	if (manualValidationPlan) value.manualValidationPlan = manualValidationPlan;
+	if (criterionId) value.criterionId = criterionId;
+	if (covers) value.covers = covers;
+	if (negative !== undefined) value.negative = negative;
 	return { value, issues };
 }
 
@@ -355,6 +385,26 @@ export function validateMatrixEntryStructure(
 					issues,
 					"entry_missing_required_field",
 					"Matrix entry blockingConditions entries must be non-empty.",
+					index,
+				);
+			}
+		}
+	}
+	if (entry.criterionId !== undefined && !PRD_CRITERION_ID_PATTERN.test(entry.criterionId)) {
+		pushEntryIssue(
+			issues,
+			"entry_invalid_value",
+			`Matrix entry criterionId is invalid: ${entry.criterionId}.`,
+			index,
+		);
+	}
+	if (entry.covers !== undefined) {
+		for (const covered of entry.covers) {
+			if (!PRD_COVERS_ID_PATTERN.test(covered)) {
+				pushEntryIssue(
+					issues,
+					"entry_invalid_value",
+					`Matrix entry covers id is invalid: ${covered}.`,
 					index,
 				);
 			}

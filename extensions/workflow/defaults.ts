@@ -19,6 +19,7 @@ const DEFAULT_DEEP_PLANNING_CONFIG: DeepPlanningConfig = {
 	maxConcurrency: 2,
 	rounds: 2,
 	roomIdPrefix: "deep-plan",
+	verifier: true,
 	planners: [
 		{
 			id: "pr-agent-1",

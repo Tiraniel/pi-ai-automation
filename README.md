@@ -467,6 +467,17 @@ Autonomous runs escalate blocking uncertainty to the human operator through a du
 
 Smokes: `scripts/task-031-operator-questions-smokes.ts` (fake-pi behavioral: queue round-trip, child registration, finalization/planning/ship gates, prompt surfaces).
 
+### Structural PRD contract + ID traceability (TASK-032 / WP3)
+
+Modeled on `agent-harness/contracts/requirement.schema.json`; owned by `extensions/workflow/planning-prd-contract.ts` (types + normalize + validate, evidence-matrix style):
+
+- **prd.json.** Lives next to PRD.md in the planning room. Fields (snake_case, mirroring the reference schema): `summary`, `expected_behavior` (B\*), `edge_cases` (E\*), `forbidden_behavior` (X\*), `assumptions` (A\*, each may declare `covers_question: Q<N>`), `open_questions` (Q\*, explicit boolean `blocking`), plus optional `actor`/`trigger`/`success_path`/`failure_path`. Written via `workflow_planning_artifacts action=write_prd_contract` — validation is fail-closed (id patterns, unique ids, A\* must reference an existing Q\*); an invalid contract is never written. On write, unanswered blocking Q\* are mirrored into the room's operator-question queue (same id) so the WP1 gates and the operator see them.
+- **Computed readiness.** `prd_ready_for_sprint` is computed, not asserted: recording it requires a valid prd.json (`prd_contract_missing_or_invalid` otherwise), every blocking Q\* answered — inline `answer` or an answered operator-queue record with the Q\* id — and every A\* covering a CLOSED Q\* (`prd_not_ready` otherwise), plus no other open blocking operator questions in the room.
+- **Traceability.** Matrix rows may carry `criterionId` (AC\*), `covers` (B\*/X\* ids), and `negative: true` (negative-scenario row). Every X\* must be covered by at least one negative row: `validateMatrixCoversForbiddenBehavior`, enforced by the architecture-store ready hard-lock whenever the active planning room carries a prd.json (`validateReadyPlanAgainstActivePrdContract`; no contract resolvable → no-op, since the ready gate owns contract existence). The optional `negative` field was chosen over a new `criterionKind` for the smaller radius — no closed-set widening for criterionKind consumers.
+- **Adversarial verifier.** `workflow_deep_plan` runs one verifier round after the planner rounds (`deepPlanning.verifier`, default `true`): an agent prompted to attack the PRD (ambiguities, untestable requirements, failure-path holes) and emit a fenced JSON finding; its questions are ingested into the room's operator queue as **non-blocking** (Brain decides whether to escalate). Unparsable verifier output is never guessed at — a parse warning is surfaced instead.
+
+Smokes: `scripts/task-032-prd-contract-smokes.ts`.
+
 ### Existing delegation stays the same
 
 If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the child receives no `PI_WORKFLOW_ROOM_*` env vars and no communication block, so normal delegation behavior is unchanged. The room tools are still registered, but resolve nothing without a `roomId` and will return a clear error prompting the user to call `room_create` first.

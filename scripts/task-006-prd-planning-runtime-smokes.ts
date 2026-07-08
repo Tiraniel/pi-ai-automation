@@ -18,6 +18,18 @@ import {
 	readPlanningCurrentRoomPointer,
 } from "../extensions/workflow/planning-pointer";
 import { writeCurrentRoomPointer } from "../extensions/workflow/rooms/store";
+import { writePrdContractFile } from "../extensions/workflow/planning-prd-contract";
+
+// WP3: recording prd_ready_for_sprint requires a valid, READY prd.json
+// contract in the planning room; this smoke provides a minimal one wherever
+// it sets that flag.
+function writeMinimalPrdContract(cwd: string, roomId: string): void {
+	writePrdContractFile(cwd, roomId, {
+		summary: "task-006 runtime smoke contract",
+		expected_behavior: [{ id: "B1", description: "planning gates behave as specified" }],
+		edge_cases: [], forbidden_behavior: [], assumptions: [], open_questions: [],
+	});
+}
 
 
 let failures = 0;
@@ -139,6 +151,7 @@ async function testEndToEnd(): Promise<void> {
 		]);
 
 		const setStarted = await invoke(stateTool, { action: "set_flag", roomId, state: "prd_started", value: true }, cwd);
+		writeMinimalPrdContract(cwd, roomId);
 		const setReady = await invoke(stateTool, { action: "set_flag", roomId, state: "prd_ready_for_sprint", value: true }, cwd);
 		checkAll("2c", [
 			[!isErrorResult(setStarted), "set_flag prd_started succeeded"],
@@ -229,6 +242,7 @@ async function testEndToEnd(): Promise<void> {
 			);
 			checkAll("2i", [[!isErrorResult(explicitPlan), "explicit create for plan room succeeds while stale pointer test runs"]]);
 			await invoke(stateTool, { action: "set_flag", roomId: planningRoom, state: "prd_started", value: true }, alt.cwd);
+			writeMinimalPrdContract(alt.cwd, planningRoom);
 			await invoke(stateTool, { action: "set_flag", roomId: planningRoom, state: "prd_ready_for_sprint", value: true }, alt.cwd);
 			await invoke(stateTool, { action: "set_flag", roomId: planningRoom, state: "sprint_confirmed", value: true, approvalText: "confirm sprint creation" }, alt.cwd);
 			await invoke(
@@ -266,6 +280,7 @@ async function testEndToEnd(): Promise<void> {
 				const legacyRoom = `room-${Math.random().toString(36).slice(2, 10)}-legacy`;
 				writeCurrentRoomPointer(invalidPlanPtrWithLegacy.cwd, legacyRoom);
 				const legacyCreate = await invoke(stateTool, { action: "create", scopeClassification: "non_trivial", taskId: "TASK-006-LEGACY" }, invalidPlanPtrWithLegacy.cwd);
+				writeMinimalPrdContract(invalidPlanPtrWithLegacy.cwd, legacyRoom);
 				await Promise.all([
 					invoke(stateTool, { action: "set_flag", roomId: legacyRoom, state: "prd_started", value: true }, invalidPlanPtrWithLegacy.cwd),
 					invoke(stateTool, { action: "set_flag", roomId: legacyRoom, state: "prd_ready_for_sprint", value: true }, invalidPlanPtrWithLegacy.cwd),

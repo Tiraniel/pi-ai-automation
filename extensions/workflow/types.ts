@@ -104,6 +104,11 @@ export interface DeepPlanningConfig {
 	rounds?: number;
 	roomIdPrefix?: string;
 	planners?: DeepPlanningPlannerConfig[];
+	/** WP3: run an adversarial verifier round after the planner rounds
+	 *  (ambiguities / untestable requirements / failure-path holes). Its
+	 *  questions land in the room's operator-question queue as non-blocking.
+	 *  Default: true. */
+	verifier?: boolean;
 }
 
 export interface DelegateFallbacksConfig {

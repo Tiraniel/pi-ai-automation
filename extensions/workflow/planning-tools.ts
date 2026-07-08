@@ -40,7 +40,20 @@ import {
 	readWorkflowCurrentRoomPointer,
 } from "./planning-pointer";
 import { evaluateSprintGateForCwd, evaluateImplementationGateForCwd } from "./planning-gate-runtime";
-import { listOpenBlockingQuestionsInFile, operatorQuestionsPathForRoom } from "./operator-questions";
+import {
+	appendOperatorQuestionToFile,
+	listOpenBlockingQuestionsInFile,
+	operatorQuestionsPathForRoom,
+	readOperatorQuestionsFromFile,
+} from "./operator-questions";
+import {
+	PRD_CONTRACT_FILE_NAME,
+	computePrdReadiness,
+	formatPrdContractIssues,
+	normalizePrdContract,
+	readPrdContractFile,
+	writePrdContractFile,
+} from "./planning-prd-contract";
 
 const STATE_NAMES = PLANNING_STATE_NAMES;
 
@@ -345,9 +358,29 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 					}
 					updates.push({ name, value, meta });
 				}
-				// WP1: prd_ready_for_sprint cannot be recorded while this planning
-				// room still has unanswered blocking operator questions.
+				// WP1 + WP3: prd_ready_for_sprint is COMPUTED, not asserted. It
+				// requires (a) a valid structural prd.json contract, (b) every
+				// blocking Q* answered and every A* covering a CLOSED Q*
+				// (computePrdReadiness), and (c) no other unanswered blocking
+				// operator questions in this planning room.
 				if (updates.some((u) => u.name === "prd_ready_for_sprint" && u.value === true)) {
+					const contractRead = readPrdContractFile(cwd, resolved.roomId);
+					if (!contractRead.contract) {
+						return textResult(
+							`Refused to record prd_ready_for_sprint=true: ${formatPrdContractIssues(contractRead.issues)}. Write a valid structural ${PRD_CONTRACT_FILE_NAME} via workflow_planning_artifacts action=write_prd_contract (expected_behavior B*, edge_cases E*, forbidden_behavior X*, assumptions A*, open_questions Q*).`,
+							true,
+							{ reason: "prd_contract_missing_or_invalid", roomId: resolved.roomId, issues: contractRead.issues, contractPath: relativeFromCwd(cwd, contractRead.file) },
+						);
+					}
+					const roomQuestions = readOperatorQuestionsFromFile(operatorQuestionsPathForRoom(cwd, resolved.roomId));
+					const readiness = computePrdReadiness(contractRead.contract, roomQuestions);
+					if (!readiness.ready) {
+						return textResult(
+							`Refused to record prd_ready_for_sprint=true: PRD contract is not ready — ${formatPrdContractIssues(readiness.issues)}.`,
+							true,
+							{ reason: "prd_not_ready", roomId: resolved.roomId, issues: readiness.issues, openBlockingQuestionIds: readiness.openBlockingQuestionIds, unresolvedAssumptionIds: readiness.unresolvedAssumptionIds },
+						);
+					}
 					const openBlocking = listOpenBlockingQuestionsInFile(operatorQuestionsPathForRoom(cwd, resolved.roomId));
 					if (openBlocking.length > 0) {
 						const preview = openBlocking.slice(0, 5).map((q) => `${q.id}: ${q.question}`).join("; ");
@@ -447,18 +480,20 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 		name: "workflow_planning_artifacts",
 		label: "Planning Artifacts (PRD/Memo)",
 		description:
-			"Read or write the adjacent PRD.md and memo.md artifacts that live next to a planning room's `planning-state.json`. PRD-first planning requires these artifacts; runtime gates cite their paths in blocker messages. Use this tool to draft / update the PRD draft (problem/background, goals, non-goals, acceptance criteria, ready_for_sprint) and the planning memo (Brain synthesis, resolved decisions, risks).",
-		promptSnippet: "Maintain the PRD.md and memo.md artifacts alongside planning-state.json.",
+			"Read or write the adjacent PRD.md / memo.md / prd.json artifacts that live next to a planning room's `planning-state.json`. PRD-first planning requires these artifacts; runtime gates cite their paths in blocker messages. Use this tool to draft / update the PRD draft (problem/background, goals, non-goals, acceptance criteria), the planning memo (Brain synthesis, resolved decisions, risks), and the structural PRD contract prd.json (expected_behavior B*, edge_cases E*, forbidden_behavior X*, assumptions A*, open_questions Q*). Recording prd_ready_for_sprint requires a valid prd.json whose blocking Q* are answered.",
+		promptSnippet: "Maintain the PRD.md / memo.md / prd.json artifacts alongside planning-state.json.",
 		promptGuidelines: [
-			"Call workflow_planning_artifacts.action=read first to inspect existing PRD/memo content before overwriting.",
-			"action=write_prd and action=write_memo only update artifact text; they do NOT change the four confirmation flags. Call workflow_planning_state to record flag transitions.",
-			"PRD draft should declare ready_for_sprint: yes|no near the end; that string is the source of truth Brain uses to set prd_ready_for_sprint.",
+			"Call workflow_planning_artifacts.action=read first to inspect existing PRD/memo/contract content before overwriting.",
+			"action=write_prd / action=write_memo / action=write_prd_contract only update artifacts; they do NOT change the four confirmation flags. Call workflow_planning_state to record flag transitions.",
+			"action=write_prd_contract validates the structural contract fail-closed (id patterns B*/E*/X*/A*/Q*, unique ids, A* must reference an existing Q*) and mirrors unanswered blocking Q* into the room's operator-question queue so WP1 gates and the operator see them.",
+			"prd_ready_for_sprint is computed from prd.json: all blocking Q* answered (inline answer or workflow_answer_question with the Q* id) and every A* covering a CLOSED Q*.",
 		],
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("read"), Type.Literal("write_prd"), Type.Literal("write_memo")]),
+			action: Type.Union([Type.Literal("read"), Type.Literal("write_prd"), Type.Literal("write_memo"), Type.Literal("write_prd_contract")]),
 			roomId: Type.Optional(Type.String()),
 			planningRoomId: Type.Optional(Type.String()),
-			content: Type.Optional(Type.String({ description: "Full markdown content to write for the artifact." })),
+			content: Type.Optional(Type.String({ description: "Full markdown content to write for the artifact (write_prd / write_memo)." })),
+			contract: Type.Optional(Type.Any({ description: "Structural PRD contract for action=write_prd_contract: { summary, expected_behavior: [{id: B1, description}], edge_cases (E*), forbidden_behavior (X*), assumptions (A*, covers_question), open_questions (Q*, blocking) }. A JSON string is also accepted." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const cwd = ctx.cwd;
@@ -475,10 +510,65 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 				const memoExists = fs.existsSync(paths.memoFile);
 				const prd = prdExists ? fs.readFileSync(paths.prdFile, "utf-8") : null;
 				const memo = memoExists ? fs.readFileSync(paths.memoFile, "utf-8") : null;
+				const contractRead = readPrdContractFile(cwd, resolved.roomId);
 				return textResult(
-					`PRD=${prdExists ? "present" : "missing"} memo=${memoExists ? "present" : "missing"} for room ${resolved.roomId}`,
+					`PRD=${prdExists ? "present" : "missing"} memo=${memoExists ? "present" : "missing"} prd.json=${contractRead.exists ? (contractRead.contract ? "valid" : "invalid") : "missing"} for room ${resolved.roomId}`,
 					false,
-					{ roomId: resolved.roomId, prdPath: relativeFromCwd(cwd, paths.prdFile), memoPath: relativeFromCwd(cwd, paths.memoFile), prd, memo },
+					{
+						roomId: resolved.roomId,
+						prdPath: relativeFromCwd(cwd, paths.prdFile),
+						memoPath: relativeFromCwd(cwd, paths.memoFile),
+						prd,
+						memo,
+						prdContractPath: relativeFromCwd(cwd, contractRead.file),
+						prdContract: contractRead.contract ?? null,
+						prdContractIssues: contractRead.issues,
+					},
+				);
+			}
+			if (action === "write_prd_contract") {
+				const rawContract = (params as any).contract;
+				let input: unknown = rawContract;
+				if (typeof rawContract === "string") {
+					try {
+						input = JSON.parse(rawContract);
+					} catch (error) {
+						return textResult(`contract is not valid JSON: ${error instanceof Error ? error.message : String(error)}`, true, { reason: "contract_unparsable" });
+					}
+				}
+				if (input === undefined || input === null) {
+					return textResult("Missing contract for action=write_prd_contract.", true, { reason: "missing_contract" });
+				}
+				const normalized = normalizePrdContract(input);
+				if (!normalized.value) {
+					return textResult(
+						`Refused to write ${PRD_CONTRACT_FILE_NAME}: ${formatPrdContractIssues(normalized.issues)}`,
+						true,
+						{ reason: "contract_invalid", issues: normalized.issues },
+					);
+				}
+				const file = writePrdContractFile(cwd, resolved.roomId, normalized.value);
+				// WP1 integration: mirror unanswered blocking Q* into the room's
+				// operator-question queue (same id) so the finalization / ship /
+				// ready gates and the operator UI see them.
+				const questionsFile = operatorQuestionsPathForRoom(cwd, resolved.roomId);
+				const existingIds = new Set(readOperatorQuestionsFromFile(questionsFile).map((q) => q.id));
+				const mirrored: string[] = [];
+				for (const question of normalized.value.open_questions) {
+					if (!question.blocking || question.answer || existingIds.has(question.id)) continue;
+					appendOperatorQuestionToFile(questionsFile, {
+						id: question.id,
+						question: question.question,
+						from: "brain",
+						blocking: true,
+					});
+					mirrored.push(question.id);
+				}
+				const readiness = computePrdReadiness(normalized.value, readOperatorQuestionsFromFile(questionsFile));
+				return textResult(
+					`Wrote ${PRD_CONTRACT_FILE_NAME} for room ${resolved.roomId}: ${relativeFromCwd(cwd, file)} (B=${normalized.value.expected_behavior.length} E=${normalized.value.edge_cases.length} X=${normalized.value.forbidden_behavior.length} A=${normalized.value.assumptions.length} Q=${normalized.value.open_questions.length}; mirrored blocking questions: ${mirrored.join(", ") || "(none)"}; ready_for_sprint=${readiness.ready ? "yes" : "no"}).`,
+					false,
+					{ roomId: resolved.roomId, path: relativeFromCwd(cwd, file), contract: normalized.value, mirroredQuestionIds: mirrored, readiness },
 				);
 			}
 			if (action === "write_prd" || action === "write_memo") {

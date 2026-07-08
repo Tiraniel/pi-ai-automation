@@ -7,6 +7,10 @@ import {
 	validateEvidenceMatrix,
 } from "./evidence-matrix";
 import {
+	formatPrdContractIssues,
+	validateReadyPlanAgainstActivePrdContract,
+} from "../planning-prd-contract";
+import {
 	attachMatrixReadIssues,
 	getMatrixReadIssues,
 	isPlainObject,
@@ -75,6 +79,23 @@ function assertReadyMatrix(plan: {
 	const readIssues = getMatrixReadIssues(plan);
 	if (readIssues.length > 0) {
 		throw new Error(`acceptanceEvidenceMatrix is invalid: ${formatMatrixValidationIssues(readIssues)}`);
+	}
+}
+
+// WP3: when the active planning room carries a structural PRD contract
+// (prd.json), a ready plan's matrix must cover every forbidden behavior (X*)
+// with a negative row. No contract resolvable -> no-op (the
+// prd_ready_for_sprint gate owns contract existence).
+function assertReadyMatrixCoversPrdForbidden(cwd: string, plan: {
+	status: PlanLifecycleStatus;
+	acceptanceEvidenceMatrix?: AcceptanceEvidenceMatrixEntry[];
+}): void {
+	if (plan.status !== "ready") return;
+	const coverage = validateReadyPlanAgainstActivePrdContract(cwd, plan.acceptanceEvidenceMatrix ?? []);
+	if (coverage.checked && coverage.issues.length > 0) {
+		throw new Error(
+			`acceptanceEvidenceMatrix does not satisfy the PRD contract of planning room ${coverage.roomId}: ${formatPrdContractIssues(coverage.issues)}`,
+		);
 	}
 }
 
@@ -331,6 +352,7 @@ export function createArchitecturePlanRecord(input: {
 	// fully covered acceptanceEvidenceMatrix. Draft plans are still allowed
 	// to omit the matrix so simple/admin/planning flows stay lightweight.
 	assertReadyMatrix(plan);
+	assertReadyMatrixCoversPrdForbidden(input.cwd, plan);
 
 	writeArchitecturePlan(input.cwd, plan, input.sessionManager);
 	return plan;
@@ -439,6 +461,7 @@ export function updatePlanRecord(
 	// transitions that did not supply a matrix in the same patch, as well as
 	// updates that drop matrix entries from a plan that was already ready.
 	assertReadyMatrix(normalized);
+	assertReadyMatrixCoversPrdForbidden(cwd, normalized);
 
 	writeArchitecturePlan(cwd, normalized, sessionManager);
 	return normalized;

@@ -35,6 +35,13 @@ terms; when a module is named after a concept, the concept lives here.
 - **planning gate** — PRD-first state machine (`prd_started` →
   `prd_ready_for_sprint` → `sprint_confirmed` → `implementation_confirmed`)
   blocking sprint/implementation entry points.
+- **PRD contract** — structural `prd.json` next to PRD.md (owned by
+  `extensions/workflow/planning-prd-contract.ts`): expected behaviors B\*,
+  edge cases E\*, forbidden behaviors X\*, assumptions A\* (covering Q\*),
+  open questions Q\* (blocking or not). `prd_ready_for_sprint` is COMPUTED
+  from it: valid contract + all blocking Q\* answered + every A\* covering a
+  closed Q\*. Matrix rows trace back via `criterionId` (AC\*) / `covers`
+  (B\*/X\*); every X\* needs a `negative: true` matrix row on ready plans.
 - **architecture gate** — phaseA (isolated blocks) / phaseB (integration)
   advancement over an architecture plan.
 - **acceptance evidence matrix** — per-criterion required evidence + reviewer

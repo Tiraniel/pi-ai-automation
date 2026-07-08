@@ -70,6 +70,8 @@ export function normalizeDeepPlanning(value: unknown): DeepPlanningConfig | unde
 	if (roomIdPrefix !== undefined && roomIdPrefix.trim()) config.roomIdPrefix = roomIdPrefix.trim().toLowerCase();
 	const planners = normalizePlanners(record.planners);
 	if (planners !== undefined) config.planners = planners;
+	const verifier = asBoolean(record.verifier);
+	if (verifier !== undefined) config.verifier = verifier;
 	return Object.keys(config).length ? config : undefined;
 }
 

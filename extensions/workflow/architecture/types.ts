@@ -70,6 +70,17 @@ export interface AcceptanceEvidenceMatrixEntry {
 	blockingConditions: string[];
 	promptOnlyCaveat?: string;
 	manualValidationPlan?: string;
+	// WP3 PRD-contract traceability (all optional; id patterns owned by
+	// planning-prd-contract.ts).
+	/** Stable criterion id (AC<N>). */
+	criterionId?: string;
+	/** PRD contract ids this row covers (B<N> expected / X<N> forbidden). */
+	covers?: string[];
+	/** True for a negative-scenario row (proves a forbidden behavior does NOT
+	 *  happen). Every X* in the PRD contract must be covered by at least one
+	 *  negative row. An optional field was chosen over a new criterionKind for
+	 *  the smaller radius (no closed-set widening for criterionKind consumers). */
+	negative?: boolean;
 }
 
 export type EvidenceMatrixValidationIssueCode =
