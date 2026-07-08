@@ -36,7 +36,7 @@ import { appendDebugNote, createDebugItem, readDebugLaneSummary, promoteDebugIte
 import { evaluateDebugEscalationForSprintDebug, runSprintDebugDone } from "./debug-tooling";
 import { evaluateSprintTaskFinalizationFromDisk } from "../workflow/finalization-runtime";
 import { isFinalizationStatus } from "../workflow/finalization-gate";
-import { gateSprintEntryPoint, sprintGateErrorResult } from "./planning-gate";
+import { evaluatePlanningGate, planningGateErrorResult } from "../workflow/planning-gate-runtime";
 import type { SprintConfig, SprintCurrent } from "./types";
 
 export function registerSprintTools(pi: ExtensionAPI): void {
@@ -117,8 +117,8 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			const cwd = ctx.cwd;
 			const name = String((params as any).name || "").trim();
 			if (!name) return { isError: true, content: [{ type: "text", text: "Missing name" }] };
-			const gate = gateSprintEntryPoint(cwd, (params as any).planningRoomId, "sprint");
-			if (!gate.allowed) return sprintGateErrorResult(gate.details);
+			const gate = evaluatePlanningGate(cwd, (params as any).planningRoomId, "sprint");
+			if (!gate.allowed) return planningGateErrorResult(gate.details);
 			const created = createSprint(cwd, name);
 			return { content: [{ type: "text", text: `Created ${path.relative(cwd, created.sprintPath)}` }] };
 		},
@@ -146,8 +146,8 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			const p = params as any;
 			const title = String(p.title || "").trim();
 			if (!title) return { isError: true, content: [{ type: "text", text: "Missing title" }] };
-			const gate = gateSprintEntryPoint(ctx.cwd, p.planningRoomId, "sprint");
-			if (!gate.allowed) return sprintGateErrorResult(gate.details);
+			const gate = evaluatePlanningGate(ctx.cwd, p.planningRoomId, "sprint");
+			if (!gate.allowed) return planningGateErrorResult(gate.details);
 			const created = createTask(ctx.cwd, title, {
 				humanSummary: p.humanSummary,
 				aiContext: p.aiContext,
@@ -178,8 +178,8 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 			const p = params as any;
 			const title = String(p.title || "").trim();
 			if (!title) return { isError: true, content: [{ type: "text", text: "Missing title" }] };
-			const gate = gateSprintEntryPoint(ctx.cwd, p.planningRoomId, "sprint");
-			if (!gate.allowed) return sprintGateErrorResult(gate.details);
+			const gate = evaluatePlanningGate(ctx.cwd, p.planningRoomId, "sprint");
+			if (!gate.allowed) return planningGateErrorResult(gate.details);
 			const epic = createEpic(ctx.cwd, title, { humanSummary: p.humanSummary, aiContext: p.aiContext });
 			return { content: [{ type: "text", text: `Created epic ${epic.epicId} at ${path.relative(ctx.cwd, epic.epicPath)}` }] };
 		},
@@ -280,8 +280,8 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 				}
 				const itemId = String(p.itemId || "").trim();
 				if (!itemId) return { isError: true, content: [{ type: "text", text: "Missing itemId" }] };
-				const gate = gateSprintEntryPoint(cwd, p.planningRoomId, "sprint");
-				if (!gate.allowed) return sprintGateErrorResult(gate.details);
+				const gate = evaluatePlanningGate(cwd, p.planningRoomId, "sprint");
+				if (!gate.allowed) return planningGateErrorResult(gate.details);
 				const escalation = evaluateDebugEscalationForSprintDebug(cwd, itemId, p);
 				const title = String(p.title || "").trim();
 				const result = promoteDebugItem(cwd, itemId, title ? { title, escalation } : { escalation });
@@ -435,8 +435,8 @@ export function registerSprintTools(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const taskId = String((params as any).taskId || "").trim();
 			if (!taskId) return { isError: true, content: [{ type: "text", text: "Missing taskId" }] };
-			const gate = gateSprintEntryPoint(ctx.cwd, (params as any).planningRoomId, "sprint");
-			if (!gate.allowed) return sprintGateErrorResult(gate.details);
+			const gate = evaluatePlanningGate(ctx.cwd, (params as any).planningRoomId, "sprint");
+			if (!gate.allowed) return planningGateErrorResult(gate.details);
 			const newSession = (ctx as any).newSession;
 			if (typeof newSession === "function") {
 				try {

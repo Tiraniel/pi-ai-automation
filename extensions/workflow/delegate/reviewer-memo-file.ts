@@ -12,6 +12,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { writeFileAtomicSync } from "../fs-atomic";
 import { getWorkflowRunsRoot } from "../rooms";
 import type { UsageStats } from "../types";
 import type { ReviewerMemo } from "./reviewer-roles";
@@ -66,17 +67,49 @@ export function writeReviewerMemoFile(
 	planId: string | undefined,
 	phase: string | undefined,
 	markdown: string,
+	memo?: ReviewerMemo,
 ): string | undefined {
-	const { dir, file } = buildReviewerMemoPath(cwd, planId, phase);
+	const { file } = buildReviewerMemoPath(cwd, planId, phase);
 	try {
-		fs.mkdirSync(dir, { recursive: true });
-		fs.writeFileSync(file, markdown.endsWith("\n") ? markdown : `${markdown}\n`, "utf8");
-		return file;
+		writeFileAtomicSync(file, markdown.endsWith("\n") ? markdown : `${markdown}\n`);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		process.stderr.write(`[reviewer-memo] failed to write memo file ${file}: ${message}\n`);
 		return undefined;
 	}
+	// Structured sidecar: finalization reads THIS (single source of truth),
+	// not a regex re-parse of the markdown. Markdown stays the human artifact.
+	if (memo) {
+		const sidecar = reviewerMemoSidecarPath(file);
+		try {
+			writeFileAtomicSync(sidecar, `${JSON.stringify({ version: 1, memo }, null, 2)}\n`);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			process.stderr.write(`[reviewer-memo] failed to write memo sidecar ${sidecar}: ${message}\n`);
+			// Markdown memo is durable; consumers fall back to parsing it.
+		}
+	}
+	return file;
+}
+
+/** Path of the structured JSON sidecar next to a memo markdown file. */
+export function reviewerMemoSidecarPath(memoFile: string): string {
+	return memoFile.replace(/\.md$/, ".json");
+}
+
+/** Read the structured memo sidecar; `undefined` when missing or malformed. */
+export function readReviewerMemoSidecar(memoFile: string): ReviewerMemo | undefined {
+	try {
+		const raw = fs.readFileSync(reviewerMemoSidecarPath(memoFile), "utf8");
+		const parsed = JSON.parse(raw) as { version?: number; memo?: ReviewerMemo };
+		const memo = parsed?.memo;
+		if (memo && typeof memo === "object" && Array.isArray(memo.rolesRequired) && typeof memo.approved === "boolean") {
+			return memo;
+		}
+	} catch {
+		// fall through — caller falls back to markdown parsing
+	}
+	return undefined;
 }
 
 /** Read a reviewer memo from disk; returns `undefined` if the file is missing. */
@@ -256,7 +289,10 @@ export function buildReviewerToolResult(input: ReviewerToolResultInput): { conte
 	// callers (Brain, the integration smoke) never see a passing approval
 	// when the durable artifact was lost.
 	const memoWriteFailed = Boolean(memo) && memoPath === undefined;
-	const effectiveStatus = memoWriteFailed ? "failed" : status;
+	// A failed durable phase update is a hard error even when the review
+	// itself completed: the plan on disk did not advance.
+	const phaseUpdateFailed = Boolean(reviewerUpdate);
+	const effectiveStatus = memoWriteFailed || phaseUpdateFailed ? "failed" : status;
 	const finalOutput = buildReviewerFinalOutput({ status: effectiveStatus, memo, memoPath, rawOutputLines: lines, memoWriteFailed });
 	return {
 		content: [{ type: "text", text: finalOutput }],

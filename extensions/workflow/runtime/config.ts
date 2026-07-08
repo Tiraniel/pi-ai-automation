@@ -363,11 +363,10 @@ function loadV2WorkflowConfig(scope: "global" | "project", filePath: string): {
 	}
 }
 
-// Exported (not just private) because the remaining runtime in
-// brain-workflow.ts (resolveReviewerSwarmConfig and any future helper that
-// needs the same merge semantics) reuses it. The other private helpers in
-// this module are not re-exported.
-export function deepMerge<T>(base: T, override: unknown): T {
+// Private: the config merge ladder is an implementation detail of this
+// module. Callers get merged config through loadWorkflowConfig, never by
+// reusing the merge primitive.
+function deepMerge<T>(base: T, override: unknown): T {
 	if (override === undefined) return base;
 	if (Array.isArray(base) || Array.isArray(override)) return override as T;
 	if (!isPlainObject(base) || !isPlainObject(override)) return override as T;

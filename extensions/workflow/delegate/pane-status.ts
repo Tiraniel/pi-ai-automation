@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { writeFileAtomic } from "../fs-atomic";
 import type { AgentName } from "../types";
 import type { ResolvedRoomContext } from "../rooms";
 import { DELEGATE_MANIFEST_DIR } from "./constants";
@@ -126,8 +127,9 @@ export function buildManifest(base: Omit<PaneManifest, "manifestVersion" | "star
 
 export async function writeManifest(filePath: string, manifest: PaneManifest): Promise<void> {
 	try {
-		await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-		await fs.promises.writeFile(filePath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+		// Atomic: finalization scans these files while delegates are still
+		// rewriting them; a torn read must be impossible.
+		await writeFileAtomic(filePath, JSON.stringify(manifest, null, 2) + "\n");
 	} catch {
 		// Manifest writes are best effort for visibility only.
 	}

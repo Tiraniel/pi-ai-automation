@@ -280,6 +280,35 @@ export function formatGateErrorText(details: PlanningGateErrorDetails): string {
 	return lines.join("\n");
 }
 
-// ----- helper for callers -----------------------------------------------------
+// ----- single entry point for tool/command callers ------------------------------
 
-export const ALL_PLANNING_STATE_NAMES: readonly PlanningStateName[] = PLANNING_STATE_NAMES;
+export interface PlanningGateOutcome {
+	allowed: boolean;
+	details: PlanningGateErrorDetails;
+	text: string;
+}
+
+/**
+ * Evaluate a planning gate for a cwd: resolve the planning room, run the
+ * fail-closed evaluator, and return the outcome together with the formatted
+ * error text callers surface when `allowed` is false. This is the one
+ * interface sprint tools/commands/hooks and delegate tools go through.
+ */
+export function evaluatePlanningGate(
+	cwd: string,
+	explicitRoomId: unknown,
+	gate: "sprint" | "implementation",
+	options: RuntimeGateOptions = {},
+): PlanningGateOutcome {
+	const details = buildGateErrorDetails(cwd, explicitRoomId, gate, options);
+	return { allowed: details.allowed, details, text: formatGateErrorText(details) };
+}
+
+/** Standard error-shaped tool result for a denied planning gate. */
+export function planningGateErrorResult(details: PlanningGateErrorDetails) {
+	return {
+		isError: true,
+		content: [{ type: "text" as const, text: formatGateErrorText(details) }],
+		details,
+	};
+}

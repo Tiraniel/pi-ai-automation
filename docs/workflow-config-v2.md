@@ -532,7 +532,7 @@ shared contracts.
 ### Gate preservation
 
 - `full-sprint` lane start calls
-  `gateSprintEntryPoint(cwd, roomId, 'implementation')` and **does
+  `evaluatePlanningGate(cwd, roomId, 'implementation')` and **does
   not** create AFK state when the gate denies. The existing
   `delegate_to_coder` PRD/architecture/implementation gate and the
   `delegate_to_reviewer` review path remain the only implementation

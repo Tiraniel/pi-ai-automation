@@ -21,11 +21,18 @@ import {
 	createTask,
 	initSprints,
 	loadCurrent,
-	parseArgs,
 	rootPaths,
 	setActiveTask,
 	updateTaskStatus,
 } from "./store";
+
+// Command-local: how the slash command splits its raw args. Not part of the
+// store's interface.
+function parseArgs(rawArgs: unknown): string[] {
+	if (Array.isArray(rawArgs)) return rawArgs.map((v) => String(v));
+	if (typeof rawArgs === "string") return rawArgs.split(/\s+/).filter(Boolean);
+	return [];
+}
 import {
 	appendDebugNote,
 	completeDebugItem,
@@ -35,7 +42,7 @@ import {
 	readDebugLaneSummary,
 } from "./debug";
 import { evaluateDebugFinalization } from "../workflow/finalization-runtime";
-import { gateSprintEntryPoint } from "./planning-gate";
+import { evaluatePlanningGate } from "../workflow/planning-gate-runtime";
 import { SPRINTS_DIR } from "./types";
 import {
 	createInitialShipState,
@@ -46,11 +53,7 @@ import {
 	writeShipState,
 } from "./ship-state";
 import { renderShipReport } from "./ship-report";
-import { ALL_HOTFIX_KINDS, isAutomationLane, type HotfixKind } from "./lane-policy";
-
-function isHotfixKind(value: unknown): value is HotfixKind {
-	return typeof value === "string" && (ALL_HOTFIX_KINDS as readonly string[]).includes(value);
-}
+import { ALL_AUTOMATION_LANES, ALL_HOTFIX_KINDS, isAutomationLane, isHotfixKind } from "./lane-policy";
 
 export function registerSprintCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("sprint", {
@@ -69,7 +72,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 				if (sub === "new") {
 					const name = args.slice(1).join(" ").trim();
 					if (!name) throw new Error("Usage: /sprint new <name>");
-					const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+					const gate = evaluatePlanningGate(ctx.cwd, undefined, "sprint");
 					if (!gate.allowed) {
 						ctx.ui.notify(gate.text, "warning");
 						ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before /sprint new.", "info");
@@ -167,7 +170,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 						return;
 					}
 					if (action === "promote") {
-						const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+						const gate = evaluatePlanningGate(ctx.cwd, undefined, "sprint");
 						if (!gate.allowed) {
 							ctx.ui.notify(gate.text, "warning");
 							ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before debug promotion.", "info");
@@ -193,7 +196,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 				if (sub === "task" && args[1] === "add") {
 					const title = args.slice(2).join(" ").trim();
 					if (!title) throw new Error("Usage: /sprint task add <title>");
-					const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+					const gate = evaluatePlanningGate(ctx.cwd, undefined, "sprint");
 					if (!gate.allowed) {
 						ctx.ui.notify(gate.text, "warning");
 						ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before creating sprint tasks.", "info");
@@ -230,7 +233,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 						}
 					}
 					if (!taskId) throw new Error("Usage: /sprint task start <TASK-ID> [--auto-run]");
-					const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+					const gate = evaluatePlanningGate(ctx.cwd, undefined, "sprint");
 					if (!gate.allowed) {
 						ctx.ui.notify(gate.text, "warning");
 						ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before starting this task.", "info");
@@ -249,7 +252,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					//   [--run-id <id>] [--scope <text>] [--retry-budget <n>]
 					// Default lane is full-sprint for normal sprint tasks. Hotfix and
 					// debug starts are lightweight and not PRD-gated. Full-sprint
-					// starts run gateSprintEntryPoint(...,'implementation'); if denied,
+					// starts run evaluatePlanningGate(...,'implementation'); if denied,
 					// the command stops and the AFK run is NOT created.
 					if (!args.includes("--afk")) {
 						throw new Error("Usage: /sprint task ship <TASK-ID> --afk [--lane <lane>] [--hotfix-kind <kind>] [--run-id <id>] [--scope <text>] [--retry-budget <n>]");
@@ -263,7 +266,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 						return idx >= 0 ? String(args[idx + 1] || "").trim() : "full-sprint";
 					})();
 					if (!isAutomationLane(laneArgRaw)) {
-						throw new Error(`Invalid --lane "${laneArgRaw}"; must be one of: full-sprint|hotfix|debug.`);
+						throw new Error(`Invalid --lane "${laneArgRaw}"; must be one of: ${ALL_AUTOMATION_LANES.join("|")}.`);
 					}
 					const laneArg = laneArgRaw;
 
@@ -294,7 +297,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 					const retryBudget = Number.isFinite(retryBudgetArg) && retryBudgetArg > 0 ? Math.max(1, Math.floor(retryBudgetArg)) : 3;
 
 					if (laneArg === "full-sprint") {
-						const gate = gateSprintEntryPoint(ctx.cwd, undefined, "implementation");
+						const gate = evaluatePlanningGate(ctx.cwd, undefined, "implementation");
 						if (!gate.allowed) {
 							ctx.ui.notify(gate.text, "warning");
 							ctx.ui.notify("Use workflow_planning_state to record PRD-ready implementation authorization before starting a full-sprint AFK ship run.", "info");
@@ -353,7 +356,7 @@ export function registerSprintCommand(pi: ExtensionAPI): void {
 				if (sub === "epic" && args[1] === "add") {
 					const title = args.slice(2).join(" ").trim();
 					if (!title) throw new Error("Usage: /sprint epic add <title>");
-					const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+					const gate = evaluatePlanningGate(ctx.cwd, undefined, "sprint");
 					if (!gate.allowed) {
 						ctx.ui.notify(gate.text, "warning");
 						ctx.ui.notify("Use workflow_planning_state to record PRD-ready sprint authorization before creating epics.", "info");

@@ -23,21 +23,28 @@ import type {
 } from "../types";
 
 // ---------- Constants ----------
-
-/** Closed set of reviewer role ids; aligned with `ReviewerRole`. */
-export const REVIEWER_ROLE_IDS: readonly ReviewerRole[] = [
-	"implementation", "evidence-test", "behavior", "regression", "maintainability", "docs-config",
-] as const;
+// The closed reviewer-role id set lives in `../reviewer-protocol`
+// (REVIEWER_ROLE_IDS); this module only defines role *policy*.
 
 /** Default required role set for a non-trivial matrix-gated plan. */
 export const DEFAULT_NON_TRIVIAL_REQUIRED_ROLES: readonly ReviewerRole[] = [
 	"behavior", "evidence-test", "implementation", "maintainability", "regression",
 ] as const;
 
-const DOCS_CONFIG_HINTS: readonly string[] = [
-	"readme", "docs/", "documentation", "example", "examples/", "config",
-	"configuration", "workflow.quality-gates", "workflow.json", "settings.json",
+// Path-shaped hints match as substrings; word hints match on word boundaries
+// so "config" does not fire on "configure/reconfigurable" and "example" does
+// not fire on "counterexample". Over-scoping makes docs-config a REQUIRED
+// role, which can spuriously block final approval.
+const DOCS_CONFIG_PATH_HINTS: readonly string[] = [
+	"docs/", "examples/", "workflow.quality-gates", "workflow.json", "settings.json",
 ];
+const DOCS_CONFIG_WORD_HINTS: readonly string[] = [
+	"readme", "docs", "documentation", "example", "examples", "config", "configuration",
+];
+const DOCS_CONFIG_WORD_REGEXES: ReadonlyArray<{ hint: string; regex: RegExp }> = DOCS_CONFIG_WORD_HINTS.map((hint) => ({
+	hint,
+	regex: new RegExp(`\\b${hint.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`),
+}));
 const RUNTIME_SCOPE_HINTS: readonly string[] = [
 	"tui", "runtime", "ui", "terminal", "pane", "cmux", "tool render", "toolresult",
 ];
@@ -215,7 +222,8 @@ export function isDocsConfigInScope(input: {
 }): { inScope: boolean; signals: string[] } {
 	const signals: string[] = [];
 	const collect = (lower: string, kind: string) => {
-		for (const hint of DOCS_CONFIG_HINTS) if (lower.includes(hint)) { signals.push(`${kind}:${hint}`); return; }
+		for (const hint of DOCS_CONFIG_PATH_HINTS) if (lower.includes(hint)) { signals.push(`${kind}:${hint}`); return; }
+		for (const { hint, regex } of DOCS_CONFIG_WORD_REGEXES) if (regex.test(lower)) { signals.push(`${kind}:${hint}`); return; }
 	};
 	for (const file of input.files ?? []) collect(lc(file), "file");
 	for (const text of input.acceptanceCriteria ?? []) collect(lc(text), "acceptance");
@@ -369,10 +377,11 @@ export function buildReviewerRoleTask(task: string, roleTarget: ReviewerRoleTarg
 	}
 	s.push("## Base delegated task", task.trim(), "");
 	s.push("## Response contract");
-	s.push("- Start your response with `APPROVED` or `CHANGES_REQUESTED` as the first token.");
-	s.push("- If the role's hard rules or blocking conditions apply, you MUST return `CHANGES_REQUESTED` with the specific reason and the file/line where the issue occurs.");
+	s.push("- Start your response with APPROVED or CHANGES_REQUESTED as the first token — plain text, no markdown decoration around the word.");
+	s.push("- If the role's hard rules or blocking conditions apply, you MUST return CHANGES_REQUESTED with the specific reason and the file/line where the issue occurs.");
 	s.push("- Free-form completion (no APPROVED/CHANGES_REQUESTED prefix) is provisional and does NOT satisfy the role; Brain will treat it as a blocker for required roles.");
 	s.push("- Do not validate, approve, or critique Brain-owned plan quality. Focus only on implementation diffs, behavior, evidence, and the role criteria above.");
+	s.push("- This role focus takes precedence over the general reviewer checklist in your system prompt: report out-of-role findings briefly, but your verdict is decided by THIS role's criteria.");
 	return s.join("\n");
 }
 

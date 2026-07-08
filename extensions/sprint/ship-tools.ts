@@ -15,11 +15,12 @@ import {
 	ALL_HOTFIX_KINDS,
 	buildLaneSummary,
 	evaluateLanePolicy,
+	isAutomationLane,
+	isDebugNextLane,
+	isHotfixKind,
 	requiresPromotion,
 	requiresReviewer,
-	type AutomationLane,
 	type DebugNextLane,
-	type HotfixKind,
 	type LanePolicyInput,
 } from "./lane-policy";
 import {
@@ -37,7 +38,7 @@ import {
 } from "./ship-state";
 import { renderShipReport } from "./ship-report";
 import { transitionShipState, type ShipEvent, type ShipTransition } from "./ship-engine";
-import { gateSprintEntryPoint, sprintGateErrorResult } from "./planning-gate";
+import { evaluatePlanningGate, planningGateErrorResult } from "../workflow/planning-gate-runtime";
 
 function asString(value: unknown, fallback = ""): string {
 	return typeof value === "string" ? value.trim() : fallback;
@@ -64,18 +65,6 @@ function okText(text: string, details: Record<string, unknown> = {}) {
 
 function errText(text: string, details: Record<string, unknown> = {}) {
 	return { isError: true, content: [{ type: "text" as const, text }], details };
-}
-
-function isAutomationLane(value: unknown): value is AutomationLane {
-	return value === "full-sprint" || value === "hotfix" || value === "debug";
-}
-
-function isHotfixKind(value: unknown): value is HotfixKind {
-	return value === "code-changing" || value === "text-evidence-only";
-}
-
-function isDebugNextLane(value: unknown): value is DebugNextLane {
-	return value === "hotfix" || value === "full-sprint" || value === "no-code/report-only";
 }
 
 function isShipEvent(value: unknown): value is ShipEvent {
@@ -217,7 +206,7 @@ export function registerSprintShipTools(pi: ExtensionAPI): void {
 			"Call sprint_ship to create, read, transition, or re-render the AFK ship state for a run.",
 			"Lane vocabulary: full-sprint | hotfix | debug. Hotfix kind: code-changing | text-evidence-only. Debug next lanes: hotfix | full-sprint | no-code/report-only.",
 			"Default permissions deny push, PR, deploy, destructive, and credentialed actions; requests for these produce a stop condition unless explicitly authorized.",
-			"Full-sprint start runs gateSprintEntryPoint(...,'implementation'); if denied, the call returns a structured gate error and does NOT create state. There is no silent bypass.",
+			"Full-sprint start runs evaluatePlanningGate(...,'implementation'); if denied, the call returns a structured gate error and does NOT create state. There is no silent bypass.",
 			"Hotfix and debug starts are lightweight and not PRD-gated; code-changing hotfixes still require reviewer by Phase A contract (the supervisor's durable state has reviewerRequired=true).",
 			"This is a local-only MVP. The tool never shells out to git push, gh pr, deploy, publish, or any credentialed action. Remote actions are recorded in state and the engine emits a stop condition when unauthorized.",
 		],
@@ -272,9 +261,9 @@ export function registerSprintShipTools(pi: ExtensionAPI): void {
 					}
 				}
 				if (laneRaw === "full-sprint") {
-					const gate = gateSprintEntryPoint(cwd, (params as any).planningRoomId, "implementation");
+					const gate = evaluatePlanningGate(cwd, (params as any).planningRoomId, "implementation");
 					if (!gate.allowed) {
-						return sprintGateErrorResult(gate.details);
+						return planningGateErrorResult(gate.details);
 					}
 				}
 				const runId = asString((params as any).runId, "") || generateRunId(asString((params as any).taskId, "") || undefined);

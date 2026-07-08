@@ -11,14 +11,12 @@
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { DEFAULT_BRAIN_MARKERS_BLOCK } from "./markers";
 import {
 	DEFAULT_CONFIG,
 	SPRINT_BINDING_CUSTOM_TYPE,
 	SPRINTS_DIR,
-	type AutoCreateMode,
 	type SessionBinding,
 	type SprintConfig,
 	type SprintCurrent,
@@ -450,45 +448,6 @@ export function updateTaskStatus(
 	return filePath;
 }
 
-// ============================================================================
-// Heuristics / UI helpers
-// ============================================================================
-
-export function getGlobalAutoCreate(): AutoCreateMode {
-	const p = path.join(os.homedir(), ".pi", "agent", "sprints.json");
-	const cfg = readJson<{ autoCreate?: AutoCreateMode }>(p);
-	const mode = cfg?.autoCreate;
-	if (mode === "always" || mode === "ask" || mode === "never") return mode;
-	return "ask";
-}
-
-export function isNonTrivialPrompt(text: string): boolean {
-	const t = text.toLowerCase();
-	if (/^\s*\/sprint\b/.test(t)) return false;
-	if (t.length > 60) return true;
-	return /(implement|fix|add|update|refactor|build|create|feature|bug|sprint)/.test(t);
-}
-
-export function deriveSprintName(prompt: string): string {
-	const cleaned = prompt.replace(/\s+/g, " ").trim();
-	if (!cleaned) return "general-work";
-	return cleaned.slice(0, 50);
-}
-
-export function parseArgs(rawArgs: unknown): string[] {
-	if (Array.isArray(rawArgs)) return rawArgs.map((v) => String(v));
-	if (typeof rawArgs === "string") return rawArgs.split(/\s+/).filter(Boolean);
-	return [];
-}
-
-export async function askUi(ui: any, title: string, message: string): Promise<boolean> {
-	if (typeof ui?.confirm === "function") return Boolean(await ui.confirm(title, message));
-	if (typeof ui?.askConfirm === "function") return Boolean(await ui.askConfirm(message));
-	return false;
-}
-
-export async function askUiInput(ui: any, title: string, placeholder: string): Promise<string> {
-	if (typeof ui?.input === "function") return String((await ui.input(title, placeholder)) ?? "");
-	if (typeof ui?.prompt === "function") return String((await ui.prompt(title)) ?? "");
-	return "";
-}
+// Heuristics and UI ask-helpers used to live here; they are now private to
+// their single consumers (./hooks.ts and ./command.ts). This module owns
+// ONLY the on-disk .sprints substrate.

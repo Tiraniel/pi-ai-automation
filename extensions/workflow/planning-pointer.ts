@@ -4,7 +4,8 @@ import * as path from "node:path";
 export const PLANNING_CURRENT_ROOM_POINTER = "planning-current.json";
 export const WORKFLOW_CURRENT_ROOM_POINTER = "current.json";
 
-const ROOM_DIR_NAME = "workflow-runs";
+import { ROOM_DIR_NAME } from "./rooms/types";
+
 const PLANNING_STATE_FILE_NAME = "planning-state.json";
 
 const workflowRunsRoot = (cwd: string): string => path.join(cwd, ".pi", ROOM_DIR_NAME);

@@ -17,24 +17,63 @@
 // prompt and appended to the injected text so Brain sees the
 // parallel/room/agent/contract hints.
 
+import * as os from "node:os";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readBrainMarkersForTaskFile } from "./markers";
 import { debugLaneGuidanceText, sessionBindingPromptText, sprintPointerText } from "./prompt";
 import {
 	createSprint,
-	deriveSprintName,
-	getGlobalAutoCreate,
-	isNonTrivialPrompt,
 	loadCurrent,
 	normalizeActiveSprintPath,
 	normalizeActiveTaskPath,
 	nowIso,
+	readJson,
 	readSessionBinding,
 	saveCurrent,
-	askUi,
-	askUiInput,
 } from "./store";
-import { gateSprintEntryPoint } from "./planning-gate";
+import type { AutoCreateMode } from "./types";
+import { evaluatePlanningGate } from "../workflow/planning-gate-runtime";
+
+// ---- hook-local heuristics + UI adapters ----------------------------------
+// These are implementation details of the before_agent_start hook: how it
+// decides a prompt is non-trivial, how it names an auto-created sprint, how
+// it reads the global auto-create mode, and how it asks the user. No other
+// module needs them, so they are private here rather than part of the
+// store's interface.
+
+function getGlobalAutoCreate(): AutoCreateMode {
+	const p = path.join(os.homedir(), ".pi", "agent", "sprints.json");
+	const cfg = readJson<{ autoCreate?: AutoCreateMode }>(p);
+	const mode = cfg?.autoCreate;
+	if (mode === "always" || mode === "ask" || mode === "never") return mode;
+	return "ask";
+}
+
+function isNonTrivialPrompt(text: string): boolean {
+	const t = text.toLowerCase();
+	if (/^\s*\/sprint\b/.test(t)) return false;
+	if (t.length > 60) return true;
+	return /(implement|fix|add|update|refactor|build|create|feature|bug|sprint)/.test(t);
+}
+
+function deriveSprintName(prompt: string): string {
+	const cleaned = prompt.replace(/\s+/g, " ").trim();
+	if (!cleaned) return "general-work";
+	return cleaned.slice(0, 50);
+}
+
+async function askUi(ui: any, title: string, message: string): Promise<boolean> {
+	if (typeof ui?.confirm === "function") return Boolean(await ui.confirm(title, message));
+	if (typeof ui?.askConfirm === "function") return Boolean(await ui.askConfirm(message));
+	return false;
+}
+
+async function askUiInput(ui: any, title: string, placeholder: string): Promise<string> {
+	if (typeof ui?.input === "function") return String((await ui.input(title, placeholder)) ?? "");
+	if (typeof ui?.prompt === "function") return String((await ui.prompt(title)) ?? "");
+	return "";
+}
 
 const LIGHTWEIGHT_DEBUG_SCOPE_HINT_RE = /\b(tiny|typo|few-line|few\s+line|one-line|one\s+line|small\s+fix|minor\s+fix|quick\s+fix)\b/i;
 const LIGHTWEIGHT_HOTFIX_HINT_RE = /\bhotfix\b/i;
@@ -56,7 +95,7 @@ function isLikelyLightweightDebugPrompt(prompt: string): boolean {
 const DECLINED_CWDS = new Set<string>();
 
 function blockedSprintAutoCreateMessage(ctx: { cwd: string }, phase: string): string | null {
-	const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");
+	const gate = evaluatePlanningGate(ctx.cwd, undefined, "sprint");
 	if (gate.allowed) return null;
 	return [
 		`PRD-first planning gate blocked ${phase}:`,

@@ -1,3 +1,4 @@
+import { KNOWN_REVIEWER_ROLES } from "../reviewer-protocol";
 import {
 	isPlainObject,
 	normalizeStringArray,
@@ -42,15 +43,6 @@ export const KNOWN_REQUIRED_EVIDENCE_KINDS: ReadonlySet<RequiredEvidenceKind> = 
 	"runtime-gate-test",
 	"manual-validation",
 	"reviewer-approval",
-]);
-
-export const KNOWN_REVIEWER_ROLES: ReadonlySet<ReviewerRole> = new Set<ReviewerRole>([
-	"implementation",
-	"evidence-test",
-	"behavior",
-	"regression",
-	"maintainability",
-	"docs-config",
 ]);
 
 export interface NormalizeMatrixResult {

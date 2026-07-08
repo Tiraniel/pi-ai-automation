@@ -27,7 +27,7 @@ import type {
 	ReviewerTargetResult,
 	WorkflowConfig,
 } from "../types";
-import { deepMerge, loadWorkflowConfig } from "../runtime/config";
+import { loadWorkflowConfig } from "../runtime/config";
 import { appendAgentIdSuffix, type ResolvedRoomContext } from "../rooms";
 import { MAX_RENDERED_PROGRESS, MAX_TASK_PREVIEW } from "./constants";
 import { normalizeFinalStatus, truncateText } from "./messages";
@@ -43,31 +43,13 @@ import {
 	type ReviewerRoleTarget,
 } from "./reviewer-roles";
 import { writeReviewerMemoFile } from "./reviewer-memo-file";
+import { parseReviewerVerdict } from "../reviewer-protocol";
 import { runDelegateAgent } from "./runner";
 
-export function parseReviewerVerdict(text: string): "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN" {
-	const normalized = text.replace(/\r\n?/g, "\n");
-	const lines = normalized.split("\n");
-	for (const line of lines) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-		const token = trimmed.split(/\s+/)[0]?.toUpperCase() ?? "";
-		if (token === "APPROVED") return "APPROVED";
-		if (/^CHANGES[_\s-]?REQUESTED$/.test(token) || token === "CHANGES_REQUESTED") return "CHANGES_REQUESTED";
-		if (/^CHANGES[_\s-]?REQUESTED$/.test(trimmed.toUpperCase())) return "CHANGES_REQUESTED";
-		break;
-	}
-
-	const upper = normalized.toUpperCase();
-	const approvedIndex = upper.search(/\bAPPROVED\b/);
-	const changesIndex = upper.search(/\bCHANGES[_\s-]?REQUESTED\b/);
-	if (approvedIndex >= 0 && (changesIndex < 0 || approvedIndex < changesIndex)) return "APPROVED";
-	if (changesIndex >= 0) return "CHANGES_REQUESTED";
-	return "UNKNOWN";
-}
-
 export function resolveReviewerSwarmConfig(config: WorkflowConfig): Required<ReviewerSwarmConfig> {
-	const merged = deepMerge(DEFAULT_CONFIG.reviewerSwarm ?? {}, config.reviewerSwarm ?? {});
+	// ReviewerSwarmConfig is flat, and every field is re-validated below, so a
+	// shallow merge suffices — no reach into runtime/config's merge internals.
+	const merged: ReviewerSwarmConfig = { ...(DEFAULT_CONFIG.reviewerSwarm ?? {}), ...(config.reviewerSwarm ?? {}) };
 	const targets = Array.isArray(merged.targets) ? merged.targets.filter((target): target is string => typeof target === "string" && target.trim().length > 0) : [];
 	return {
 		enabled: merged.enabled !== false,
@@ -107,7 +89,7 @@ export function buildReviewerGoalTask(task: string, goal: string): string {
 	// TASK-004 Phase B: drop the forbidden `code-only` label; the goal
 	// framing is now role/quality-check oriented and identical to the
 	// role-mode prompt scaffolding.
-	return `${task}\n\nAssigned review goal:\n- ${goal}\n\nReviewer checks should focus on implementation diffs, behavior, validation evidence, and the assigned review goal.\nThe architecture/phase plan is context for intended behavior and scope, not a plan-quality rubric.\nDo not validate or critique Brain-owned plan quality.\nStart your response with APPROVED or CHANGES_REQUESTED.`;
+	return `${task}\n\nAssigned review goal:\n- ${goal}\n\nReviewer checks should focus on implementation diffs, behavior, validation evidence, and the assigned review goal.\nThe architecture/phase plan is context for intended behavior and scope, not a plan-quality rubric.\nDo not validate or critique Brain-owned plan quality.\nStart your response with APPROVED or CHANGES_REQUESTED as the first token — plain text, no markdown decoration around the word.`;
 }
 
 export async function runReviewerSwarm(
@@ -266,8 +248,9 @@ export async function runReviewerSwarm(
 		rolesRequired = [...builtMemo.rolesRequired];
 		supplementalGoals = builtMemo.supplementalGoals;
 		docsConfigInScope = builtMemo.docsConfigInScope;
-		// Persist memo to disk for Brain/operator review.
-		memoPath = writeReviewerMemoFile(ctx.cwd, reviewContext.plan?.planId, reviewContext.phase, builtMemo.markdown) ?? undefined;
+		// Persist memo to disk for Brain/operator review, plus the structured
+		// JSON sidecar finalization reads back (no markdown re-parsing).
+		memoPath = writeReviewerMemoFile(ctx.cwd, reviewContext.plan?.planId, reviewContext.phase, builtMemo.markdown, builtMemo) ?? undefined;
 		// Re-stamp the per-result `ReviewerTargetResult` with role metadata so
 		// downstream tools can surface effective verdict / blockers without
 		// re-deriving the role state.

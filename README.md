@@ -439,7 +439,7 @@ This keeps the Brain -> coder -> reviewer chain anchored in concrete proof oblig
 `delegate_to_coder` enforces a strict matrix-gated completion contract via `extensions/workflow/delegate/completion-evidence-gate.ts` (`evaluateCoderPhaseAdvancement` / `runCompletionEvidenceGate`). The gate runs after `runDelegateAgent` returns and before `markArchitecturePhaseUpdate(..., coder_completed)` so pane and headless transports share the same boundary.
 
 - A coder phase whose plan is `ready` and has an `acceptanceEvidenceMatrix` must include a structured `coderEvidence` packet (typically via the child `sub_agent_done` sidecar, or via intentionally-supported structured result details for headless transports): `filesChanged`, `commandsRun` (each with `outcome` of `passed` / `failed` / `skipped`), and a `criterionCoverage` row per matrix entry keyed by the exact criterion text.
-- Free-form final assistant text (`auto_exit` / headless `legacy` / generic `completed`) is **diagnostic only** for ready matrix-gated plans and never advances the phase. The gate emits `free_form_only`, `auto_exit_incomplete`, `process_exit_incomplete`, or `missing_sidecar_incomplete` rejection codes so the diagnostics are visible.
+- Free-form final assistant text (`auto_exit` / headless `legacy` / generic `completed`) is **diagnostic only** for ready matrix-gated plans and never advances the phase. The gate emits `free_form_only`, `auto_exit_incomplete`, `process_exit_incomplete`, or `missing_sidecar_incomplete` rejection codes so the diagnostics are visible. Note the deliberate asymmetry at **finalization**: the historical `auto_exit_incomplete` / `process_exit_incomplete` / `missing_sidecar_incomplete` codes become waivable there — but only when the final note/evidence explicitly names each observed issue (issue-specific disclosure tokens; generic words like "issue"/"risk" do not satisfy disclosure). Phase advancement itself is never waivable.
 - Source-string / static-only / prompt-only evidence is not sufficient for `runtime-behavior` / `behavior-test` matrix rows; only runnable supporting commands that actually passed count. Failed/retry/auto-exit delegate history is preserved in the `delegateHistory` block and surfaced in the handoff / pre-review summary.
 - Tiny / admin / debug lightweight exceptions remain available only for non-matrix-gated plans; a ready matrix-gated plan always refuses the lightweight bypass (`lightweight_bypass_refused`).
 
@@ -681,7 +681,7 @@ Slash command:
 ```
 
 - `--lane full-sprint` runs the existing implementation gate
-  (`gateSprintEntryPoint(...,'implementation')`); the run is **not**
+  (`evaluatePlanningGate(...,'implementation')`); the run is **not**
   created if the gate denies.
 - `--lane hotfix` requires `--hotfix-kind` and `--scope`; default
   reviewer-required state is enforced by Phase A contracts.

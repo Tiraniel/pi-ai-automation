@@ -52,13 +52,7 @@ export type RequiredEvidenceKind =
 	| "manual-validation"
 	| "reviewer-approval";
 
-export type ReviewerRole =
-	| "implementation"
-	| "evidence-test"
-	| "behavior"
-	| "regression"
-	| "maintainability"
-	| "docs-config";
+export type { ReviewerRole } from "../reviewer-protocol";
 
 export interface RequiredEvidenceItem {
 	kind: RequiredEvidenceKind;

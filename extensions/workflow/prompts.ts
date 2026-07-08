@@ -1,3 +1,4 @@
+import { REVIEWER_ROLE_IDS, type ReviewerRole } from "./reviewer-protocol";
 import type { AgentName, AgentPreset, SemanticNavigationConfig } from "./types";
 
 export const BRAIN_INSTRUCTIONS = `You are Brain in a three-agent Pi workflow: brain -> coder -> reviewer.
@@ -13,7 +14,7 @@ Default development cycle:
 2. For non-trivial requests, begin with PRD/Product Requirements intake before sprint/task creation or implementation. Run a Product Requirements agent session to produce and maintain a PRD draft with decisions and open questions. Record that state with \`workflow_planning_state\` (and \`workflow_planning_artifacts\` for \`PRD.md\` / \`memo.md\`) under \`.pi/workflow-runs/<planning-room>/\`, then synthesize options/risks from the room transcript before proceeding. If task markers/config/user request deep planning, run planning-only deep-planning first with \`workflow_deep_plan\` (pass \`force:true\` if config default is disabled), then synthesize options/risks from the room transcript before proceeding.
 3. Only after explicit user confirmation, create the sprint/task. Implementation/delegation to coder requires a separate explicit confirmation after PRD/sprint/architecture readiness.
 4. Send coder a self-contained implementation task with relevant files, constraints, expected checks, and the concrete Brain-authored block plan from step 2.
-5. Send reviewer a self-contained review task after coder finishes. Prefer delegate_to_reviewer goals that map to acceptance criteria (one goal per target review).
+5. Send reviewer a self-contained review task after coder finishes. For matrix-gated ready plans the reviewer swarm derives required role targets from the acceptance/evidence matrix automatically; any \`goals\` you pass are supplemental context for those roles, never replacements. For legacy/no-matrix plans, prefer goals that map to acceptance criteria (one goal per target review).
 6. Finish with a concise summary of changes, tests/checks, and remaining risks.
 
 PRD-first planning rules:
@@ -234,11 +235,18 @@ For multi-step tasks, state a brief plan:
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 `;
 
-export const DEFAULT_REVIEWER_SWARM_TARGETS = [
-	"Behavior reviewer — changed-code acceptance behavior",
-	"Evidence/test-adequacy reviewer — validation evidence for implementation",
-	"Implementation reviewer — implementation correctness",
-	"Maintainability/architecture reviewer — coupling, boundaries, and patterns",
-	"Regression reviewer — regressions introduced by the change",
-	"Docs/config reviewer — when README, docs/, examples/, or workflow config is in scope",
-];
+/**
+ * Legacy-mode reviewer targets, derived from the canonical reviewer-role set
+ * so the two mode's reviewer vocabularies cannot drift apart: one entry per
+ * `REVIEWER_ROLE_IDS` role, in role order.
+ */
+const REVIEWER_ROLE_TARGET_TEXT: Record<ReviewerRole, string> = {
+	behavior: "Behavior reviewer — changed-code acceptance behavior",
+	"evidence-test": "Evidence/test-adequacy reviewer — validation evidence for implementation",
+	implementation: "Implementation reviewer — implementation correctness",
+	maintainability: "Maintainability/architecture reviewer — coupling, boundaries, and patterns",
+	regression: "Regression reviewer — regressions introduced by the change",
+	"docs-config": "Docs/config reviewer — when README, docs/, examples/, or workflow config is in scope",
+};
+
+export const DEFAULT_REVIEWER_SWARM_TARGETS = REVIEWER_ROLE_IDS.map((role) => REVIEWER_ROLE_TARGET_TEXT[role]);

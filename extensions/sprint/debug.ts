@@ -22,9 +22,10 @@ import {
 	type DebugEscalationInput,
 	type DebugEscalationResult,
 	type DebugEscalationRules,
+	type DebugItemStatus,
 } from "./debug-escalation";
 
-export type DebugItemStatus = "open" | "done" | "promoted";
+export type { DebugItemStatus };
 
 export type DebugItem = {
 	id: string;

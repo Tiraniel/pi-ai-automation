@@ -1,3 +1,5 @@
+import type { ReviewerVerdict } from "./reviewer-protocol";
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 /** Closed set of v1 thinking levels. Mirrors `ThinkingLevel`; exported as a
  *  readonly tuple so v2 normalizers can check membership without repeating
@@ -234,7 +236,7 @@ export interface DelegateRunResult {
 
 export interface ReviewerTargetResult {
 	target: string;
-	verdict: "APPROVED" | "CHANGES_REQUESTED" | "UNKNOWN";
+	verdict: ReviewerVerdict;
 	status: "running" | "completed" | "failed" | "aborted";
 	result?: DelegateRunResult;
 	// TASK-004 Phase A: role-based quality review metadata. All fields are

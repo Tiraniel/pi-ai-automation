@@ -391,7 +391,7 @@ function testSourceChecks(): void {
 	const sprint = readSource("extensions/sprint/tools.ts");
 	const sprintBodies = toolBodies(sprint);
 	function bodyHas(body: string, name: string, planningRoomId = true, gate = true): boolean {
-		return body.includes(`name: "${name}"`) && (!planningRoomId || body.includes("planningRoomId")) && (!gate || body.includes("gateSprintEntryPoint"));
+		return body.includes(`name: "${name}"`) && (!planningRoomId || body.includes("planningRoomId")) && (!gate || body.includes("evaluatePlanningGate"));
 	}
 	const sprintCreate = sprintBodies.get("sprint_create") ?? "";
 	const sprintCreateTask = sprintBodies.get("sprint_create_task") ?? "";
@@ -401,16 +401,16 @@ function testSourceChecks(): void {
 	const sprintDebugAddIdx = sprintDebug.indexOf('actionLower === "add"');
 	const sprintDebugNoteIdx = sprintDebug.indexOf('actionLower === "note"');
 	const sprintDebugDoneIdx = sprintDebug.indexOf('actionLower === "done"');
-	const sprintDebugGateIdx = sprintDebug.indexOf("gateSprintEntryPoint");
+	const sprintDebugGateIdx = sprintDebug.indexOf("evaluatePlanningGate");
 	const sprintDebugPromoteIdx = sprintDebug.indexOf("promoteDebugItem");
 	checkAll("3b", [
-		[/import\s+\{[^}]*\bgateSprintEntryPoint\b[^}]*\}\s+from\s+["']\.\/planning-gate["']/.test(sprint),
-			"sprint/tools.ts imports gateSprintEntryPoint"],
-		[bodyHas(sprintCreate, "sprint_create"), "sprint_create body has planningRoomId and gateSprintEntryPoint"],
-		[bodyHas(sprintCreateTask, "sprint_create_task"), "sprint_create_task body has planningRoomId and gateSprintEntryPoint"],
-		[bodyHas(sprintCreateEpic, "sprint_create_epic"), "sprint_create_epic body has planningRoomId and gateSprintEntryPoint"],
-		[bodyHas(sprintStartSession, "sprint_start_task_session"), "sprint_start_task_session body has planningRoomId and gateSprintEntryPoint"],
-		[bodyHas(sprintDebug, "sprint_debug"), "sprint_debug body has planningRoomId and gateSprintEntryPoint"],
+		[/import\s+\{[^}]*\bevaluatePlanningGate\b[^}]*\}\s+from\s+["']\.\.\/workflow\/planning-gate-runtime["']/.test(sprint),
+			"sprint/tools.ts imports evaluatePlanningGate"],
+		[bodyHas(sprintCreate, "sprint_create"), "sprint_create body has planningRoomId and evaluatePlanningGate"],
+		[bodyHas(sprintCreateTask, "sprint_create_task"), "sprint_create_task body has planningRoomId and evaluatePlanningGate"],
+		[bodyHas(sprintCreateEpic, "sprint_create_epic"), "sprint_create_epic body has planningRoomId and evaluatePlanningGate"],
+		[bodyHas(sprintStartSession, "sprint_start_task_session"), "sprint_start_task_session body has planningRoomId and evaluatePlanningGate"],
+		[bodyHas(sprintDebug, "sprint_debug"), "sprint_debug body has planningRoomId and evaluatePlanningGate"],
 		[/actionLower === "add"/.test(sprintDebug), "sprint_debug body has add branch"],
 		[/actionLower === "note"/.test(sprintDebug), "sprint_debug body has note branch"],
 		[/actionLower === "done"/.test(sprintDebug), "sprint_debug body has done branch"],
@@ -420,33 +420,33 @@ function testSourceChecks(): void {
 		[sprintDebugAddIdx >= 0 && sprintDebugNoteIdx >= 0 && sprintDebugDoneIdx >= 0 && sprintDebugGateIdx >= 0,
 			"sprint_debug exposes add, note, done branches and gate entry point"],
 		[sprintDebugAddIdx < sprintDebugNoteIdx && sprintDebugNoteIdx < sprintDebugDoneIdx && sprintDebugDoneIdx < sprintDebugGateIdx,
-			"sprint_debug add/note/done branches appear before gateSprintEntryPoint"],
+			"sprint_debug add/note/done branches appear before evaluatePlanningGate"],
 		[sprintDebugGateIdx < sprintDebugPromoteIdx && sprintDebugPromoteIdx >= 0,
-			"sprint_debug gateSprintEntryPoint executes before promoteDebugItem"],
+			"sprint_debug evaluatePlanningGate executes before promoteDebugItem"],
 	]);
 
 	const command = readSource("extensions/sprint/command.ts");
-	const commandGateCount = (command.match(/gateSprintEntryPoint\(ctx\.cwd, undefined, "sprint"\)/g) ?? []).length;
-	const cmdNewGate = /if\s*\(\s*sub === "new"[\s\S]{0,260}?gateSprintEntryPoint\(ctx\.cwd, undefined, "sprint"\)/.test(command);
-	const cmdTaskAddGate = /if\s*\(\s*sub === "task"\s*&&\s*args\[1\]\s*===\s*"add"[\s\S]{0,260}?gateSprintEntryPoint\(ctx\.cwd, undefined, "sprint"\)/.test(command);
+	const commandGateCount = (command.match(/evaluatePlanningGate\(ctx\.cwd, undefined, "sprint"\)/g) ?? []).length;
+	const cmdNewGate = /if\s*\(\s*sub === "new"[\s\S]{0,260}?evaluatePlanningGate\(ctx\.cwd, undefined, "sprint"\)/.test(command);
+	const cmdTaskAddGate = /if\s*\(\s*sub === "task"\s*&&\s*args\[1\]\s*===\s*"add"[\s\S]{0,260}?evaluatePlanningGate\(ctx\.cwd, undefined, "sprint"\)/.test(command);
 	const taskStartBranchIdx = command.indexOf('if (sub === "task" && args[1] === "start")');
 	const cmdTaskStartGate = taskStartBranchIdx >= 0
-		&& command.indexOf('const gate = gateSprintEntryPoint(ctx.cwd, undefined, "sprint");', taskStartBranchIdx) >= 0;
-	const cmdEpicAddGate = /if\s*\(\s*sub === "epic"\s*&&\s*args\[1\]\s*===\s*"add"[\s\S]{0,220}?gateSprintEntryPoint\(ctx\.cwd, undefined, "sprint"\)/.test(command);
-	const cmdDebugPromoteGate = /if\s*\(\s*action === "promote"[\s\S]{0,260}?gateSprintEntryPoint\(ctx\.cwd, undefined, "sprint"\)/.test(command);
+		&& command.indexOf('const gate = evaluatePlanningGate(ctx.cwd, undefined, "sprint");', taskStartBranchIdx) >= 0;
+	const cmdEpicAddGate = /if\s*\(\s*sub === "epic"\s*&&\s*args\[1\]\s*===\s*"add"[\s\S]{0,220}?evaluatePlanningGate\(ctx\.cwd, undefined, "sprint"\)/.test(command);
+	const cmdDebugPromoteGate = /if\s*\(\s*action === "promote"[\s\S]{0,260}?evaluatePlanningGate\(ctx\.cwd, undefined, "sprint"\)/.test(command);
 	const cmdDebugAddIdx = command.indexOf('action === "add"');
 	const cmdDebugNoteIdx = command.indexOf('action === "note"');
 	const cmdDebugDoneIdx = command.indexOf('action === "done"');
 	const cmdDebugPromoteIdx = command.indexOf('action === "promote"');
 	checkAll("3c", [
-		[/import\s+\{[^}]*\bgateSprintEntryPoint\b[^}]*\}\s+from\s+["']\.\/planning-gate["']/.test(command),
-			"command.ts imports gateSprintEntryPoint"],
-		[commandGateCount === 5, "command.ts gates non-trivial slash branches with gateSprintEntryPoint"],
-		[cmdNewGate, "/sprint new is wrapped with gateSprintEntryPoint"],
-		[cmdTaskAddGate, "/sprint task add is wrapped with gateSprintEntryPoint"],
-		[cmdTaskStartGate, "/sprint task start is wrapped with gateSprintEntryPoint"],
-		[cmdEpicAddGate, "/sprint epic add is wrapped with gateSprintEntryPoint"],
-		[cmdDebugPromoteGate, "/sprint debug promote is wrapped with gateSprintEntryPoint"],
+		[/import\s+\{[^}]*\bevaluatePlanningGate\b[^}]*\}\s+from\s+["']\.\.\/workflow\/planning-gate-runtime["']/.test(command),
+			"command.ts imports evaluatePlanningGate"],
+		[commandGateCount === 5, "command.ts gates non-trivial slash branches with evaluatePlanningGate"],
+		[cmdNewGate, "/sprint new is wrapped with evaluatePlanningGate"],
+		[cmdTaskAddGate, "/sprint task add is wrapped with evaluatePlanningGate"],
+		[cmdTaskStartGate, "/sprint task start is wrapped with evaluatePlanningGate"],
+		[cmdEpicAddGate, "/sprint epic add is wrapped with evaluatePlanningGate"],
+		[cmdDebugPromoteGate, "/sprint debug promote is wrapped with evaluatePlanningGate"],
 		[cmdDebugAddIdx >= 0 && cmdDebugNoteIdx >= 0 && cmdDebugDoneIdx >= 0 && cmdDebugPromoteIdx >= 0,
 			"command.ts keeps debug action branches order"],
 		[cmdDebugAddIdx < cmdDebugNoteIdx && cmdDebugNoteIdx < cmdDebugDoneIdx && cmdDebugDoneIdx < cmdDebugPromoteIdx,
@@ -455,8 +455,8 @@ function testSourceChecks(): void {
 
 	const hook = readSource("extensions/sprint/hooks.ts");
 	checkAll("3d", [
-		[/import\s+\{[^}]*\bgateSprintEntryPoint\b[^}]*\}\s+from\s+["']\.\/planning-gate["']/.test(hook),
-			"hooks.ts imports gateSprintEntryPoint from ./planning-gate"],
+		[/import\s+\{[^}]*\bevaluatePlanningGate\b[^}]*\}\s+from\s+["']\.\.\/workflow\/planning-gate-runtime["']/.test(hook),
+			"hooks.ts imports evaluatePlanningGate from ./planning-gate"],
 		[/if\s*\(mode === "always"[\s\S]{0,260}?blockedSprintAutoCreateMessage\(ctx, "via auto-create"\)/.test(hook),
 			"hooks.ts blocks always-mode auto-create when planning gate fails"],
 		[/const gateMessage = blockedSprintAutoCreateMessage\(ctx, "via user-confirmed bootstrap"\);[\s\S]{0,220}if \(gateMessage\)/.test(hook),
@@ -468,16 +468,16 @@ function testSourceChecks(): void {
 	const delegate = readSource("extensions/workflow/delegate/tools.ts");
 	checkAll("3e", [
 		[/planningRoomId/.test(delegate), "delegate/tools.ts references planningRoomId"],
-		[/import\s+\{[^}]*\bbuildGateErrorDetails\b[^}]*\bformatGateErrorText\b[^}]*\}\s+from\s+["']\.\.\/planning-gate-runtime["']/.test(delegate),
-			"delegate/tools.ts imports buildGateErrorDetails and formatGateErrorText from ../planning-gate-runtime"],
+		[/import\s+\{[^}]*\bevaluatePlanningGate\b[^}]*\}\s+from\s+["']\.\.\/planning-gate-runtime["']/.test(delegate),
+			"delegate/tools.ts imports evaluatePlanningGate from ../planning-gate-runtime"],
 		[/if\s*\(\s*agent\s*===\s*"coder"\s*\)/.test(delegate), "delegate/tools.ts has explicit `if (agent === \"coder\")` branch"],
 		[/delegate_to_coder/.test(delegate), "delegate/tools.ts registers delegate_to_coder tool"],
 		[/delegate_to_reviewer/.test(delegate), "delegate/tools.ts registers delegate_to_reviewer tool"],
 		[/agent\s*===\s*"reviewer"/.test(delegate), "delegate/tools.ts retains a separately-handled reviewer branch"],
 		[/if\s*\(\s*agent\s*===\s*"reviewer"\s*\)[\s\S]{0,400}planningGate/.test(delegate) === false,
 			"reviewer branch does NOT contain a generic planningGate guard"],
-		[/if\s*\(\s*agent\s*===\s*"coder"[\s\S]{0,400}buildGateErrorDetails[\s\S]{0,200}implementation/.test(delegate),
-			"coder branch calls buildGateErrorDetails with gate='implementation'"],
+		[/if\s*\(\s*agent\s*===\s*"coder"[\s\S]{0,400}evaluatePlanningGate[\s\S]{0,200}implementation/.test(delegate),
+			"coder branch calls evaluatePlanningGate with gate='implementation'"],
 	]);
 }
 

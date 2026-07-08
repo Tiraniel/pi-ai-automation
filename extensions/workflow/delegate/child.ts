@@ -117,7 +117,12 @@ export async function removeTempPrompt(dir: string | null, filePath: string | nu
 
 export function buildAgentSystemPrompt(agent: AgentName, preset: AgentPreset, roomContext?: ResolvedRoomContext, paneMode?: boolean): string {
 	const configured = preset.instructions?.trim() ?? "";
-	const includeKarpathyGuidelines = agent === "coder" ? preset.includeKarpathyGuidelines !== false : false;
+	// Coder includes the guidelines unless explicitly disabled; other agents
+	// include them only when the preset explicitly opts in (the config field
+	// exists per agent — silently ignoring it would be a config-contract lie).
+	const includeKarpathyGuidelines = agent === "coder"
+		? preset.includeKarpathyGuidelines !== false
+		: preset.includeKarpathyGuidelines === true;
 	const footer = `You are running as ${agent} in the Pi brain -> coder -> reviewer workflow.
 Work only in the current working directory. Follow all project context files loaded by Pi.
 Return concise handoff output for Brain.`;

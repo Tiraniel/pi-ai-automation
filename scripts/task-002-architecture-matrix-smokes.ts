@@ -18,6 +18,7 @@ import {
 } from "../extensions/workflow/architecture/store";
 import { validateEvidenceMatrix } from "../extensions/workflow/architecture/evidence-matrix";
 import { registerArchitectureTools } from "../extensions/workflow/architecture/tools";
+import { createFakeContext, createFakePi } from "../tests/fake-pi";
 import type {
 	AcceptanceEvidenceMatrixEntry,
 	PhaseGateStatus,
@@ -246,25 +247,67 @@ async function main(): Promise<void> {
 			check(reviewerContext.includes("Reviewer must verify each required-evidence item and reviewer-role coverage listed above; do not approve the phase if any entry lacks evidence or role coverage."), "reviewer context includes per-matrix evidence/role coverage summary");
 		}
 
-		// 12. Tool source includes acceptanceEvidenceMatrix in record/update schemas.
+		// 12. Registered tool schemas + execute paths carry acceptanceEvidenceMatrix.
+		//     Behavioral: schemas are asserted as data on the registered declarations,
+		//     and the record/update execute handlers are driven directly — the matrix
+		//     must round-trip to the on-disk plan record. No source-text greps.
 		{
-			const toolsSource = fs.readFileSync(path.join(process.cwd(), "extensions/workflow/architecture/tools.ts"), "utf-8");
-			function sectionFor(toolName: string): string {
-				const start = toolsSource.indexOf(`name: "${toolName}"`);
-				if (start < 0) return "";
-				const next = toolsSource.indexOf("pi.registerTool({", start + 1);
-				return toolsSource.slice(start, next > 0 ? next : toolsSource.length);
-			}
-			const recordSection = sectionFor("workflow_record_architecture_plan");
-			const updateSection = sectionFor("workflow_update_architecture_plan");
-			check(recordSection.length > 0, "workflow_record_architecture_plan tool section located in tools.ts");
-			check(updateSection.length > 0, "workflow_update_architecture_plan tool section located in tools.ts");
-			check(recordSection.includes("acceptanceEvidenceMatrix"), "workflow_record_architecture_plan TypeBox schema includes acceptanceEvidenceMatrix");
-			check(updateSection.includes("acceptanceEvidenceMatrix"), "workflow_update_architecture_plan TypeBox schema includes acceptanceEvidenceMatrix");
-			check(recordSection.includes("acceptanceEvidenceMatrix: acceptanceEvidenceMatrixParameters"), "workflow_record_architecture_plan schema references shared matrix parameters");
-			check(updateSection.includes("acceptanceEvidenceMatrix: acceptanceEvidenceMatrixParameters"), "workflow_update_architecture_plan schema references shared matrix parameters");
-			check(recordSection.includes("acceptanceEvidenceMatrix: (params as any).acceptanceEvidenceMatrix"), "record tool execute path forwards acceptanceEvidenceMatrix to createArchitecturePlanRecord");
-			check(updateSection.includes("patch.acceptanceEvidenceMatrix = (params as any).acceptanceEvidenceMatrix"), "update tool execute path forwards acceptanceEvidenceMatrix to updatePlanRecord");
+			const { pi: fakePi, tools: registeredTools } = createFakePi();
+			registerArchitectureTools(fakePi);
+			const recordTool = registeredTools.get("workflow_record_architecture_plan");
+			const updateTool = registeredTools.get("workflow_update_architecture_plan");
+			check(!!recordTool, "workflow_record_architecture_plan is registered");
+			check(!!updateTool, "workflow_update_architecture_plan is registered");
+			check(!!recordTool?.parameters?.properties?.acceptanceEvidenceMatrix, "record tool schema includes acceptanceEvidenceMatrix");
+			check(!!updateTool?.parameters?.properties?.acceptanceEvidenceMatrix, "update tool schema includes acceptanceEvidenceMatrix");
+			check(
+				JSON.stringify(recordTool?.parameters?.properties?.acceptanceEvidenceMatrix) === JSON.stringify(updateTool?.parameters?.properties?.acceptanceEvidenceMatrix),
+				"record and update tools share the same matrix parameters schema",
+			);
+
+			const toolMatrix: AcceptanceEvidenceMatrixEntry[] = [
+				makeEntry({ criterion: "criterion alpha", criterionKind: "runtime-behavior", businessRiskIfWrong: "alpha path may regress",
+					enforcementLevel: ["behavior-test"], requiredEvidence: [{ kind: "behavior-test", description: "alpha behavior test" }],
+					reviewerRoles: ["behavior"], blockingConditions: ["alpha test fails"] }),
+				makeEntry({ criterion: "criterion beta", criterionKind: "runtime-behavior", businessRiskIfWrong: "beta path may regress",
+					enforcementLevel: ["behavior-test"], requiredEvidence: [{ kind: "behavior-test", description: "beta behavior test" }],
+					reviewerRoles: ["behavior"], blockingConditions: ["beta test fails"] }),
+			];
+			const ctx = createFakeContext(tmpDir);
+			const recordResult = await recordTool!.execute(
+				"tool-roundtrip-record",
+				{ planId: "tool-roundtrip", status: "ready", ...baseInput, acceptanceEvidenceMatrix: toolMatrix },
+				undefined,
+				undefined,
+				ctx,
+			);
+			check(!recordResult?.isError, "record tool execute succeeds with a valid matrix");
+			const planFile = path.join(tmpDir, ".pi", "workflow-architecture", "plans", "tool-roundtrip.json");
+			const recordedPlan = JSON.parse(fs.readFileSync(planFile, "utf-8"));
+			check(
+				Array.isArray(recordedPlan.acceptanceEvidenceMatrix) && recordedPlan.acceptanceEvidenceMatrix.length === 2,
+				"record tool execute persists acceptanceEvidenceMatrix to the plan record",
+			);
+			check(recordedPlan.acceptanceEvidenceMatrix?.[0]?.criterion === "criterion alpha", "persisted matrix entry round-trips the criterion");
+
+			const patchedMatrix = [
+				{ ...toolMatrix[0], blockingConditions: ["alpha test fails", "alpha updated blocker"] },
+				toolMatrix[1],
+			];
+			const updateResult = await updateTool!.execute(
+				"tool-roundtrip-update",
+				{ planId: "tool-roundtrip", acceptanceEvidenceMatrix: patchedMatrix },
+				undefined,
+				undefined,
+				ctx,
+			);
+			check(!updateResult?.isError, "update tool execute accepts a matrix patch");
+			const updatedPlan = JSON.parse(fs.readFileSync(planFile, "utf-8"));
+			check(
+				Array.isArray(updatedPlan.acceptanceEvidenceMatrix?.[0]?.blockingConditions)
+					&& updatedPlan.acceptanceEvidenceMatrix[0].blockingConditions.includes("alpha updated blocker"),
+				"update tool execute persists the patched matrix to the plan record",
+			);
 		}
 
 		// 13. Registered TypeBox schemas: matrix entry must not require a top-level
@@ -272,11 +315,10 @@ async function main(): Promise<void> {
 		//     string was placed inside the properties map (making description a
 		//     required non-schema field on every matrix entry).
 		{
-			const registered: any[] = [];
-			const fakePi = { registerTool: (def: any) => { registered.push(def); } };
-			registerArchitectureTools(fakePi as any);
-			const recordTool = registered.find((t) => t.name === "workflow_record_architecture_plan");
-			const updateTool = registered.find((t) => t.name === "workflow_update_architecture_plan");
+			const { pi: fakePi, tools: registeredTools } = createFakePi();
+			registerArchitectureTools(fakePi);
+			const recordTool = registeredTools.get("workflow_record_architecture_plan");
+			const updateTool = registeredTools.get("workflow_update_architecture_plan");
 			check(!!recordTool, "record tool registered for TypeBox schema inspection");
 			check(!!updateTool, "update tool registered for TypeBox schema inspection");
 			function getMatrixItemsSchema(tool: any): any {

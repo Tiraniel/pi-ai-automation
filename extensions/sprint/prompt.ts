@@ -11,6 +11,7 @@
 // task's parallel/room/agent/contract hints directly in the prompt.
 
 import { formatBrainMarkersForPrompt, type BrainMarkers } from "./markers";
+import type { AutomationLane, HotfixKind } from "./lane-policy";
 import type { SessionBinding, SprintCurrent } from "./types";
 
 function markersBlock(markers: BrainMarkers | null | undefined): string {
@@ -85,8 +86,8 @@ export function debugLaneGuidanceText(): string {
 
 export interface AfkShipKickoffInput {
 	runId: string;
-	lane: "full-sprint" | "hotfix" | "debug";
-	hotfixKind?: "code-changing" | "text-evidence-only";
+	lane: AutomationLane;
+	hotfixKind?: HotfixKind;
 	taskId?: string;
 	retryBudget: number;
 	reportPath: string;

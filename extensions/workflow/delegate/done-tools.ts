@@ -12,6 +12,7 @@
 // legacy alias kept for backward compatibility with older prompts.
 
 import * as fs from "node:fs";
+import { writeFileAtomicSync } from "../fs-atomic";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -299,7 +300,9 @@ function makeDoneToolExecute(toolName: string) {
 				exit_code: 0,
 			};
 			if (coderEvidence !== undefined) data.coderEvidence = coderEvidence;
-			fs.writeFileSync(doneFile, JSON.stringify(data) + "\n", "utf8");
+			// Atomic: the parent polls this file; explicit completion must never
+			// be observed half-written.
+			writeFileAtomicSync(doneFile, JSON.stringify(data) + "\n");
 			const activityFile = process.env[DELEGATE_ACTIVITY_ENV_VAR];
 			if (activityFile) {
 				void writeActivitySidecar(activityFile, makeActivityPayload(runId, "done", summary || "completed"));

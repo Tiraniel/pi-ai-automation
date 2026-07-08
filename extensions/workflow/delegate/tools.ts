@@ -21,7 +21,7 @@ import {
 	markArchitecturePhaseUpdate,
 	resolveArchitectureContext,
 } from "./architecture-gate";
-import { buildGateErrorDetails, formatGateErrorText } from "../planning-gate-runtime";
+import { evaluatePlanningGate } from "../planning-gate-runtime";
 import { evaluateCoderPhaseAdvancement } from "./completion-evidence-gate";
 import {
 	formatDelegateProgressLine,
@@ -32,7 +32,8 @@ import {
 	truncateText,
 } from "./messages";
 import { runDelegateAgent } from "./runner";
-import { isMatrixGatedPlan, parseReviewerVerdict, resolveReviewerSwarmConfig, runReviewerSwarm } from "./swarm";
+import { parseReviewerVerdict } from "../reviewer-protocol";
+import { isMatrixGatedPlan, resolveReviewerSwarmConfig, runReviewerSwarm } from "./swarm";
 import { buildReviewerToolResult } from "./reviewer-memo-file";
 import { makeDelegateGuardFailure, resolveDelegatePresetWithFallback } from "./model-guard";
 import type { PaneManifest } from "./pane-status";
@@ -180,7 +181,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 		promptGuidelines: [
 			`Use ${toolName} when Brain needs ${role} in the brain -> coder -> reviewer workflow.`,
 			`Tasks passed to ${toolName} must be self-contained: include goal, relevant files/context, constraints, and expected output.`,
-			...(agent === "reviewer" ? ["Pass explicit reviewer goals whenever possible so each target reviews one implementation/behavior/test-evidence checkpoint. Do not use goals to request reviewer approval of Brain plans."] : []),
+			...(agent === "reviewer" ? ["For matrix-gated ready plans the swarm derives required role targets from the acceptance/evidence matrix; `goals` are supplemental context for those roles. For legacy/no-matrix plans, pass explicit reviewer goals so each target reviews one implementation/behavior/test-evidence checkpoint. Do not use goals to request reviewer approval of Brain plans."] : []),
 			`If this delegation fails or returns CHANGES_REQUESTED, do NOT take over code edits/fixes yourself. Re-delegate a focused fix to coder (or a room worker) and then re-review. Brain may do read-only diagnosis/planning/admin only, and direct edits are limited to tiny non-code/admin cases.`,
 		],
 		parameters: Type.Object({
@@ -338,12 +339,12 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 
 			// TASK-006 Phase B: gate `delegate_to_coder` on the PRD-first planning implementation flag (all four confirmations) AFTER architecture context resolves and BEFORE runDelegateAgent; reviewer is intentionally NOT gated.
 			if (agent === "coder") {
-				const planningGate = buildGateErrorDetails(ctx.cwd, (params as any).planningRoomId, "implementation", { allowTinyDebugBypass: false });
+				const planningGate = evaluatePlanningGate(ctx.cwd, (params as any).planningRoomId, "implementation", { allowTinyDebugBypass: false });
 				if (!planningGate.allowed) {
 					return {
 						isError: true,
-						content: [{ type: "text", text: formatGateErrorText(planningGate) }],
-						details: { agent, status: "failed", task, planningGate, reason: "implementation_planning_gate_blocked" },
+						content: [{ type: "text", text: planningGate.text }],
+						details: { agent, status: "failed", task, planningGate: planningGate.details, reason: "implementation_planning_gate_blocked" },
 					};
 				}
 			}
@@ -400,7 +401,9 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					const status = normalizeFinalStatus(result);
 					const finalOutput = getToolResultText(result);
 					const verdict = parseReviewerVerdict(finalOutput);
-					const phaseStatus = verdict === "CHANGES_REQUESTED" || status !== "completed" ? "changes_requested" : "review_approved";
+					// Fail-closed: only an explicit APPROVED from a completed run
+					// advances the phase; UNKNOWN is not approval.
+					const phaseStatus = verdict === "APPROVED" && status === "completed" ? "review_approved" : "changes_requested";
 					const reviewerUpdate = markArchitecturePhaseUpdate(
 						ctx.cwd,
 						architectureRequirement,
@@ -416,7 +419,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 						phase: architectureRequirement.phase,
 						architectureGatePlanUpdateError: reviewerUpdate,
 					};
-					const isReviewFailing = verdict === "CHANGES_REQUESTED" || status !== "completed";
+					const isReviewFailing = verdict !== "APPROVED" || status !== "completed" || Boolean(reviewerUpdate);
 					return {
 						content: [{ type: "text", text: `[reviewer] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}` }],
 						details,
@@ -483,10 +486,19 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 						`Delegation ${agent} returned ${status}`,
 						(ctx as any).sessionManager,
 					);
+			// A failed durable phase update is a hard error: reporting success
+			// while the plan stays un-advanced would desynchronize Brain's view
+			// from the on-disk phase state.
+			const phaseUpdateFailed = Boolean(coderUpdate);
 			return {
-				content: [{ type: "text", text: `[${agent}] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}` }],
+				content: [{
+					type: "text",
+					text: phaseUpdateFailed
+						? `[${agent}] ${status} but the durable phase update FAILED: ${coderUpdate}\n\n${finalOutput}`
+						: `[${agent}] ${status}${usageText ? ` (${usageText})` : ""}\n\n${finalOutput}`,
+				}],
 				details: { ...baseDetails, architectureGatePlanUpdateError: coderUpdate },
-				isError: failed,
+				isError: failed || phaseUpdateFailed,
 			};
 		},
 	});

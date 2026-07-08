@@ -110,11 +110,20 @@ function main(): void {
 			[!isExplicitStageConfirmation("approved", "sprint"), "isExplicitStageConfirmation rejects 'approved' for sprint"],
 			[!isExplicitStageConfirmation("approved", "implementation"), "isExplicitStageConfirmation rejects 'approved' for implementation"],
 		]);
+		// Fail-closed contract: a generic positive plus a casual stage keyword is
+		// a stage MENTION, not authorization. Only strong confirmation phrases
+		// ("confirm sprint creation", "authorize implementation", ...) are explicit.
 		const i = classifyPlanningApproval("approved — go ahead and start coding");
 		const s = classifyPlanningApproval("approved — plan the sprint");
+		const iStrong = classifyPlanningApproval("confirm implementation");
+		const sStrong = classifyPlanningApproval("authorize sprint creation");
 		checkAll("2", [
-			[i.explicitStageConfirmation === "implementation", "stage-keyword approval is explicit implementation confirmation"],
-			[s.explicitStageConfirmation === "sprint", "stage-keyword approval is explicit sprint confirmation"],
+			[i.mentionsStage, "'start coding' still registers as an implementation-stage mention"],
+			[i.explicitStageConfirmation === null, "generic positive + casual stage keyword is NOT explicit implementation confirmation"],
+			[s.mentionsStage, "'plan the sprint' still registers as a sprint-stage mention"],
+			[s.explicitStageConfirmation === null, "generic positive + casual stage keyword is NOT explicit sprint confirmation"],
+			[iStrong.explicitStageConfirmation === "implementation", "strong phrase 'confirm implementation' is explicit implementation confirmation"],
+			[sStrong.explicitStageConfirmation === "sprint", "strong phrase 'authorize sprint creation' is explicit sprint confirmation"],
 		]);
 		// Negation must suppress explicit stage confirmation even when stage keywords are present.
 		const n1 = classifyPlanningApproval("not approved — plan the sprint");

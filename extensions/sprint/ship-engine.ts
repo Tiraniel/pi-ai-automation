@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // TASK-011 Phase A — pure AFK ship supervisor stage-transition engine.
 import {
+	DEBUG_NEXT_LANE_LIST_TEXT,
 	defaultReviewerRequiredFor,
 	debugNextLaneAllowsImplementation,
 	isAutomationLane,
@@ -106,7 +107,7 @@ function handleDiagnose(state: ShipState, event: Extract<ShipEvent, { kind: "dia
 	}
 	if (!isDebugNextLane(event.recommendedNextLane)) {
 		return stopTransition(state, "blocked", "debug-implementation-without-selected-lane",
-			`diagnose event recommendedNextLane "${String(event.recommendedNextLane)}" is invalid; must be exactly "hotfix", "full-sprint", or "no-code/report-only".`);
+			`diagnose event recommendedNextLane "${String(event.recommendedNextLane)}" is invalid; must be exactly ${DEBUG_NEXT_LANE_LIST_TEXT}.`);
 	}
 	const diagnosis = event.diagnosis?.trim() ?? "";
 	if (!diagnosis) {
@@ -189,7 +190,7 @@ function handleImplementStarted(state: ShipState, _event: Extract<ShipEvent, { k
 	if (state.lane === "debug") {
 		if (state.selectedNextLane !== undefined && !isDebugNextLane(state.selectedNextLane)) {
 			return stopTransition(state, "blocked", "debug-implementation-without-selected-lane",
-				`selectedNextLane "${String(state.selectedNextLane)}" on state is invalid; must be exactly "hotfix", "full-sprint", or "no-code/report-only".`);
+				`selectedNextLane "${String(state.selectedNextLane)}" on state is invalid; must be exactly ${DEBUG_NEXT_LANE_LIST_TEXT}.`);
 		}
 		if (!state.selectedNextLane) {
 			return stopTransition(state, "blocked", "debug-implementation-without-selected-lane", "Debug lane cannot start implementation without a selected/promoted next lane.");
@@ -398,7 +399,7 @@ function handleFinalizationRecorded(state: ShipState, event: Extract<ShipEvent, 
 			blockers.push("Debug lane requires a non-empty diagnosis on the durable state before delivery_complete; finalization_recorded is rejected.");
 		}
 		if (!state.recommendedNextLane || !isDebugNextLane(state.recommendedNextLane)) {
-			blockers.push(`Debug lane requires recommendedNextLane to be exactly "hotfix", "full-sprint", or "no-code/report-only" before delivery_complete; current value is "${String(state.recommendedNextLane)}".`);
+			blockers.push(`Debug lane requires recommendedNextLane to be exactly ${DEBUG_NEXT_LANE_LIST_TEXT} before delivery_complete; current value is "${String(state.recommendedNextLane)}".`);
 		}
 	}
 	if (state.lane === "hotfix" && state.hotfixKind === "text-evidence-only" && !textEvidenceReadinessSatisfied(state)) {

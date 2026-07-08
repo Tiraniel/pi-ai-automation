@@ -9,6 +9,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
+	AUTOMATION_LANE_LIST_TEXT,
+	DEBUG_NEXT_LANE_LIST_TEXT,
 	debugNextLaneAllowsImplementation,
 	defaultReviewerRequiredFor as _defaultReviewerRequiredFor,
 	isAutomationLane,
@@ -197,17 +199,17 @@ export function createInitialShipState(input: CreateInitialShipStateInput): Ship
 	// propagate as an "invalid" durable state that later transitions cannot trust.
 	if (!isAutomationLane(input.lane)) {
 		throw new Error(
-			`createInitialShipState: invalid lane "${String(input.lane)}"; must be exactly "full-sprint", "hotfix", or "debug".`,
+			`createInitialShipState: invalid lane "${String(input.lane)}"; must be exactly ${AUTOMATION_LANE_LIST_TEXT}.`,
 		);
 	}
 	if (input.recommendedNextLane !== undefined && !isDebugNextLane(input.recommendedNextLane)) {
 		throw new Error(
-			`createInitialShipState: invalid recommendedNextLane "${String(input.recommendedNextLane)}"; must be exactly "hotfix", "full-sprint", or "no-code/report-only".`,
+			`createInitialShipState: invalid recommendedNextLane "${String(input.recommendedNextLane)}"; must be exactly ${DEBUG_NEXT_LANE_LIST_TEXT}.`,
 		);
 	}
 	if (input.selectedNextLane !== undefined && !isDebugNextLane(input.selectedNextLane)) {
 		throw new Error(
-			`createInitialShipState: invalid selectedNextLane "${String(input.selectedNextLane)}"; must be exactly "hotfix", "full-sprint", or "no-code/report-only".`,
+			`createInitialShipState: invalid selectedNextLane "${String(input.selectedNextLane)}"; must be exactly ${DEBUG_NEXT_LANE_LIST_TEXT}.`,
 		);
 	}
 	const permissions: ShipPermissions = { ...DEFAULT_SHIP_PERMISSIONS, ...(input.permissions ?? {}) };

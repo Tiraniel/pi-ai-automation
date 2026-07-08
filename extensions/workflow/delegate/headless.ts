@@ -28,7 +28,7 @@ import {
 	removeTempPrompt,
 	writeSystemPromptFile,
 } from "./child";
-import { MAX_STDERR_BYTES } from "./constants";
+import { DELEGATE_HEADLESS_MAX_WAIT_MS, MAX_STDERR_BYTES } from "./constants";
 import { createDelegateEventState, processEventLine } from "./state";
 
 export async function runAgentPresetHeadless(
@@ -71,6 +71,17 @@ export async function runAgentPresetHeadless(
 
 			let stdoutBuffer = "";
 			let killTimer: NodeJS.Timeout | undefined;
+			let timedOut = false;
+
+			// Wall-clock cap: without it a hung child (stuck tool, dead network)
+			// wedges the delegate tool forever and orphans the child on parent exit.
+			const maxWaitTimer = setTimeout(() => {
+				timedOut = true;
+				state.errorMessage = state.errorMessage ?? `headless delegate exceeded ${DELEGATE_HEADLESS_MAX_WAIT_MS}ms and was killed`;
+				state.stderr = appendCapped(state.stderr, `\n[delegate] headless run exceeded ${DELEGATE_HEADLESS_MAX_WAIT_MS}ms; killing child`, MAX_STDERR_BYTES);
+				proc.kill("SIGTERM");
+				killTimer = setTimeout(() => proc.kill("SIGKILL"), 5000);
+			}, DELEGATE_HEADLESS_MAX_WAIT_MS);
 
 			proc.stdout.on("data", (chunk) => {
 				stdoutBuffer += chunk.toString();
@@ -85,11 +96,15 @@ export async function runAgentPresetHeadless(
 
 			proc.on("close", (code) => {
 				if (killTimer) clearTimeout(killTimer);
+				clearTimeout(maxWaitTimer);
 				if (stdoutBuffer.trim()) processEventLine(state, stdoutBuffer, agent, task, cwd, preset, onUpdate);
-				resolve(code ?? 0);
+				// Signal-killed children close with code null; a timed-out run is
+				// a failure, not a completed run.
+				resolve(code ?? (timedOut ? 1 : 0));
 			});
 
 			proc.on("error", (error) => {
+				clearTimeout(maxWaitTimer);
 				state.stderr = appendCapped(state.stderr, String(error), MAX_STDERR_BYTES);
 				resolve(1);
 			});

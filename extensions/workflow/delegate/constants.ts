@@ -21,6 +21,8 @@ export const DELEGATE_RUN_ID_ENV_VAR = "PI_WORKFLOW_DELEGATE_RUN_ID";
 
 export const DELEGATE_PANE_POLL_MS = 600;
 export const DELEGATE_PANE_MAX_WAIT_MS = 600000;
+/** Wall-clock cap for a headless delegate child; a hung child must not wedge Brain forever. */
+export const DELEGATE_HEADLESS_MAX_WAIT_MS = 600000;
 export const DELEGATE_PANE_SHELL_READY_DELAY_MS = 500;
 export const DELEGATE_PANE_SHELL_READY_DELAY_ENV = "PI_WORKFLOW_PANE_SHELL_READY_DELAY_MS";
 export const DELEGATE_PANE_ACTIVITY_STALE_MS = 15000;

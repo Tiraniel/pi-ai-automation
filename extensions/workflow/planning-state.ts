@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { writePlanningCurrentRoomPointer } from "./planning-pointer";
+import { ROOM_DIR_NAME } from "./rooms/types";
 
 export const PLANNING_STATE_FILE_NAME = "planning-state.json";
 export const PLANNING_PRD_FILE_NAME = "PRD.md";
 export const PLANNING_MEMO_FILE_NAME = "memo.md";
 export const PLANNING_STATE_VERSION = 1;
-export const ROOM_DIR_NAME = "workflow-runs";
 export const PLANNING_ROOM_ID_PATTERN = /^[a-z0-9-]+$/;
 
 export const PLANNING_STATE_NAMES = ["prd_started", "prd_ready_for_sprint", "sprint_confirmed", "implementation_confirmed"] as const;
@@ -358,9 +358,11 @@ export function classifyPlanningApproval(text: string): PlanningApprovalClassifi
 		}
 		return null;
 	})();
-	let explicit: StageConfirmation | null = null;
-	if (strongStage) explicit = strongStage;
-	else if (!hasNegation && isGenericPositive && mentionedStages.length === 1) explicit = mentionedStages[0];
+	// Fail-closed: ONLY a strong confirmation phrase ("confirm sprint creation",
+	// "authorize implementation", …) counts as an explicit stage confirmation.
+	// "ok, go build it" / "yes, implement" are stage mentions, not authorization —
+	// the gate error text has always promised exactly this.
+	const explicit: StageConfirmation | null = strongStage;
 	return {
 		text, normalized, isGenericPositive, hasNegation, mentionsStage: matched.size > 0, mentionedStages,
 		explicitStageConfirmation: explicit,

@@ -118,8 +118,14 @@ export function getDelegateFailureReason(toolName: string, result: any): string 
 	if (toolName === "delegate_to_reviewer") {
 		if (details?.status === "failed" || details?.status === "aborted") return String(details.status);
 		if (Array.isArray(details?.swarm)) {
+			// Align with the swarm's own fail semantics: only required targets
+			// (role mode) — or legacy targets, which carry no `required` flag —
+			// can flip the result to failure. A non-required role's UNKNOWN must
+			// not override the tool's own verdict.
 			const failedItem = details.swarm.find(
-				(item: any) => item?.status !== "completed" || item?.verdict === "CHANGES_REQUESTED" || item?.verdict === "UNKNOWN",
+				(item: any) =>
+					item?.required !== false
+					&& (item?.status !== "completed" || item?.verdict === "CHANGES_REQUESTED" || item?.verdict === "UNKNOWN"),
 			);
 			if (failedItem) return `swarm:${failedItem.status ?? "failed"}:${failedItem.verdict ?? "UNKNOWN"}`;
 		}

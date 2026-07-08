@@ -7,7 +7,9 @@ import { resolveSprintPathForStore } from "./architecture/sprint-path";
 import { getPlanStoragePath, readArchitecturePlan } from "./architecture/store";
 import type { WorkflowArchitecturePlan } from "./architecture/types";
 import { DELEGATE_MANIFEST_DIR } from "./delegate/constants";
+import { buildReviewerMemoPath, readReviewerMemoFile, readReviewerMemoSidecar } from "./delegate/reviewer-memo-file";
 import type { ReviewerMemo } from "./delegate/reviewer-roles";
+import { getWorkflowRunsRoot } from "./rooms";
 import type { DelegateCompletionSource } from "./types";
 import { runAndPersistWorkflowQualityAudit } from "./quality-audit-tools";
 import { evaluateFinalizationGate, isFinalizationStatus, type FinalizationGateResult, type FinalizationMode } from "./finalization-gate";
@@ -71,35 +73,6 @@ function parseDoneSidecar(filePath: string): DoneSidecar | undefined {
 }
 
 
-const WORKFLOW_RUNS_DIR_NAME = "workflow-runs";
-const REVIEWER_MEMO_DIR_NAME = "reviewer-memos";
-const REVIEWER_MEMO_FILE_EXT = ".md";
-const FORBIDDEN_MEMO_PATH_CHARS = /[\\/:*?"<>|\s]+/g;
-function workflowRunsRoot(cwd: string): string {
-	return path.join(cwd, ".pi", WORKFLOW_RUNS_DIR_NAME);
-}
-function sanitizeReviewerMemoSegment(value: string | undefined | null, fallback: string): string {
-	if (typeof value !== "string") return fallback;
-	const trimmed = value.trim();
-	if (!trimmed) return fallback;
-	const sanitized = trimmed.replace(FORBIDDEN_MEMO_PATH_CHARS, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
-	return sanitized || fallback;
-}
-
-function buildReviewerMemoPath(cwd: string, planId: string | undefined, phase: string | undefined): string {
-	const root = workflowRunsRoot(cwd);
-	const safePlan = sanitizeReviewerMemoSegment(planId, "plan");
-	const safePhase = sanitizeReviewerMemoSegment(phase, "phase");
-	return path.join(root, REVIEWER_MEMO_DIR_NAME, `${safePlan}-${safePhase}${REVIEWER_MEMO_FILE_EXT}`);
-}
-
-function readReviewerMemoFile(filePath: string): string | undefined {
-	try {
-		return fs.readFileSync(filePath, "utf8");
-	} catch {
-		return undefined;
-	}
-}
 
 interface EvaluateSprintFinalizationInput {
 	cwd: string;
@@ -276,7 +249,11 @@ function readLatestReviewerMemo(cwd: string, planId: string | undefined, plan?: 
 	const firstPhase: ReviewPhase = phaseBStarted ? "phaseB" : "phaseA";
 	const readOrder: ReviewPhase[] = [firstPhase, firstPhase === "phaseB" ? "phaseA" : "phaseB"];
 	for (const phase of readOrder) {
-		const memoPath = buildReviewerMemoPath(cwd, planId, phase);
+		const memoPath = buildReviewerMemoPath(cwd, planId, phase).file;
+		// Prefer the structured sidecar written by the reviewer swarm — it is
+		// the same object the swarm scored, with no markdown re-parsing.
+		const structured = readReviewerMemoSidecar(memoPath);
+		if (structured) return structured;
 		const markdown = readReviewerMemoFile(memoPath);
 		if (!markdown) continue;
 		return parseReviewerMemoMarkdown(trimText(markdown), planId, phase);
@@ -299,7 +276,7 @@ function completionSourceFrom(manifest: PaneManifest, sidecar: DoneSidecar | und
 
 function readMatchingManifests(cwd: string, planId: string | undefined): ManifestRecord[] {
 	if (!planId) return [];
-	const root = workflowRunsRoot(cwd);
+	const root = getWorkflowRunsRoot(cwd);
 	const manifestDir = path.join(root, DELEGATE_MANIFEST_DIR);
 	let manifestFiles: string[] = [];
 	try {

@@ -1,36 +1,36 @@
 #!/usr/bin/env node
 // TASK-011 Phase A — three-lane automation policy (pure, no fs/tooling).
 // Owns lane vocabulary, hotfix kinds, debug next-lane enum, lane-risk codes, and evaluateLanePolicy(input) -> LaneDecision plus small accessors; isolated so other modules can import lane policy without pulling fs or runtime helpers.
-export type AutomationLane = "full-sprint" | "hotfix" | "debug";
-
-export const ALL_AUTOMATION_LANES: readonly AutomationLane[] = [
-	"full-sprint",
-	"hotfix",
-	"debug",
-];
+export const ALL_AUTOMATION_LANES = ["full-sprint", "hotfix", "debug"] as const;
+export type AutomationLane = (typeof ALL_AUTOMATION_LANES)[number];
 
 export function isAutomationLane(value: unknown): value is AutomationLane {
-	return value === "full-sprint" || value === "hotfix" || value === "debug";
+	return (ALL_AUTOMATION_LANES as readonly unknown[]).includes(value);
 }
 
-export type HotfixKind = "code-changing" | "text-evidence-only";
+export const ALL_HOTFIX_KINDS = ["code-changing", "text-evidence-only"] as const;
+export type HotfixKind = (typeof ALL_HOTFIX_KINDS)[number];
 
-export const ALL_HOTFIX_KINDS: readonly HotfixKind[] = [
-	"code-changing",
-	"text-evidence-only",
-];
+export function isHotfixKind(value: unknown): value is HotfixKind {
+	return (ALL_HOTFIX_KINDS as readonly unknown[]).includes(value);
+}
 
-export type DebugNextLane = "hotfix" | "full-sprint" | "no-code/report-only";
-
-export const ALL_DEBUG_NEXT_LANES: readonly DebugNextLane[] = [
-	"hotfix",
-	"full-sprint",
-	"no-code/report-only",
-];
+export const ALL_DEBUG_NEXT_LANES = ["hotfix", "full-sprint", "no-code/report-only"] as const;
+export type DebugNextLane = (typeof ALL_DEBUG_NEXT_LANES)[number];
 
 export function isDebugNextLane(value: unknown): value is DebugNextLane {
-	return value === "hotfix" || value === "full-sprint" || value === "no-code/report-only";
+	return (ALL_DEBUG_NEXT_LANES as readonly unknown[]).includes(value);
 }
+
+/** `"a", "b", or "c"` — the canonical way lane vocabularies appear in error text. */
+function oxfordOr(values: readonly string[]): string {
+	const quoted = values.map((value) => `"${value}"`);
+	if (quoted.length <= 1) return quoted[0] ?? "";
+	return `${quoted.slice(0, -1).join(", ")}, or ${quoted[quoted.length - 1]}`;
+}
+
+export const AUTOMATION_LANE_LIST_TEXT = oxfordOr(ALL_AUTOMATION_LANES);
+export const DEBUG_NEXT_LANE_LIST_TEXT = oxfordOr(ALL_DEBUG_NEXT_LANES);
 
 export type LaneStatus =
 	| "allow"
@@ -440,7 +440,7 @@ export function evaluateLanePolicy(input: LanePolicyInput): LaneDecision {
 	if (!isAutomationLane(input.lane)) {
 		decision.riskCodes.push("invalid-lane");
 		decision.blockers.push(
-			`Invalid lane "${String(input.lane)}"; must be exactly "full-sprint", "hotfix", or "debug".`,
+			`Invalid lane "${String(input.lane)}"; must be exactly ${AUTOMATION_LANE_LIST_TEXT}.`,
 		);
 		decision.status = "block";
 		decision.summary = `Invalid lane "${String(input.lane)}"; lane policy refuses to evaluate.`;

@@ -70,14 +70,18 @@ function hasPromptOnlyInCoderPacket(evidence: CoderCompletionEvidence | undefine
 		|| hasPromptOnlyInCriterionCoverageRows(evidence.criterionCoverage)
 	);
 }
+// Disclosure must name the issue, not merely brush against it: tokens are
+// issue-specific terms only. Generic words ("issue", "risk", "concern",
+// bare "sidecar") satisfied every disclosure by accident and turned the
+// waiver into a loophole around the provisional-completion block.
 const DISCLOSURE_ISSUE_TOKENS: Record<string, string[]> = {
 	auto_exit: ["auto exit", "auto_exit", "auto-exit"],
 	process_exit: ["process exit", "process_exit", "process-exit"],
-	missing_sidecar: ["missing sidecar", "sidecar", "done sidecar"],
+	missing_sidecar: ["missing sidecar", "missing a sidecar", "missing done sidecar", "missing_sidecar", "no done sidecar", "sidecar missing"],
 	free_form: ["free form", "freeform", "free-form"],
-	retries: ["retry", "retries", "retried", "rerun"],
-	warnings: ["warning", "concern", "risk", "issue"],
-	failed_attempt: ["failed", "failure", "failing"],
+	retries: ["retry", "retries", "retried"],
+	warnings: ["warning", "warnings"],
+	failed_attempt: ["failed", "failure"],
 };
 function containsAllDisclosures(text: string, issues: string[]): boolean {
 	if (issues.length === 0) return true;

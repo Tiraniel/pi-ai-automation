@@ -214,7 +214,16 @@ function readArchitecturePlanWithIssue(
 		throw error;
 	}
 
-	const parsed = filePath ? readJson<unknown>(filePath) : null;
+	let parsed: unknown = null;
+	try {
+		parsed = filePath ? readJson<unknown>(filePath) : null;
+	} catch (error) {
+		const maybeIssue = error as PlanStorageLookupError;
+		if (maybeIssue?.code && typeof maybeIssue.code === "string") {
+			return { plan: null, issue: { code: maybeIssue.code, message: `Architecture plan ${planId}: ${maybeIssue.message}` } };
+		}
+		throw error;
+	}
 	if (!parsed) {
 		return { plan: null, issue: { code: "plan_not_found", message: `No architecture plan found: ${planId}` } };
 	}
