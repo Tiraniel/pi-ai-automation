@@ -40,6 +40,7 @@ import {
 	readWorkflowCurrentRoomPointer,
 } from "./planning-pointer";
 import { evaluateSprintGateForCwd, evaluateImplementationGateForCwd } from "./planning-gate-runtime";
+import { listOpenBlockingQuestionsInFile, operatorQuestionsPathForRoom } from "./operator-questions";
 
 const STATE_NAMES = PLANNING_STATE_NAMES;
 
@@ -343,6 +344,19 @@ export function registerPlanningTools(pi: ExtensionAPI): void {
 						}
 					}
 					updates.push({ name, value, meta });
+				}
+				// WP1: prd_ready_for_sprint cannot be recorded while this planning
+				// room still has unanswered blocking operator questions.
+				if (updates.some((u) => u.name === "prd_ready_for_sprint" && u.value === true)) {
+					const openBlocking = listOpenBlockingQuestionsInFile(operatorQuestionsPathForRoom(cwd, resolved.roomId));
+					if (openBlocking.length > 0) {
+						const preview = openBlocking.slice(0, 5).map((q) => `${q.id}: ${q.question}`).join("; ");
+						return textResult(
+							`Refused to record prd_ready_for_sprint=true: room ${resolved.roomId} has ${openBlocking.length} unanswered blocking operator question(s) — ${preview}. Record the operator's answers via workflow_answer_question first.`,
+							true,
+							{ reason: "operator_question_pending", roomId: resolved.roomId, openBlockingQuestions: openBlocking },
+						);
+					}
 				}
 				try {
 					const next = updates.length === 1

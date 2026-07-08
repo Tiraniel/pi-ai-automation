@@ -298,6 +298,22 @@ function main(): void {
 			}
 		}
 
+		// (9b) Workflow runtime substrate written during the run
+		//      (.pi/workflow-runs/...: sidecars, manifests, operator questions)
+		//      is NOT part of the observed diff — no false mismatch.
+		{
+			const repo = makeGitRepo("task-030-substrate-");
+			cleanups.push(repo);
+			const verification = makeVerification(repo, () => {
+				fs.writeFileSync(path.join(repo, "src", "app.txt"), "declared change\n", "utf8");
+				fs.mkdirSync(path.join(repo, ".pi", "workflow-runs", "room-x"), { recursive: true });
+				fs.writeFileSync(path.join(repo, ".pi", "workflow-runs", "room-x", "questions.jsonl"), `{"id":"q1","question":"?"}\n`, "utf8");
+			});
+			const packet = makePacket(["src/app.txt"]);
+			const adv = evaluateCoderPhaseAdvancement(makePlan(), makeResult(packet, repo), {}, { verification });
+			check(adv.kind === "advance", `9b: .pi/workflow-runs substrate excluded from observed diff (got: ${adv.kind === "block" ? adv.reason : "advance"})`);
+		}
+
 		// (10) Non-matrix-gated draft plan: gate remains a no-op without verification.
 		{
 			const repo = makeGitRepo("task-030-draft-");

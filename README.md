@@ -456,6 +456,17 @@ On matrix-gated coder runs the gate no longer trusts the packet — it verifies 
 
 Smokes: `scripts/task-030-evidence-verification-smokes.ts` (real temporary git repos + real command re-runs).
 
+### Operator escalation channel (TASK-031 / WP1)
+
+Autonomous runs escalate blocking uncertainty to the human operator through a durable question queue instead of stalling on chat (`extensions/workflow/operator-questions.ts` owns the queue; `operator-question-tools.ts` owns the tools):
+
+- **Queue.** `.pi/workflow-runs/<room|run>/questions.jsonl`, append-only JSONL: every line is a self-contained record `{id, at, from, question, options?, recommendedDefault?, blocking, answeredAt?, answer?, answeredBy?}`; answering appends a new line with the same id (last parsable line wins). The reader tolerates — and the appender self-heals after — a torn tail line.
+- **Tools.** `workflow_ask_operator` records a question (default `blocking: true`; include `options` + `recommendedDefault`), `workflow_answer_question` records the operator's answer, `workflow_operator_questions` lists the queue. The scope room resolves from an explicit `roomId`, the active planning room, the active workflow room, then the shared `operator` room. Delegate children get ONLY the ask tool via env registration (`PI_WORKFLOW_QUESTIONS_FILE`, exported by `buildChildEnv` like the done-tools var) — a delegate can escalate but never answers its own questions. Blocking asks notify the parent UI; delegate-created questions are surfaced when the delegation returns.
+- **Gates (fail-closed).** An unanswered blocking question (a) blocks strict finalization — `evaluateSprintTaskFinalizationFromDisk` scans every queue under `.pi/workflow-runs/` and `evaluateFinalizationGate` reports `operator_question_pending`; (b) refuses `workflow_planning_state` recording `prd_ready_for_sprint=true` for that planning room; (c) stops the AFK ship engine with the dedicated `awaiting-operator` stop condition instead of `delivery_complete` (`sprint_ship` refreshes the run-dir queue onto durable state before every read/transition/report, and REPORT.md lists the open questions).
+- **Prompts.** The escalation wording is owned once (`OPERATOR_ESCALATION_RULE` in `extensions/workflow/prompts.ts`) and interpolated into `BRAIN_INSTRUCTIONS` and the default deep-planning planner instructions.
+
+Smokes: `scripts/task-031-operator-questions-smokes.ts` (fake-pi behavioral: queue round-trip, child registration, finalization/planning/ship gates, prompt surfaces).
+
 ### Existing delegation stays the same
 
 If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the child receives no `PI_WORKFLOW_ROOM_*` env vars and no communication block, so normal delegation behavior is unchanged. The room tools are still registered, but resolve nothing without a `roomId` and will return a clear error prompting the user to call `room_create` first.

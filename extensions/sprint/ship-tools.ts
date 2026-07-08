@@ -28,6 +28,7 @@ import {
 	readShipState,
 	shipReportPath,
 	shipReportPathRelative,
+	shipRunDir,
 	shipStatePath,
 	shipStatePathRelative,
 	shipStateExists,
@@ -39,6 +40,15 @@ import {
 import { renderShipReport } from "./ship-report";
 import { transitionShipState, type ShipEvent, type ShipTransition } from "./ship-engine";
 import { evaluatePlanningGate, planningGateErrorResult } from "../workflow/planning-gate-runtime";
+import { listOpenBlockingQuestionsInFile, OPERATOR_QUESTIONS_FILE_NAME } from "../workflow/operator-questions";
+
+/** WP1: pin the run dir's unanswered blocking operator questions onto the
+ *  state before the pure engine / report renderer consume it. */
+function withOpenOperatorQuestions(cwd: string, state: ShipState): ShipState {
+	const file = path.join(shipRunDir(cwd, state.runId), OPERATOR_QUESTIONS_FILE_NAME);
+	const open = listOpenBlockingQuestionsInFile(file).map((q) => ({ id: q.id, question: q.question, from: q.from }));
+	return { ...state, openOperatorQuestions: open };
+}
 
 function asString(value: unknown, fallback = ""): string {
 	return typeof value === "string" ? value.trim() : fallback;
@@ -314,7 +324,7 @@ export function registerSprintShipTools(pi: ExtensionAPI): void {
 				return errText(`AFK run not found: ${shipStatePathRelative(cwd, runId)}. Use action=start to create one.`);
 			}
 			if (action === "read") {
-				const state = readShipState(cwd, runId);
+				const state = withOpenOperatorQuestions(cwd, readShipState(cwd, runId));
 				const report = renderShipReport(state, { workspaceName: path.basename(cwd) });
 				return okText(`runId=${state.runId} stage=${state.stage} nextAction=${state.nextAction ?? "(unset)"} reportPath=${state.finalReportPath ?? ""}`, {
 					runId: state.runId,
@@ -324,7 +334,7 @@ export function registerSprintShipTools(pi: ExtensionAPI): void {
 				});
 			}
 			if (action === "report") {
-				const current = readShipState(cwd, runId);
+				const current = withOpenOperatorQuestions(cwd, readShipState(cwd, runId));
 				const after = writeShipReport(cwd, current, { render: (s) => renderShipReport(s, { workspaceName: path.basename(cwd) }) });
 				return okText(`REPORT.md re-rendered at ${after.finalReportPath}`, {
 					runId: after.runId,
@@ -342,7 +352,9 @@ export function registerSprintShipTools(pi: ExtensionAPI): void {
 			try {
 				// Read state, compute the transition, persist the new state, then re-render the report
 				// so the durable REPORT.md stays in sync with the durable state.
-				const current = readShipState(cwd, runId);
+				// WP1: the open operator-question snapshot is refreshed from the run
+				// dir first so finalization_recorded fail-closes on awaiting-operator.
+				const current = withOpenOperatorQuestions(cwd, readShipState(cwd, runId));
 				const transition: ShipTransition = transitionShipState(current, event);
 				const persisted = writeShipState(cwd, transition.state);
 				const withReport = writeShipReport(cwd, persisted, { render: (s) => renderShipReport(s, { workspaceName: path.basename(cwd) }) });

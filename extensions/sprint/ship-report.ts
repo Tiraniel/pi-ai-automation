@@ -101,6 +101,14 @@ function renderResidualRisks(state: ShipState): string {
 	return lines.join("\n");
 }
 
+function renderOpenOperatorQuestions(state: ShipState): string {
+	const open = state.openOperatorQuestions ?? [];
+	if (open.length === 0) return "- (none)";
+	return open
+		.map((q) => `- [OPEN blocking] ${q.id} (from ${q.from}): ${q.question} — answer via workflow_answer_question`)
+		.join("\n");
+}
+
 function renderFinalStatus(state: ShipState): string {
 	if (state.stage === "delivery_complete" && state.reviewerOutcome?.kind !== "changes-requested" && state.blockers.length === 0) {
 		return "Final status: DELIVERY COMPLETE";
@@ -165,6 +173,9 @@ export function renderShipReport(state: ShipState, options: ShipReportOptions = 
 	lines.push("");
 	lines.push("## Promotion / reason codes");
 	lines.push(renderPromotionReasonCodes(state));
+	lines.push("");
+	lines.push("## Open operator questions");
+	lines.push(renderOpenOperatorQuestions(state));
 	lines.push("");
 	lines.push("## Blockers");
 	lines.push(renderBlockers(state));

@@ -22,6 +22,11 @@ import {
 	type ResolvedRoomContext,
 } from "../rooms";
 import { getWorkflowRunsRoot, buildRoomCommunicationBlock } from "../rooms";
+import {
+	DEFAULT_OPERATOR_QUESTIONS_ROOM_ID,
+	OPERATOR_QUESTIONS_FILE_ENV_VAR,
+	operatorQuestionsPathForRoom,
+} from "../operator-questions";
 import { KARPATHY_GUIDELINES_PROMPT } from "../prompts";
 import { resolveModelArg } from "../runtime/config";
 import {
@@ -213,6 +218,14 @@ export function buildChildEnv(parentCwd: string, roomContext?: ResolvedRoomConte
 		childEnv[ROOM_ENV_AGENT_ID] = roomContext.agentId;
 		childEnv[ROOM_ENV_AGENT_ROLE] = roomContext.role;
 	}
+	// WP1: delegates can escalate to the human operator. The child registers
+	// only the ask tool (see operator-question-tools.ts) and appends into the
+	// parent's queue: the room's questions.jsonl when a room context exists,
+	// otherwise the shared default operator queue of the parent cwd.
+	childEnv[OPERATOR_QUESTIONS_FILE_ENV_VAR] = operatorQuestionsPathForRoom(
+		parentCwd,
+		roomContext?.roomId ?? DEFAULT_OPERATOR_QUESTIONS_ROOM_ID,
+	);
 	return childEnv;
 }
 
@@ -226,6 +239,7 @@ export function buildHeadlessChildEnv(parentCwd: string, roomContext?: ResolvedR
 		DELEGATE_DONE_ENV_VAR,
 		DELEGATE_ACTIVITY_ENV_VAR,
 		DELEGATE_RUN_ID_ENV_VAR,
+		OPERATOR_QUESTIONS_FILE_ENV_VAR,
 	]) {
 		delete childEnv[key];
 	}

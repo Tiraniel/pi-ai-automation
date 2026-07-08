@@ -83,7 +83,18 @@ export type ShipStopCondition =
 	| "report-only-stop"
 	| "full-sprint-gates-not-confirmed"
 	| "text-evidence-readiness-missing"
-	| "reviewer-required-implementation-evidence-missing";
+	| "reviewer-required-implementation-evidence-missing"
+	| "awaiting-operator";
+
+/** WP1: open blocking operator question snapshot carried on durable state.
+ *  `sprint_ship` refreshes it from the run dir's questions.jsonl before every
+ *  read/transition/report so the pure engine and the report renderer see the
+ *  current queue without touching fs. */
+export interface ShipOpenOperatorQuestion {
+	id: string;
+	question: string;
+	from: string;
+}
 
 export interface ShipState {
 	version: number;
@@ -113,6 +124,9 @@ export interface ShipState {
 	promotionReasonCodes: LaneRiskCode[];
 	lastStopCondition?: ShipStopCondition;
 	nextAction?: ShipNextAction;
+	/** WP1: unanswered blocking operator questions for this run (refreshed
+	 *  from questions.jsonl by sprint_ship; absent = none known). */
+	openOperatorQuestions?: ShipOpenOperatorQuestion[];
 	// debug-only diagnostics
 	diagnosis?: string;
 	rootCauseHypothesis?: string;

@@ -11,6 +11,7 @@ import { DELEGATE_MANIFEST_DIR } from "./delegate/constants";
 import { buildReviewerMemoPath, readReviewerMemoFile, readReviewerMemoSidecar } from "./delegate/reviewer-memo-file";
 import type { ReviewerMemo } from "./delegate/reviewer-roles";
 import { getWorkflowRunsRoot } from "./rooms";
+import { listOpenBlockingQuestionsForCwd } from "./operator-questions";
 import type { DelegateCompletionSource } from "./types";
 import { runAndPersistWorkflowQualityAudit } from "./quality-audit-tools";
 import { evaluateFinalizationGate, isFinalizationStatus, type FinalizationGateResult, type FinalizationMode } from "./finalization-gate";
@@ -466,6 +467,10 @@ export function evaluateSprintTaskFinalizationFromDisk(input: EvaluateSprintFina
 	const reviewerMemo = readLatestReviewerMemo(input.cwd, planId, resolved.plan);
 	// Phase B: advisory workflow quality audit linkage. The audit surfaces historical/recent workflow risk (failed delegates, auto_exit, debug chains, prompt-only/static-only wording, oversized files) and is advisory by design — it must never turn otherwise-valid strict finalization into a hard blocker. The helper writes a task-filtered JSON summary under `.pi/workflow-runs/quality-audit/` for downstream citation and returns `undefined` if the audit cannot run; the gate then records `qualityAudit.error: "audit_not_run"`.
 	const qualityAuditSummary = runAndPersistWorkflowQualityAudit(input.cwd, targetTaskId);
+	// WP1: unanswered blocking operator questions anywhere under
+	// `.pi/workflow-runs/` block strict finalization (operator_question_pending).
+	const openOperatorQuestions = listOpenBlockingQuestionsForCwd(input.cwd)
+		.map((q) => ({ id: q.id, question: q.question, from: q.from, scope: q.scope }));
 	const normalized = {
 		mode: normalizeMode(input.mode),
 		requestedStatus,
@@ -478,6 +483,7 @@ export function evaluateSprintTaskFinalizationFromDisk(input: EvaluateSprintFina
 		finalEvidence: trimText(input.finalEvidence),
 		reviewerMemo,
 		qualityAuditSummary,
+		openOperatorQuestions,
 	};
 	return evaluateFinalizationGate(normalized);
 }

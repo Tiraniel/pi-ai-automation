@@ -48,6 +48,13 @@ terms; when a module is named after a concept, the concept lives here.
   allowlist + command cap, `evidence.rerun` config). Owned by
   `delegate/evidence-verification.ts` + `delegate/completion-evidence.ts`.
 - **finalization gate** — strict final check before a task is marked done.
+- **operator question** — durable escalation record in
+  `.pi/workflow-runs/<room|run>/questions.jsonl` (append-only JSONL, owned by
+  `extensions/workflow/operator-questions.ts`). Created via
+  `workflow_ask_operator` (delegates get the ask tool child-registered by
+  env), answered via `workflow_answer_question`. An unanswered *blocking*
+  question fail-closes finalization (`operator_question_pending`), refuses
+  `prd_ready_for_sprint`, and stops AFK ship with `awaiting-operator`.
 - **quality audit** — advisory post-hoc scan persisted under
   `.pi/workflow-runs/quality-audit/`.
 

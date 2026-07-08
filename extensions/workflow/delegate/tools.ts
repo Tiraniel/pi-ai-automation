@@ -25,6 +25,11 @@ import { evaluatePlanningGate } from "../planning-gate-runtime";
 import { evaluateCoderPhaseAdvancement } from "./completion-evidence-gate";
 import { captureWorkspaceDiffSnapshot, resolveEvidenceRerunPolicy } from "./evidence-verification";
 import {
+	DEFAULT_OPERATOR_QUESTIONS_ROOM_ID,
+	listOpenBlockingQuestionsInFile,
+	operatorQuestionsPathForRoom,
+} from "../operator-questions";
+import {
 	formatDelegateProgressLine,
 	formatUsage,
 	getFinalAssistantText,
@@ -382,6 +387,19 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 				(ctx as any).ui.notify(guard.warning, "warning");
 			}
 
+			// WP1: delegates escalate via the child-registered workflow_ask_operator
+			// tool (see buildChildEnv). Snapshot the open blocking questions before
+			// the run so the parent session can surface any that the delegate created.
+			const questionsFile = operatorQuestionsPathForRoom(ctx.cwd, roomContext?.roomId ?? DEFAULT_OPERATOR_QUESTIONS_ROOM_ID);
+			const openQuestionIdsBefore = new Set(listOpenBlockingQuestionsInFile(questionsFile).map((q) => q.id));
+			const notifyDelegateOperatorQuestions = (): void => {
+				if (typeof (ctx as any).ui?.notify !== "function") return;
+				for (const q of listOpenBlockingQuestionsInFile(questionsFile)) {
+					if (openQuestionIdsBefore.has(q.id)) continue;
+					(ctx as any).ui.notify(`Delegate ${agent} asked a blocking operator question ${q.id}: ${q.question}`, "warning");
+				}
+			};
+
 			if (agent === "reviewer") {
 				const goals = Array.isArray((params as any).goals)
 					? (params as any).goals.map((goal: unknown) => String(goal).trim()).filter((goal: string) => goal.length > 0)
@@ -399,6 +417,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 						? `${delegatedTask}\n\nReview goals:\n${goals.map((goal: string) => `- ${goal}`).join("\n")}`
 						: delegatedTask;
 					const result = await runDelegateAgent(ctx, "reviewer", singleTask, requestedCwd, signal, onUpdate, roomContext, guard.preset);
+					notifyDelegateOperatorQuestions();
 					const status = normalizeFinalStatus(result);
 					const finalOutput = getToolResultText(result);
 					const verdict = parseReviewerVerdict(finalOutput);
@@ -444,6 +463,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					// based on `plan.acceptanceEvidenceMatrix` rows.
 					{ plan: architecture.plan, phase: architectureRequirement.phase },
 				);
+				notifyDelegateOperatorQuestions();
 				const hasChangesRequested = swarm.results.some((item) => item.verdict === "CHANGES_REQUESTED");
 				const status = swarm.aborted ? "aborted" : swarm.failed ? "failed" : "completed";
 				const reviewerUpdate = markArchitecturePhaseUpdate(
@@ -471,6 +491,7 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			const snapshotBefore = evidenceVerified ? captureWorkspaceDiffSnapshot(guardCwd) : undefined;
 			const result = await runDelegateAgent(ctx, agent, delegatedTask, requestedCwd, signal, onUpdate, roomContext, guard.preset);
 			const snapshotAfter = evidenceVerified ? captureWorkspaceDiffSnapshot(guardCwd) : undefined;
+			notifyDelegateOperatorQuestions();
 			const status = normalizeFinalStatus(result);
 			const finalOutput = getToolResultText(result);
 			const failed = status !== "completed";

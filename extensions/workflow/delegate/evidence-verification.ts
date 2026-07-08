@@ -37,6 +37,12 @@ const EVIDENCE_RERUN_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const EVIDENCE_RERUN_OUTPUT_PREVIEW_CHARS = 800;
 /** Sentinel content hash for a dirty path that does not exist on disk. */
 const MISSING_CONTENT_HASH = "<missing>";
+/** Workflow runtime substrate written DURING a delegate run by the harness
+ *  itself (done sidecars, manifests, operator questions, room events). It is
+ *  not a coder deliverable, so it is excluded from the observed diff — in a
+ *  repo that does not gitignore `.pi/`, it would otherwise produce false
+ *  `evidence_diff_mismatch` rejections for every run. */
+const OBSERVED_DIFF_EXCLUDE_PREFIXES: readonly string[] = [".pi/workflow-runs/"];
 
 // ---------- Workspace diff snapshots (G7) ----------
 
@@ -111,7 +117,10 @@ export function captureWorkspaceDiffSnapshot(cwd: string): WorkspaceDiffSnapshot
 	const gitRoot = toplevel.stdout.trim();
 	const headResult = runGit(cwd, ["rev-parse", "HEAD"]);
 	const head = headResult.ok ? headResult.stdout.trim() : undefined;
-	const status = runGit(gitRoot, ["status", "--porcelain", "-z"]);
+	// -uall expands untracked directories into individual files; without it a
+	// brand-new directory shows up as one collapsed "dir/" entry and per-file
+	// declarations in filesChanged could never match the observed diff.
+	const status = runGit(gitRoot, ["status", "--porcelain", "-z", "-uall"]);
 	if (!status.ok) {
 		return {
 			gitAvailable: false,
@@ -178,6 +187,7 @@ export function computeObservedWorkspaceDiff(
 	}
 	const changedFiles = [...changed]
 		.map((file) => toDelegateCwdRelative(gitRoot, delegateCwd, file))
+		.filter((file) => !OBSERVED_DIFF_EXCLUDE_PREFIXES.some((prefix) => file.startsWith(prefix)))
 		.sort();
 	return { verifiable: true, changedFiles };
 }

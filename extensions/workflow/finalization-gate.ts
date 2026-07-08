@@ -20,9 +20,14 @@ export interface FinalizationGateDebugChain {
 	repeatedInAreaCount?: number;
 	priorFailureCount?: number;
 }
-export interface FinalizationGateInput { mode?: FinalizationMode; requestedStatus: string; target: FinalizationTarget; plan?: WorkflowArchitecturePlan; coderEvidence?: unknown; coderCompletionSource?: DelegateCompletionSource; coderEvidenceSummary?: string; reviewerMemo?: ReviewerMemo; finalNote?: string; finalEvidence?: string; debugChain?: FinalizationGateDebugChain; qualityAuditSummary?: WorkflowQualityAuditFinalizationSummary; }
+/** WP1: an unanswered blocking operator question anywhere in the workspace
+ *  queue (`.pi/workflow-runs/<room|run>/questions.jsonl`). The disk adapter
+ *  (`evaluateSprintTaskFinalizationFromDisk`) populates these via
+ *  `listOpenBlockingQuestionsForCwd`; pure callers pass them explicitly. */
+export interface FinalizationOperatorQuestionRef { id: string; question: string; from: string; scope?: string; }
+export interface FinalizationGateInput { mode?: FinalizationMode; requestedStatus: string; target: FinalizationTarget; plan?: WorkflowArchitecturePlan; coderEvidence?: unknown; coderCompletionSource?: DelegateCompletionSource; coderEvidenceSummary?: string; reviewerMemo?: ReviewerMemo; finalNote?: string; finalEvidence?: string; debugChain?: FinalizationGateDebugChain; qualityAuditSummary?: WorkflowQualityAuditFinalizationSummary; openOperatorQuestions?: FinalizationOperatorQuestionRef[]; }
 export type FinalizationRecommendedStatus = "done" | "provisional_done" | "prompt_only_mitigation";
-export interface FinalizationGateDetails { isFinalStatus: boolean; finalStatusAlias: string; recommendedStatus: FinalizationRecommendedStatus; matrix: { planStatus: "missing" | "ready" | "draft" | "active" | "unknown"; isMatrixCoverageOk: boolean; coverageIssues: string[]; promptOnlyCriteria: string[] }; coder: { present: boolean; ok: boolean; rejectionCodes: string[]; missingCriteria: string[]; source: string; evidenceRows: number; history: { autoExitObserved: boolean; processExitObserved: boolean; missingSidecarObserved: boolean; freeFormOnlyObserved: boolean; retries: number; warnings: string[]; failedAttempts: number } }; reviewer: { present: boolean; approved: boolean; missingRequiredRoles: string[]; missingRecommendations: boolean; promptOnlyCaveats: string[] }; debug: { repeatedSameAreaCount: number; priorFailureCount: number; needsEscalation: boolean; rootCauseMentioned: boolean }; qualityAudit: { present: boolean; summary?: string; artifactLink?: string; artifactPath?: string; totalFindings: number; criticalOrHighCount: number; warningOrHighCount: number; byCode: Record<string, number>; bySeverity: Record<WorkflowQualityAuditSeverity, number>; reportGeneratedAt?: string; firstFindingMessages: string[]; taskId?: string; error?: string; } }
+export interface FinalizationGateDetails { isFinalStatus: boolean; finalStatusAlias: string; recommendedStatus: FinalizationRecommendedStatus; operatorQuestions: { openBlockingCount: number; questions: FinalizationOperatorQuestionRef[] }; matrix: { planStatus: "missing" | "ready" | "draft" | "active" | "unknown"; isMatrixCoverageOk: boolean; coverageIssues: string[]; promptOnlyCriteria: string[] }; coder: { present: boolean; ok: boolean; rejectionCodes: string[]; missingCriteria: string[]; source: string; evidenceRows: number; history: { autoExitObserved: boolean; processExitObserved: boolean; missingSidecarObserved: boolean; freeFormOnlyObserved: boolean; retries: number; warnings: string[]; failedAttempts: number } }; reviewer: { present: boolean; approved: boolean; missingRequiredRoles: string[]; missingRecommendations: boolean; promptOnlyCaveats: string[] }; debug: { repeatedSameAreaCount: number; priorFailureCount: number; needsEscalation: boolean; rootCauseMentioned: boolean }; qualityAudit: { present: boolean; summary?: string; artifactLink?: string; artifactPath?: string; totalFindings: number; criticalOrHighCount: number; warningOrHighCount: number; byCode: Record<string, number>; bySeverity: Record<WorkflowQualityAuditSeverity, number>; reportGeneratedAt?: string; firstFindingMessages: string[]; taskId?: string; error?: string; } }
 export interface FinalizationGateResult { mode: FinalizationMode; ok: boolean; allowed: boolean; strictBlocking: boolean; requestedStatus: string; target: FinalizationTarget; summary: string; codes: string[]; blockers: string[]; warnings: string[]; isFinalStatus: boolean; recommendation: string; recommendedStatus: FinalizationRecommendedStatus; details: FinalizationGateDetails; }
 const FULL_FINAL_STATUSES = new Set(["done", "completed", "complete", "closed", "close", "resolved", "resolved-with-root-cause", "resolved_with_root_cause", "finalized", "final"]);
 const PROMPT_ONLY_MITIGATION_STATUSES = new Set(["prompt_only_mitigation", "prompt-only-mitigation"]);
@@ -115,12 +120,14 @@ function buildBaseDetails(input: FinalizationGateInput, finalStatus: boolean, re
 		warning: 0,
 		info: 0,
 	};
+	const openOperatorQuestions = input.openOperatorQuestions ?? [];
 	return {
 		isFinalStatus: finalStatus,
 		finalStatusAlias: normalizedStatus,
 		recommendedStatus: isPromptOnlyMitigationStatus(normalizedStatus) || isProvisionalDoneStatus(normalizedStatus)
 			? canonicalDowngradedStatus(normalizedStatus)
 			: "done",
+		operatorQuestions: { openBlockingCount: openOperatorQuestions.length, questions: [...openOperatorQuestions] },
 		matrix: { planStatus: "missing", isMatrixCoverageOk: false, coverageIssues: [], promptOnlyCriteria: [] },
 		coder: {
 			present: false,
@@ -197,6 +204,14 @@ function evaluateSprint(
 	const blockers: string[] = [];
 	const warnings: string[] = [];
 	const codes: string[] = ["sprint_finalization", requestedStatus];
+	// WP1: an unanswered blocking operator question is a durable stop signal;
+	// finalization must wait for the human answer.
+	const openOperatorQuestions = input.openOperatorQuestions ?? [];
+	if (openOperatorQuestions.length > 0) {
+		const preview = openOperatorQuestions.slice(0, 5).map((q) => `${q.id}${q.scope ? ` [${q.scope}]` : ""}: ${q.question}`).join("; ");
+		blockers.push(`Unanswered blocking operator question(s) (${openOperatorQuestions.length}): ${preview}. Record the operator's answer via workflow_answer_question before finalization.`);
+		codes.push("operator_question_pending");
+	}
 	const matrixValidation = validateEvidenceMatrix(plan, { isReadyPlan: true });
 	details.matrix.coverageIssues = matrixValidation.issues.map((issue) => issue.code);
 	if (plan.status !== "ready") {

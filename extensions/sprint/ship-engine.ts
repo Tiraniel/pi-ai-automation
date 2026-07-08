@@ -50,6 +50,7 @@ const STOP_CONDITION_BY_KIND: Record<ShipStopCondition, string> = {
 	"delivery-complete": "Delivery complete.", "report-only-stop": "Report-only debug stop: no implementation was authorized.",
 	"full-sprint-gates-not-confirmed": "Full-sprint lane lacks durable PRD/architecture/implementation confirmations; AFK stop and report.", "text-evidence-readiness-missing": "Text-evidence-only path is missing concrete text evidence; AFK stop and report (or route to reviewer).",
 	"reviewer-required-implementation-evidence-missing": "Reviewer-required lane lacks concrete implementation evidence (changedFiles/evidenceRefs/passed-checks); AFK stop and report.",
+	"awaiting-operator": "Unanswered blocking operator question(s); AFK stop and report until answered via workflow_answer_question.",
 };
 
 export type ShipTransitionStage = ShipStage | string;
@@ -390,6 +391,21 @@ function isCodeLookingPathForText(p: string): boolean {
 }
 
 function handleFinalizationRecorded(state: ShipState, event: Extract<ShipEvent, { kind: "finalization_recorded" }>): ShipTransition {
+	// WP1: an unanswered blocking operator question is its own stop condition
+	// (awaiting-operator), distinct from finalization-blocked — the run is not
+	// broken, it is waiting for a human answer. Checked first so the report
+	// points the operator at the questions instead of at gate details.
+	const openQuestions = state.openOperatorQuestions ?? [];
+	if (openQuestions.length > 0) {
+		const preview = openQuestions.slice(0, 5).map((q) => `${q.id}: ${q.question}`).join("; ");
+		return stopTransition(
+			state,
+			"blocked",
+			"awaiting-operator",
+			`Delivery blocked by ${openQuestions.length} unanswered blocking operator question(s): ${preview}. Answer via workflow_answer_question, then re-apply finalization_recorded.`,
+			"stop",
+		);
+	}
 	const blockers: string[] = [];
 	if (state.lane === "full-sprint" && state.fullSprintGatesConfirmed !== true) {
 		blockers.push("Full-sprint lane requires fullSprintGatesConfirmed=true (PRD/sprint/architecture/implementation confirmations) on the durable state before delivery_complete; current value is undefined or false.");

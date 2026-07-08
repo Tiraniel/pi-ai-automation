@@ -43,6 +43,7 @@ import {
 import { registerArchitectureTools } from "./workflow/architecture";
 import { registerDeepPlanningTool } from "./workflow/deep-planning";
 import { registerPlanningTools } from "./workflow/planning-tools";
+import { registerOperatorQuestionTools } from "./workflow/operator-question-tools";
 import { registerQualityAuditTools } from "./workflow/quality-audit-tools";
 import {
 	ensureManagedGlobalWorkflow,
@@ -85,6 +86,7 @@ export default function brainWorkflow(pi: ExtensionAPI) {
 	registerArchitectureTools(pi);
 	registerDeepPlanningTool(pi);
 	registerPlanningTools(pi);
+	registerOperatorQuestionTools(pi);
 	registerQualityAuditTools(pi);
 
 	pi.registerCommand("workflow", {
