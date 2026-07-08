@@ -39,7 +39,14 @@ terms; when a module is named after a concept, the concept lives here.
   advancement over an architecture plan.
 - **acceptance evidence matrix** — per-criterion required evidence + reviewer
   roles on a `ready` plan; a plan with matrix rows is **matrix-gated**.
-- **completion-evidence gate** — fail-closed check of coder evidence.
+- **completion-evidence gate** — fail-closed check of coder evidence. Since
+  WP2 it also *verifies* the packet: `filesChanged` is compared against the
+  real workspace diff snapshotted around the coder run (G7,
+  `evidence_diff_mismatch` / `diff_unverifiable`), and claimed-passed runnable
+  evidence commands are re-run by the gate itself (G9,
+  `evidence_rerun_failed` / `evidence_rerun_unverifiable`; bounded by an
+  allowlist + command cap, `evidence.rerun` config). Owned by
+  `delegate/evidence-verification.ts` + `delegate/completion-evidence.ts`.
 - **finalization gate** — strict final check before a task is marked done.
 - **quality audit** — advisory post-hoc scan persisted under
   `.pi/workflow-runs/quality-audit/`.

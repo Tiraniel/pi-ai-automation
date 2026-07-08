@@ -4,6 +4,7 @@ import {
 	DEFAULT_REVIEWER_SWARM_TARGETS,
 	REVIEWER_INSTRUCTIONS,
 } from "./prompts";
+import { DEFAULT_EVIDENCE_RERUN_ALLOWLIST } from "./delegate/evidence-verification";
 import type { DeepPlanningConfig, WorkflowConfig } from "./types";
 
 // One source for the default PR-agent instructions; both default planners
@@ -61,6 +62,10 @@ export const DEFAULT_CONFIG: WorkflowConfig = {
 		targets: [...DEFAULT_REVIEWER_SWARM_TARGETS],
 	},
 	deepPlanning: DEFAULT_DEEP_PLANNING_CONFIG,
+	evidence: {
+		rerun: "required",
+		rerunAllowlist: [...DEFAULT_EVIDENCE_RERUN_ALLOWLIST],
+	},
 	agents: {
 		brain: {
 			provider: "openai-codex",

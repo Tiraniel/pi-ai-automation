@@ -30,11 +30,14 @@ import {
 import { readDeepPlanningConfig } from "./deep-planning.js";
 import {
 	AGENT_ROLES,
+	EVIDENCE_RERUN_MODES,
 	SEMANTIC_NAVIGATION_MODES,
 	SEMANTIC_NAVIGATION_PROVIDERS,
 	SEMANTIC_NAVIGATION_ROLE_ACCESS,
 	type AgentName,
 	type AgentRole,
+	type EvidenceRerunMode,
+	type EvidenceVerificationConfig,
 	type FlowDirection,
 	type V1AgentPreset,
 	type V1ReviewerSwarmConfig,
@@ -104,6 +107,19 @@ function normalizeV1DelegateFallbacks(value: unknown): V1WorkflowConfig["delegat
 	const reviewer = normalizeV1AgentPreset(record.reviewer);
 	if (reviewer) out.reviewer = reviewer;
 	return out.coder || out.reviewer ? out : undefined;
+}
+
+function normalizeV1EvidenceConfig(value: unknown): EvidenceVerificationConfig | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const out: EvidenceVerificationConfig = {};
+	const rerun = asString(record.rerun);
+	if (rerun !== undefined && (EVIDENCE_RERUN_MODES as readonly string[]).includes(rerun)) {
+		out.rerun = rerun as EvidenceRerunMode;
+	}
+	const allowlist = asStringArray(record.rerunAllowlist);
+	if (allowlist !== undefined) out.rerunAllowlist = allowlist;
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function asSemanticNavigationProvider(value: unknown): SemanticNavigationProvider | undefined {
@@ -201,6 +217,8 @@ export function normalizeV1Config(input: unknown): V1WorkflowConfig | undefined 
 	if (display !== undefined) out.delegateDisplay = display;
 	const paneAutoClose = asBoolean(record.delegatePaneAutoClose);
 	if (paneAutoClose !== undefined) out.delegatePaneAutoClose = paneAutoClose;
+	const evidence = normalizeV1EvidenceConfig(record.evidence);
+	if (evidence) out.evidence = evidence;
 	return out;
 }
 

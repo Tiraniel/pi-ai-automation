@@ -111,6 +111,21 @@ export interface DelegateFallbacksConfig {
 	reviewer?: AgentPreset;
 }
 
+/** Re-run mode for the coder evidence verification gate (WP2 / G9).
+ *  "required" (default) re-runs claimed-passed runnable evidence commands at
+ *  the phase-advancement boundary; "off" disables the re-run (the diff check
+ *  stays on). */
+export type EvidenceRerunMode = "off" | "required";
+export const EVIDENCE_RERUN_MODES: readonly EvidenceRerunMode[] = ["off", "required"] as const;
+
+export interface EvidenceVerificationConfig {
+	rerun?: EvidenceRerunMode;
+	/** Command prefixes the gate is allowed to re-run (word-boundary prefix
+	 *  match). Defaults are owned by
+	 *  `delegate/evidence-verification.ts` (`DEFAULT_EVIDENCE_RERUN_ALLOWLIST`). */
+	rerunAllowlist?: string[];
+}
+
 export interface WorkflowConfig {
 	autoApplyBrain?: boolean;
 	/** Built-in workflow profile id (e.g. "default" or "gonka-hybrid"). */
@@ -128,6 +143,8 @@ export interface WorkflowConfig {
 	delegateFallbacks?: DelegateFallbacksConfig;
 	/** Optional semantic code navigation backend config. Disabled by default. */
 	semanticNavigation?: SemanticNavigationConfig;
+	/** Coder evidence verification (diff check + command re-run) policy. */
+	evidence?: EvidenceVerificationConfig;
 }
 
 /** v1 aliases used by the v2 normalizer. The v1 shape is intentionally

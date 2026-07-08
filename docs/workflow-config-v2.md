@@ -60,7 +60,9 @@ v2 workflows remain catalog-driven for identities (`agents`, models,
 `toolProfiles`, `promptPacks`, `qualityGates`), but the loader keeps a
 small compatibility/runtime overlay on top-level for the most common legacy knobs:
 `autoApplyBrain`, `profile`, `reviewerSwarm.{enabled,maxConcurrency}`, `delegateDisplay`,
-`delegatePaneAutoClose`, and `delegateFallbacks`. These fields are validated and merged by
+`delegatePaneAutoClose`, `delegateFallbacks`, and `evidence` (coder evidence
+verification policy: `rerun: "off" | "required"` + `rerunAllowlist`; see the
+"Verifiable coder evidence" section in README.md). These fields are validated and merged by
 `loadWorkflowConfig` after catalog adaptation.
 
 `delegateFallbacks` is a v1-compatible local override for the delegate model guard:

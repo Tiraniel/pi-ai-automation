@@ -51,7 +51,41 @@ export type CoderEvidenceRejectionCode =
 	| "free_form_only"
 	| "auto_exit_incomplete" | "process_exit_incomplete" | "missing_sidecar_incomplete"
 	| "lightweight_bypass_refused"
-	| "missing_files_changed" | "missing_commands_run";
+	| "missing_files_changed" | "missing_commands_run"
+	// WP2 (G7/G9) verification codes:
+	| "evidence_diff_mismatch" | "diff_unverifiable"
+	| "evidence_rerun_failed" | "evidence_rerun_unverifiable";
+
+// ---------- WP2 verification observations (produced by
+// delegate/evidence-verification.ts, folded into issues here) ----------
+
+/** Observed workspace diff across the delegate run, pre-normalized to
+ *  delegate-cwd-relative posix paths so it compares 1:1 with
+ *  `coderEvidence.filesChanged`. */
+export interface ObservedDiffCheck {
+	verifiable: boolean;
+	reason?: string;
+	changedFiles: string[];
+}
+
+/** Result of the gate re-running one claimed-passed evidence command. */
+export interface EvidenceCommandRerunOutcome {
+	command: string;
+	/** null = killed before an exit code was produced (e.g. timeout). */
+	exitCode: number | null;
+	timedOut: boolean;
+	durationMs: number;
+	outputPreview?: string;
+	spawnError?: string;
+}
+
+/** A runnable-supporting command the gate decided not to re-run.
+ *  `not_allowlisted` is fail-closed (error); `command_cap` is a bounded-
+ *  budget skip (warning). */
+export interface EvidenceRerunSkip {
+	command: string;
+	reason: "not_allowlisted" | "command_cap";
+}
 export type CoderEvidenceSeverity = "error" | "warning";
 export interface CoderEvidenceIssue {
 	code: CoderEvidenceRejectionCode; message: string;
@@ -67,12 +101,23 @@ export interface CoderEvidenceEvaluation {
 		sourcePrecedence:
 			| "explicit-structured" | "headless-structured" | "pane-structured"
 			| "free-form-only" | "none";
+		/** WP2 G7: present when an observed diff was supplied. */
+		diffCheck?: {
+			verifiable: boolean;
+			undeclaredChangedFiles: string[];
+			declaredUnchangedFiles: string[];
+		};
+		/** WP2 G9: present when the gate re-ran evidence commands. */
+		commandReruns?: EvidenceCommandRerunOutcome[];
+		rerunSkipped?: EvidenceRerunSkip[];
 	};
 	reason?: string;
 }
 
 // ---------- Constants ----------
-const RUNNABLE_REQUIRED_KINDS: ReadonlySet<RequiredEvidenceKind> = new Set<RequiredEvidenceKind>([
+/** Matrix `requiredEvidence.kind`s that demand runnable proof. Exported for
+ *  the WP2 re-run selector (delegate/evidence-verification.ts) — one owner. */
+export const RUNNABLE_REQUIRED_KINDS: ReadonlySet<RequiredEvidenceKind> = new Set<RequiredEvidenceKind>([
 	"behavior-test", "runtime-gate-test", "regression-test", "unit-test",
 ]);
 const REVIEW_OR_MANUAL_KINDS: ReadonlySet<RequiredEvidenceKind> = new Set<RequiredEvidenceKind>([
@@ -278,6 +323,29 @@ export interface EvaluateCoderEvidenceOptions {
 	isMatrixGated?: boolean;
 	/** Treat missing filesChanged / commandsRun as errors. */
 	requireFilesAndCommands?: boolean;
+	/** WP2 G7: observed workspace diff across the delegate run. When present
+	 *  on a matrix-gated plan, `filesChanged` must match it exactly
+	 *  (`evidence_diff_mismatch`) and an unverifiable diff blocks
+	 *  (`diff_unverifiable`). Absent = the caller did not capture snapshots
+	 *  (e.g. pure smokes); the wired delegation boundary always supplies it. */
+	observedDiff?: ObservedDiffCheck;
+	/** WP2 G9: outcomes of the gate's own re-run of claimed-passed runnable
+	 *  evidence commands. Any non-zero exit / timeout blocks
+	 *  (`evidence_rerun_failed`). */
+	commandReruns?: EvidenceCommandRerunOutcome[];
+	/** WP2 G9: runnable-supporting commands the gate refused/declined to
+	 *  re-run. `not_allowlisted` blocks fail-closed
+	 *  (`evidence_rerun_unverifiable`); `command_cap` is a warning. */
+	rerunSkipped?: EvidenceRerunSkip[];
+}
+
+/** Lexical path normalization for the declared-vs-observed comparison: both
+ *  sides are delegate-cwd-relative, so posix separators + "./" stripping is
+ *  all that is needed. */
+function normalizeEvidencePath(file: string): string {
+	let out = file.trim().replace(/\\/g, "/");
+	while (out.startsWith("./")) out = out.slice(2);
+	return out.replace(/\/+$/, "");
 }
 export function isMatrixGated(plan: CoderEvidencePlanShape | null, forced: boolean | undefined): boolean {
 	if (forced === true) return true;
@@ -398,12 +466,52 @@ export function evaluateCoderCompletionEvidence(plan: CoderEvidencePlanShape | n
 			else if (cmd.outcome === "skipped") pushIssue(issues, "skipped_command_unsupported", `Command skipped but is not referenced in any criterionCoverage row: ${cmd.command}.`, "warning");
 		}
 	}
+	// ---- WP2 G7: declared filesChanged must match the observed diff ----
+	let diffCheck: CoderEvidenceEvaluation["diagnostics"]["diffCheck"];
+	if (options.observedDiff) {
+		if (!options.observedDiff.verifiable) {
+			diffCheck = { verifiable: false, undeclaredChangedFiles: [], declaredUnchangedFiles: [] };
+			pushIssue(issues, "diff_unverifiable", `Workspace diff for the coder run could not be verified: ${options.observedDiff.reason ?? "unknown reason"}. Matrix-gated evidence is fail-closed — run the coder delegate inside a git worktree so filesChanged can be checked against the real diff.`, "error");
+		} else if (packet) {
+			const declared = new Set(packet.filesChanged.map(normalizeEvidencePath).filter((f) => f.length > 0));
+			const observed = new Set(options.observedDiff.changedFiles.map(normalizeEvidencePath).filter((f) => f.length > 0));
+			const undeclaredChangedFiles = [...observed].filter((f) => !declared.has(f)).sort();
+			const declaredUnchangedFiles = [...declared].filter((f) => !observed.has(f)).sort();
+			diffCheck = { verifiable: true, undeclaredChangedFiles, declaredUnchangedFiles };
+			if (undeclaredChangedFiles.length > 0) {
+				pushIssue(issues, "evidence_diff_mismatch", `Files changed during the coder run but not declared in coderEvidence.filesChanged: ${undeclaredChangedFiles.join(", ")}. Declare every changed file or revert unintended edits.`, "error");
+			}
+			if (declaredUnchangedFiles.length > 0) {
+				pushIssue(issues, "evidence_diff_mismatch", `Files declared in coderEvidence.filesChanged but not actually changed during the coder run: ${declaredUnchangedFiles.join(", ")}. Remove stale entries so the report matches the real diff.`, "error");
+			}
+		}
+	}
+	// ---- WP2 G9: gate-side re-run of claimed-passed runnable commands ----
+	for (const rerun of options.commandReruns ?? []) {
+		if (rerun.timedOut) {
+			pushIssue(issues, "evidence_rerun_failed", `Re-run of claimed-passed evidence command timed out after ${rerun.durationMs}ms: ${rerun.command}. Fix the command or the implementation so the evidence is reproducible.`, "error");
+		} else if (rerun.exitCode !== 0) {
+			pushIssue(issues, "evidence_rerun_failed", `Re-run of claimed-passed evidence command exited ${rerun.exitCode ?? "without a status"}: ${rerun.command}.${rerun.spawnError ? ` Spawn error: ${rerun.spawnError}.` : ""}${rerun.outputPreview ? ` Output tail: ${rerun.outputPreview}` : ""}`, "error");
+		}
+	}
+	for (const skip of options.rerunSkipped ?? []) {
+		if (skip.reason === "not_allowlisted") {
+			pushIssue(issues, "evidence_rerun_unverifiable", `Claimed-passed command supporting a runnable criterion cannot be re-run because it is not in evidence.rerunAllowlist: ${skip.command}. Use an allowlisted runner (or extend evidence.rerunAllowlist in workflow config).`, "error");
+		} else {
+			pushIssue(issues, "evidence_rerun_unverifiable", `Claimed-passed command was not re-run (per-phase re-run command cap reached): ${skip.command}.`, "warning");
+		}
+	}
 	const rejectionCodes: CoderEvidenceRejectionCode[] = [];
 	for (const issue of issues) if (issue.severity === "error") rejectionCodes.push(issue.code);
 	const ok = rejectionCodes.length === 0;
 	return {
 		ok, isMatrixGated: true, lightweight, issues, rejectionCodes,
-		diagnostics: { delegateHistory: history, coverageRows, missingCriteria, weakCriteria, commandOutcomes, sourcePrecedence },
+		diagnostics: {
+			delegateHistory: history, coverageRows, missingCriteria, weakCriteria, commandOutcomes, sourcePrecedence,
+			...(diffCheck ? { diffCheck } : {}),
+			...(options.commandReruns ? { commandReruns: options.commandReruns } : {}),
+			...(options.rerunSkipped?.length ? { rerunSkipped: options.rerunSkipped } : {}),
+		},
 		reason: ok ? undefined : issues.filter((i) => i.severity === "error").map((i) => i.message).join("; "),
 	};
 }

@@ -24,7 +24,15 @@ import {
 	type CoderCompletionEvidence,
 	type CoderEvidenceEvaluation,
 	type CoderEvidencePlanShape,
+	type EvaluateCoderEvidenceOptions,
 } from "./completion-evidence";
+import {
+	computeObservedWorkspaceDiff,
+	rerunEvidenceCommands,
+	selectEvidenceRerunCommands,
+	type ResolvedEvidenceRerunPolicy,
+	type WorkspaceDiffSnapshot,
+} from "./evidence-verification";
 
 export type CoderEvidenceStructuredSource =
 	| "explicit-structured"
@@ -55,6 +63,19 @@ export interface RunCompletionEvidenceGateOptions {
 	/** Optional explicit lightweight scope (tiny/admin/debug). The gate
 	 *  refuses lightweight on matrix-gated plans. */
 	lightweightScope?: "tiny" | "admin" | "debug";
+	/** WP2 (G7/G9) verification context. `tools.ts` supplies it for
+	 *  matrix-gated coder runs: snapshots captured around `runDelegateAgent`
+	 *  plus the resolved re-run policy from workflow config. Absent =
+	 *  verification is not requested (legacy callers / pure smokes). */
+	verification?: CoderEvidenceVerificationContext;
+}
+
+export interface CoderEvidenceVerificationContext {
+	/** Resolved delegate working directory the snapshots were taken in. */
+	delegateCwd: string;
+	snapshotBefore: WorkspaceDiffSnapshot;
+	snapshotAfter: WorkspaceDiffSnapshot;
+	rerun: ResolvedEvidenceRerunPolicy;
 }
 
 function isPromiseLike<T = unknown>(value: unknown): value is PromiseLike<T> {
@@ -172,12 +193,37 @@ export function runCompletionEvidenceGate(
 	});
 
 	const packet = normalizeResult.value;
-	const evaluation = evaluateCoderCompletionEvidence(planShape, packet, {
-		isMatrixGated: isMatrixGated(planShape, undefined),
+	const matrixGated = isMatrixGated(planShape, undefined);
+	const baseOptions: EvaluateCoderEvidenceOptions = {
+		isMatrixGated: matrixGated,
 		lightweight: options.lightweightScope !== undefined,
 		lightweightScope: options.lightweightScope,
 		requireFilesAndCommands: options.requireFilesAndCommands !== false,
-	});
+	};
+	// WP2 G7: fold the observed workspace diff into the evaluation. The diff
+	// check is cheap, so it always joins the first evaluation pass.
+	const verification = options.verification;
+	if (verification && matrixGated) {
+		baseOptions.observedDiff = computeObservedWorkspaceDiff(
+			verification.snapshotBefore,
+			verification.snapshotAfter,
+			verification.delegateCwd,
+		);
+	}
+	// WP2 G9: re-run selection is pure (allowlist + cap), so its fail-closed
+	// `not_allowlisted` skips also join the first pass. Actual command
+	// execution is deferred: when the first pass already rejects, the gate
+	// fails fast without burning wall-clock on re-runs.
+	const rerunActive = Boolean(verification && matrixGated && verification.rerun.mode === "required");
+	const rerunSelection = rerunActive
+		? selectEvidenceRerunCommands(planShape, packet, verification!.rerun.allowlist)
+		: undefined;
+	if (rerunSelection?.skipped.length) baseOptions.rerunSkipped = rerunSelection.skipped;
+	let evaluation = evaluateCoderCompletionEvidence(planShape, packet, baseOptions);
+	if (evaluation.ok && rerunSelection && rerunSelection.selected.length > 0) {
+		baseOptions.commandReruns = rerunEvidenceCommands(rerunSelection.selected, verification!.delegateCwd);
+		evaluation = evaluateCoderCompletionEvidence(planShape, packet, baseOptions);
+	}
 
 	// isMatrixGated is part of the evaluation; if the plan is not matrix-gated,
 	// the strict gate is a no-op (ok === true means "no evidence required").

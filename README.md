@@ -445,6 +445,17 @@ This keeps the Brain -> coder -> reviewer chain anchored in concrete proof oblig
 
 `extensions/workflow/prompts.ts` (`CODER_INSTRUCTIONS`) and `examples/prompt-packs/coder-implementer-core.md` describe the per-criterion `coderEvidence` packet the completion tool expects on matrix-gated work.
 
+### Verifiable coder evidence (TASK-030 / WP2: G7 + G9)
+
+On matrix-gated coder runs the gate no longer trusts the packet — it verifies it (`extensions/workflow/delegate/evidence-verification.ts`, folded into `evaluateCoderCompletionEvidence` and orchestrated by `runCompletionEvidenceGate`):
+
+- **G7 report-matches-diff.** `delegate_to_coder` snapshots the workspace (`git status --porcelain` + content hashes, plus HEAD) immediately before and after `runDelegateAgent`. The observed diff — including files committed mid-run — must match `coderEvidence.filesChanged` exactly. A file changed-but-undeclared or declared-but-unchanged rejects with `evidence_diff_mismatch`; a delegate cwd where the diff cannot be verified (not a git worktree, git failure) rejects fail-closed with `diff_unverifiable`.
+- **G9 evidence re-run.** For matrix criteria whose `requiredEvidence.kind` is runnable (`behavior-test`, `regression-test`, `unit-test`, `runtime-gate-test`), the gate re-runs the claimed-`passed` supporting commands itself (bounded: `EVIDENCE_RERUN_COMMAND_CAP` = 5 commands per phase, `EVIDENCE_RERUN_TIMEOUT_MS` per command). A non-zero exit or timeout rejects with `evidence_rerun_failed`. Only commands matching the configured prefix allowlist are executed (word-boundary match: `node` allows `node -e ...`, never `node_modules/...`); a runnable-supporting command outside the allowlist rejects fail-closed with `evidence_rerun_unverifiable` so an exotic runner cannot dodge verification. Re-runs execute only after every other check passes (fail fast, no wasted wall-clock).
+- **Config** (`WorkflowConfig.evidence`, v1 field with v2 runtime-override passthrough): `evidence.rerun: "off" | "required"` (default `"required"`; `"off"` disables the re-run but keeps the diff check) and `evidence.rerunAllowlist` (default `["npx tsx", "node", "npm test"]`, owned by `DEFAULT_EVIDENCE_RERUN_ALLOWLIST`).
+- Diagnostics land in `details.coderEvidenceGate.diagnostics` (`diffCheck`, `commandReruns`, `rerunSkipped`) so Brain sees exactly which file or command failed verification.
+
+Smokes: `scripts/task-030-evidence-verification-smokes.ts` (real temporary git repos + real command re-runs).
+
 ### Existing delegation stays the same
 
 If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the child receives no `PI_WORKFLOW_ROOM_*` env vars and no communication block, so normal delegation behavior is unchanged. The room tools are still registered, but resolve nothing without a `roomId` and will return a clear error prompting the user to call `room_create` first.

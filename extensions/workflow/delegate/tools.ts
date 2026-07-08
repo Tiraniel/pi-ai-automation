@@ -23,6 +23,7 @@ import {
 } from "./architecture-gate";
 import { evaluatePlanningGate } from "../planning-gate-runtime";
 import { evaluateCoderPhaseAdvancement } from "./completion-evidence-gate";
+import { captureWorkspaceDiffSnapshot, resolveEvidenceRerunPolicy } from "./evidence-verification";
 import {
 	formatDelegateProgressLine,
 	formatUsage,
@@ -463,7 +464,13 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 				});
 			}
 
+			// WP2 (G7): snapshot the workspace around the coder run so the
+			// evidence gate can check declared filesChanged against the real
+			// diff. Matrix-gated plans only — the gate is a no-op otherwise.
+			const evidenceVerified = isMatrixGatedPlan(architecture.plan);
+			const snapshotBefore = evidenceVerified ? captureWorkspaceDiffSnapshot(guardCwd) : undefined;
 			const result = await runDelegateAgent(ctx, agent, delegatedTask, requestedCwd, signal, onUpdate, roomContext, guard.preset);
+			const snapshotAfter = evidenceVerified ? captureWorkspaceDiffSnapshot(guardCwd) : undefined;
 			const status = normalizeFinalStatus(result);
 			const finalOutput = getToolResultText(result);
 			const failed = status !== "completed";
@@ -475,7 +482,22 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 				phase: architectureRequirement.phase,
 			};
 			// TASK-003 Phase B: matrix-gated coder phases must pass the structured completion-evidence gate before `coder_completed` is recorded.
-			const advancement = failed ? undefined : evaluateCoderPhaseAdvancement(architecture.plan, result, baseDetails);
+			// WP2 (G7/G9): the gate also verifies filesChanged against the observed diff and re-runs claimed-passed runnable evidence commands.
+			const advancement = failed ? undefined : evaluateCoderPhaseAdvancement(
+				architecture.plan,
+				result,
+				baseDetails,
+				snapshotBefore && snapshotAfter
+					? {
+						verification: {
+							delegateCwd: guardCwd,
+							snapshotBefore,
+							snapshotAfter,
+							rerun: resolveEvidenceRerunPolicy(loadedForGuard.config),
+						},
+					}
+					: {},
+			);
 			if (advancement?.kind === "block") return { content: advancement.content, details: advancement.details, isError: true };
 			const coderUpdate = failed
 				? undefined
