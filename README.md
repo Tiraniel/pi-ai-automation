@@ -478,6 +478,16 @@ Modeled on `agent-harness/contracts/requirement.schema.json`; owned by `extensio
 
 Smokes: `scripts/task-032-prd-contract-smokes.ts`.
 
+### OSOT plan freeze per phase (TASK-033 / WP5)
+
+Ports the agent-harness sha256 freeze into the main workflow (`extensions/workflow/architecture/plan-freeze.ts`):
+
+- On the **first `delegate_to_coder` of a phase**, the plan CONTRACT (business/technical/contract text, acceptance criteria, evidence matrix, files — volatile `updatedAt`/phase-progress fields excluded by construction) is snapshotted to `.pi/workflow-architecture/plans/<planId>.<phase>.frozen.json` with its canonical-JSON sha256 (fs-atomic). The `PaneManifest` gets a `planSha256` stamp so evidence can be pinned to the exact plan bytes.
+- Every later coder/reviewer delegation for the phase — and the coder phase-advancement gate after the run — verify the CURRENT on-disk plan against the snapshot. Any divergence blocks with `plan_drift_detected` (delegations fail fast before spawning a child; the advancement gate re-checks after the run because the plan can change while the coder works). Unreadable snapshots fail closed. A reviewer with no snapshot (phase started before WP5) is allowed.
+- Re-confirmation is explicit: `workflow_update_architecture_plan { phase, rebaselinePhase: true }` re-freezes the snapshot from the (patched) current plan, resets the phase to `not_started`, and — matching planning-state `invalidatedBy` semantics ("contract change resets clearances") — invalidates `implementation_confirmed` in the active planning room.
+
+Smokes: `scripts/task-033-plan-freeze-smokes.ts`.
+
 ### Existing delegation stays the same
 
 If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the child receives no `PI_WORKFLOW_ROOM_*` env vars and no communication block, so normal delegation behavior is unchanged. The room tools are still registered, but resolve nothing without a `roomId` and will return a clear error prompting the user to call `room_create` first.

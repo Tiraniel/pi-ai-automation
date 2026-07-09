@@ -54,7 +54,9 @@ export type CoderEvidenceRejectionCode =
 	| "missing_files_changed" | "missing_commands_run"
 	// WP2 (G7/G9) verification codes:
 	| "evidence_diff_mismatch" | "diff_unverifiable"
-	| "evidence_rerun_failed" | "evidence_rerun_unverifiable";
+	| "evidence_rerun_failed" | "evidence_rerun_unverifiable"
+	// WP5 OSOT plan freeze:
+	| "plan_drift_detected";
 
 // ---------- WP2 verification observations (produced by
 // delegate/evidence-verification.ts, folded into issues here) ----------
@@ -337,6 +339,17 @@ export interface EvaluateCoderEvidenceOptions {
 	 *  re-run. `not_allowlisted` blocks fail-closed
 	 *  (`evidence_rerun_unverifiable`); `command_cap` is a warning. */
 	rerunSkipped?: EvidenceRerunSkip[];
+	/** WP5: drift check of the current plan against the frozen phase
+	 *  snapshot (architecture/plan-freeze.ts). Any status other than
+	 *  "match" blocks matrix-gated advancement with `plan_drift_detected`.
+	 *  Absent = the caller did not freeze this phase (draft plans / legacy
+	 *  callers). */
+	planFreeze?: {
+		status: "no_snapshot" | "match" | "drift" | "snapshot_unreadable" | "plan_unreadable";
+		expectedSha256?: string;
+		currentSha256?: string;
+		reason?: string;
+	};
 }
 
 /** Lexical path normalization for the declared-vs-observed comparison: both
@@ -485,6 +498,12 @@ export function evaluateCoderCompletionEvidence(plan: CoderEvidencePlanShape | n
 				pushIssue(issues, "evidence_diff_mismatch", `Files declared in coderEvidence.filesChanged but not actually changed during the coder run: ${declaredUnchangedFiles.join(", ")}. Remove stale entries so the report matches the real diff.`, "error");
 			}
 		}
+	}
+	// ---- WP5: OSOT plan freeze — the plan must not have changed since the
+	// phase snapshot was frozen; a drifted contract invalidates the phase's
+	// clearances until it is explicitly re-baselined. ----
+	if (options.planFreeze && options.planFreeze.status !== "match") {
+		pushIssue(issues, "plan_drift_detected", `Architecture plan drifted from the frozen phase snapshot (${options.planFreeze.status}${options.planFreeze.reason ? `: ${options.planFreeze.reason}` : ""}). Re-confirm the changed plan via workflow_update_architecture_plan with rebaselinePhase: true (re-freezes the snapshot and resets the phase to not_started).`, "error");
 	}
 	// ---- WP2 G9: gate-side re-run of claimed-passed runnable commands ----
 	for (const rerun of options.commandReruns ?? []) {

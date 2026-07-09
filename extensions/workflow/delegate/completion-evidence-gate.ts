@@ -68,6 +68,10 @@ export interface RunCompletionEvidenceGateOptions {
 	 *  plus the resolved re-run policy from workflow config. Absent =
 	 *  verification is not requested (legacy callers / pure smokes). */
 	verification?: CoderEvidenceVerificationContext;
+	/** WP5: post-run drift check of the current plan against the frozen
+	 *  phase snapshot; anything but "match" blocks with
+	 *  plan_drift_detected. */
+	planFreeze?: EvaluateCoderEvidenceOptions["planFreeze"];
 }
 
 export interface CoderEvidenceVerificationContext {
@@ -200,6 +204,7 @@ export function runCompletionEvidenceGate(
 		lightweightScope: options.lightweightScope,
 		requireFilesAndCommands: options.requireFilesAndCommands !== false,
 	};
+	if (options.planFreeze) baseOptions.planFreeze = options.planFreeze;
 	// WP2 G7: fold the observed workspace diff into the evaluation. The diff
 	// check is cheap, so it always joins the first evaluation pass.
 	const verification = options.verification;

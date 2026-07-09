@@ -62,6 +62,11 @@ export interface PaneManifest {
 	activity?: ActivitySidecar;
 	done?: DoneSidecar;
 	exitCode?: number;
+	/** WP5: sha256 of the frozen plan contract this coder run was delegated
+	 *  against (architecture/plan-freeze.ts). Stamped by delegate/tools.ts
+	 *  after the run so finalization/audit can pin evidence to the exact
+	 *  plan bytes. */
+	planSha256?: string;
 }
 
 export function manifestPathFromRunRoot(runRoot: string, runId: string): string {
@@ -133,6 +138,15 @@ export async function writeManifest(filePath: string, manifest: PaneManifest): P
 	} catch {
 		// Manifest writes are best effort for visibility only.
 	}
+}
+
+/** WP5: stamp the frozen-plan sha256 onto an existing manifest. Best effort
+ *  (the manifest is a visibility artifact); a missing/unreadable manifest is
+ *  left untouched. */
+export async function stampManifestPlanSha256(filePath: string, planSha256: string): Promise<void> {
+	const manifest = readJsonFile<PaneManifest>(filePath);
+	if (!manifest || typeof manifest !== "object" || typeof manifest.runId !== "string") return;
+	await writeManifest(filePath, { ...manifest, planSha256, updatedAt: nowIso() });
 }
 
 export function makeActivityPayload(runId: string, phase: ActivityPhase, lastEvent: string, updatedAt: number = Date.now()): ActivitySidecar {

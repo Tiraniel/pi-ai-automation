@@ -9,6 +9,9 @@ import {
 	getPlanStoragePath,
 	buildArchitectureContext,
 } from "./store";
+import { freezePlanForPhase, frozenPlanPathFor } from "./plan-freeze";
+import { invalidatePlanningState, stateFileExists } from "../planning-state";
+import { readPlanningCurrentRoomPointer } from "../planning-pointer";
 import type { ArchitecturePlanPatch, WorkflowPhaseId, PhaseGateStatus } from "./types";
 
 function trimString(value: unknown): string {
@@ -100,6 +103,10 @@ const matrixEntryParameters = {
 	}),
 	promptOnlyCaveat: Type.Optional(Type.String({ description: "Required when any enforcementLevel is prompt-only." })),
 	manualValidationPlan: Type.Optional(Type.String({ description: "Optional manual validation steps." })),
+	// WP3 PRD-contract traceability (optional).
+	criterionId: Type.Optional(Type.String({ description: "Stable criterion id (AC<N>)." })),
+	covers: Type.Optional(Type.Array(Type.String(), { description: "PRD contract ids this row covers (B<N> expected / X<N> forbidden)." })),
+	negative: Type.Optional(Type.Boolean({ description: "True for a negative-scenario row (proves a forbidden behavior does NOT happen). Every X* in the PRD contract needs at least one negative row." })),
 } as const;
 
 const acceptanceEvidenceMatrixParameters = Type.Optional(
@@ -262,6 +269,7 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 			acceptanceEvidenceMatrix: acceptanceEvidenceMatrixParameters,
 			files: Type.Optional(Type.Array(Type.String())),
 			openQuestions: Type.Optional(Type.Array(Type.String())),
+			rebaselinePhase: Type.Optional(Type.Boolean({ description: "WP5: explicitly re-confirm a plan that drifted from its frozen phase snapshot. Requires `phase`. Re-freezes the snapshot from the (patched) current plan and resets the phase to not_started; also invalidates planning-state implementation confirmation (architecture_or_evidence) when a planning room is active." })),
 		}),
 		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
 			const planId = trimString((params as any).planId);
@@ -280,7 +288,11 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 				return errTool(`No plan found: ${planId}`, { reason: "plan_not_found", planId });
 			}
 
+			const rebaselinePhase = (params as any).rebaselinePhase === true;
 			const phase = asPhase((params as any).phase);
+			if (rebaselinePhase && !phase) {
+				return errTool("rebaselinePhase requires `phase` in the same call.", { reason: "missing_phase_for_rebaseline", planId });
+			}
 			const hasPhaseStatus = Object.prototype.hasOwnProperty.call(params as any, "phaseStatus");
 			const hasPhase = Object.prototype.hasOwnProperty.call(params as any, "phase");
 			if (hasPhaseStatus && !hasPhase) {
@@ -361,13 +373,53 @@ export function registerArchitectureTools(pi: ExtensionAPI): void {
 				}
 			}
 
+			// WP5: explicit re-baseline of a drifted plan. Runs AFTER the patch
+			// so the new snapshot freezes the plan the operator just confirmed;
+			// resets the phase to not_started ("contract change resets
+			// clearances") and, when a planning room is active, mirrors the same
+			// semantics into planning-state via an architecture_or_evidence
+			// invalidation.
+			let rebaselined: Record<string, unknown> | undefined;
+			if (rebaselinePhase && phase) {
+				try {
+					const current = readArchitecturePlanWithIssueStatus(ctx.cwd, planId, (ctx as any).sessionManager);
+					if (!current.plan) {
+						return errTool(`Cannot rebaseline: plan ${planId} is unreadable after patch.`, { reason: "rebaseline_failed", planId, phase });
+					}
+					const snapshot = freezePlanForPhase(ctx.cwd, current.plan, phase, (ctx as any).sessionManager);
+					updatePlanPhase(ctx.cwd, planId, phase, "not_started", `Phase re-baselined against plan sha256 ${snapshot.sha256.slice(0, 12)}…`, (ctx as any).sessionManager);
+					rebaselined = { phase, sha256: snapshot.sha256, frozenAt: snapshot.frozenAt, snapshotPath: frozenPlanPathFor(ctx.cwd, planId, phase, (ctx as any).sessionManager) };
+					const planningRoomId = readPlanningCurrentRoomPointer(ctx.cwd);
+					if (planningRoomId && stateFileExists(ctx.cwd, planningRoomId)) {
+						invalidatePlanningState(ctx.cwd, planningRoomId, {
+							kind: "architecture_or_evidence",
+							reason: `architecture plan ${planId}/${phase} re-baselined (plan contract changed after phase start)`,
+							actor: "brain",
+							source: "workflow_update_architecture_plan",
+							evidence: `rebaselinePhase sha256=${snapshot.sha256}`,
+						});
+						rebaselined.planningInvalidated = planningRoomId;
+					}
+				} catch (error) {
+					return errTool(`Failed to rebaseline phase: ${error instanceof Error ? error.message : String(error)}`, {
+						reason: "rebaseline_failed",
+						planId,
+						phase,
+					});
+				}
+			}
+
 			const updated = readArchitecturePlanWithIssueStatus(ctx.cwd, planId, (ctx as any).sessionManager);
 			const planPath = getPlanStoragePath(ctx.cwd, planId, (ctx as any).sessionManager);
-			return okTool(`Updated architecture plan ${planId}.`, {
-				planId,
-				path: planPath.file,
-				updatedStatus: updated.plan?.status,
-			});
+			return okTool(
+				`Updated architecture plan ${planId}.${rebaselined ? ` Phase ${phase} re-baselined (snapshot re-frozen, phase reset to not_started${rebaselined.planningInvalidated ? `, planning room ${rebaselined.planningInvalidated} implementation confirmation invalidated` : ""}).` : ""}`,
+				{
+					planId,
+					path: planPath.file,
+					updatedStatus: updated.plan?.status,
+					...(rebaselined ? { rebaselined } : {}),
+				},
+			);
 		},
 	});
 }

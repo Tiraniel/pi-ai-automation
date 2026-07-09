@@ -44,6 +44,14 @@ terms; when a module is named after a concept, the concept lives here.
   (B\*/X\*); every X\* needs a `negative: true` matrix row on ready plans.
 - **architecture gate** — phaseA (isolated blocks) / phaseB (integration)
   advancement over an architecture plan.
+- **plan freeze** — WP5 OSOT snapshot of the plan contract per phase
+  (`architecture/plan-freeze.ts`,
+  `.pi/workflow-architecture/plans/<planId>.<phase>.frozen.json` + sha256).
+  Frozen on the first coder delegation; drift (`plan_drift_detected`) blocks
+  delegation and phase advancement until an explicit
+  `workflow_update_architecture_plan { rebaselinePhase: true }`, which
+  re-freezes, resets the phase, and invalidates planning implementation
+  confirmation.
 - **acceptance evidence matrix** — per-criterion required evidence + reviewer
   roles on a `ready` plan; a plan with matrix rows is **matrix-gated**.
 - **completion-evidence gate** — fail-closed check of coder evidence. Since

@@ -30,6 +30,13 @@ import {
 	operatorQuestionsPathForRoom,
 } from "../operator-questions";
 import {
+	checkPlanDrift,
+	ensurePlanFrozenForPhase,
+	formatPlanDriftText,
+	type PlanDriftCheck,
+} from "../architecture/plan-freeze";
+import { stampManifestPlanSha256 } from "./pane-status";
+import {
 	formatDelegateProgressLine,
 	formatUsage,
 	getFinalAssistantText,
@@ -387,6 +394,29 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 				(ctx as any).ui.notify(guard.warning, "warning");
 			}
 
+			// WP5: OSOT plan freeze. Ready plans are frozen per phase on the
+			// FIRST coder delegation; every later coder/reviewer delegation for
+			// that phase verifies the current plan against the snapshot and
+			// fail-fast blocks on drift (before any child is spawned). A
+			// reviewer with no snapshot is allowed (legacy phases started
+			// before the freeze existed).
+			let planFreeze: PlanDriftCheck | undefined;
+			if (architecture.plan?.status === "ready") {
+				if (agent === "coder") {
+					planFreeze = ensurePlanFrozenForPhase(ctx.cwd, architecture.plan, architectureRequirement.phase, (ctx as any).sessionManager).drift;
+				} else {
+					planFreeze = checkPlanDrift(ctx.cwd, architectureRequirement.planId, architectureRequirement.phase, (ctx as any).sessionManager);
+					if (planFreeze.status === "no_snapshot") planFreeze = undefined;
+				}
+				if (planFreeze && planFreeze.status !== "match") {
+					return {
+						isError: true,
+						content: [{ type: "text", text: formatPlanDriftText(planFreeze) }],
+						details: { agent, status: "failed", task: delegatedTask, reason: "plan_drift_detected", planFreeze },
+					};
+				}
+			}
+
 			// WP1: delegates escalate via the child-registered workflow_ask_operator
 			// tool (see buildChildEnv). Snapshot the open blocking questions before
 			// the run so the parent session can surface any that the delegate created.
@@ -502,22 +532,43 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 				planId: architectureRequirement.planId,
 				phase: architectureRequirement.phase,
 			};
+			// WP5: re-check drift AFTER the run — the plan could have been
+			// edited while the coder was working. Stamp the frozen sha onto the
+			// pane manifest so audit/finalization can pin evidence to the plan.
+			const planFreezeAfter = planFreeze
+				? checkPlanDrift(ctx.cwd, architectureRequirement.planId, architectureRequirement.phase, (ctx as any).sessionManager)
+				: undefined;
+			if (planFreezeAfter?.expectedSha256 && typeof result.manifestFile === "string" && result.manifestFile.trim()) {
+				void stampManifestPlanSha256(result.manifestFile, planFreezeAfter.expectedSha256);
+			}
 			// TASK-003 Phase B: matrix-gated coder phases must pass the structured completion-evidence gate before `coder_completed` is recorded.
 			// WP2 (G7/G9): the gate also verifies filesChanged against the observed diff and re-runs claimed-passed runnable evidence commands.
 			const advancement = failed ? undefined : evaluateCoderPhaseAdvancement(
 				architecture.plan,
 				result,
 				baseDetails,
-				snapshotBefore && snapshotAfter
-					? {
-						verification: {
-							delegateCwd: guardCwd,
-							snapshotBefore,
-							snapshotAfter,
-							rerun: resolveEvidenceRerunPolicy(loadedForGuard.config),
-						},
-					}
-					: {},
+				{
+					...(snapshotBefore && snapshotAfter
+						? {
+							verification: {
+								delegateCwd: guardCwd,
+								snapshotBefore,
+								snapshotAfter,
+								rerun: resolveEvidenceRerunPolicy(loadedForGuard.config),
+							},
+						}
+						: {}),
+					...(planFreezeAfter
+						? {
+							planFreeze: {
+								status: planFreezeAfter.status,
+								expectedSha256: planFreezeAfter.expectedSha256,
+								currentSha256: planFreezeAfter.currentSha256,
+								reason: planFreezeAfter.reason,
+							},
+						}
+						: {}),
+				},
 			);
 			if (advancement?.kind === "block") return { content: advancement.content, details: advancement.details, isError: true };
 			const coderUpdate = failed
