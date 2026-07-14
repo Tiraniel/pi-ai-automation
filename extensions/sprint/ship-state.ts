@@ -84,7 +84,16 @@ export type ShipStopCondition =
 	| "full-sprint-gates-not-confirmed"
 	| "text-evidence-readiness-missing"
 	| "reviewer-required-implementation-evidence-missing"
-	| "awaiting-operator";
+	| "awaiting-operator"
+	| "budget-exhausted";
+
+/** WP4: durable loop budget for an AFK run. Copied from
+ *  `WorkflowConfig.loopBudget` at start; the engine checks it at every
+ *  implementation-loop re-entry and stops with `budget-exhausted`. */
+export interface ShipLoopBudget {
+	maxCostUsd?: number;
+	maxWallClockMs?: number;
+}
 
 /** WP1: open blocking operator question snapshot carried on durable state.
  *  `sprint_ship` refreshes it from the run dir's questions.jsonl before every
@@ -127,6 +136,10 @@ export interface ShipState {
 	/** WP1: unanswered blocking operator questions for this run (refreshed
 	 *  from questions.jsonl by sprint_ship; absent = none known). */
 	openOperatorQuestions?: ShipOpenOperatorQuestion[];
+	/** WP4: accumulated delegate spend (USD) across the run. */
+	costUsdSpent?: number;
+	/** WP4: budget limits for this run; absent = unbounded. */
+	loopBudget?: ShipLoopBudget;
 	// debug-only diagnostics
 	diagnosis?: string;
 	rootCauseHypothesis?: string;
@@ -159,6 +172,8 @@ export interface CreateInitialShipStateInput {
 	selectedNextLane?: DebugNextLane;
 	// When true, indicates Brain/Phase B has already satisfied PRD/sprint/architecture/implementation confirmations for a full-sprint lane. Defaults to false.
 	fullSprintGatesConfirmed?: boolean;
+	/** WP4: loop budget limits copied from workflow config at start. */
+	loopBudget?: ShipLoopBudget;
 }
 
 export const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -262,6 +277,10 @@ export function createInitialShipState(input: CreateInitialShipStateInput): Ship
 		// the engine's `=== true` check is the only authorization signal and
 		// undefined-on-disk states cannot be silently treated as authorized.
 		fullSprintGatesConfirmed: input.fullSprintGatesConfirmed === true,
+		costUsdSpent: 0,
+		...(input.loopBudget && (input.loopBudget.maxCostUsd !== undefined || input.loopBudget.maxWallClockMs !== undefined)
+			? { loopBudget: { ...input.loopBudget } }
+			: {}),
 		createdAt: now,
 		updatedAt: now,
 	};

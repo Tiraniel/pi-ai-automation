@@ -273,6 +273,7 @@ function extractV2RuntimeOverrides(rawConfig: unknown): WorkflowConfig {
 	if (normalized.delegatePaneAutoClose !== undefined) runtime.delegatePaneAutoClose = normalized.delegatePaneAutoClose;
 	if (normalized.delegateFallbacks !== undefined) runtime.delegateFallbacks = normalized.delegateFallbacks;
 	if (normalized.evidence !== undefined) runtime.evidence = normalized.evidence;
+	if (normalized.loopBudget !== undefined) runtime.loopBudget = normalized.loopBudget;
 	const semanticNavigation = normalizeRuntimeSemanticNavigationOverride(rawConfig);
 	if (semanticNavigation !== undefined) runtime.semanticNavigation = semanticNavigation;
 	return runtime;

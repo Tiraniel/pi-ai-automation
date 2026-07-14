@@ -72,6 +72,12 @@ terms; when a module is named after a concept, the concept lives here.
   `prd_ready_for_sprint`, and stops AFK ship with `awaiting-operator`.
 - **quality audit** — advisory post-hoc scan persisted under
   `.pi/workflow-runs/quality-audit/`.
+- **loop budget** — WP4 circuit breakers (`extensions/workflow/loop-budget.ts`,
+  config `loopBudget`): per-phase durable spend ledger
+  (`<planId>.<phase>.budget.json`) + repeated-finding fingerprints. Exceeding
+  cost/wall-clock or repeating the same blocking finding
+  `maxSameFindingRepeats` times escalates a blocking operator question and
+  blocks further delegation; the AFK ship stops with `budget-exhausted`.
 
 ## Sprint substrate
 

@@ -39,6 +39,7 @@ import {
 	type EvidenceRerunMode,
 	type EvidenceVerificationConfig,
 	type FlowDirection,
+	type LoopBudgetConfig,
 	type V1AgentPreset,
 	type V1ReviewerSwarmConfig,
 	type SemanticNavigationConfig,
@@ -107,6 +108,23 @@ function normalizeV1DelegateFallbacks(value: unknown): V1WorkflowConfig["delegat
 	const reviewer = normalizeV1AgentPreset(record.reviewer);
 	if (reviewer) out.reviewer = reviewer;
 	return out.coder || out.reviewer ? out : undefined;
+}
+
+function normalizeV1LoopBudget(value: unknown): LoopBudgetConfig | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const out: LoopBudgetConfig = {};
+	const asPositiveNumber = (v: unknown): number | undefined => {
+		const n = typeof v === "number" && Number.isFinite(v) ? v : undefined;
+		return n !== undefined && n > 0 ? n : undefined;
+	};
+	const maxCostUsd = asPositiveNumber(record.maxCostUsd);
+	if (maxCostUsd !== undefined) out.maxCostUsd = maxCostUsd;
+	const maxWallClockMs = asPositiveNumber(record.maxWallClockMs);
+	if (maxWallClockMs !== undefined) out.maxWallClockMs = maxWallClockMs;
+	const maxSameFindingRepeats = asInteger(record.maxSameFindingRepeats);
+	if (maxSameFindingRepeats !== undefined && maxSameFindingRepeats > 0) out.maxSameFindingRepeats = maxSameFindingRepeats;
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function normalizeV1EvidenceConfig(value: unknown): EvidenceVerificationConfig | undefined {
@@ -219,6 +237,8 @@ export function normalizeV1Config(input: unknown): V1WorkflowConfig | undefined 
 	if (paneAutoClose !== undefined) out.delegatePaneAutoClose = paneAutoClose;
 	const evidence = normalizeV1EvidenceConfig(record.evidence);
 	if (evidence) out.evidence = evidence;
+	const loopBudget = normalizeV1LoopBudget(record.loopBudget);
+	if (loopBudget) out.loopBudget = loopBudget;
 	return out;
 }
 

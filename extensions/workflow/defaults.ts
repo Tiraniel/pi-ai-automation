@@ -6,6 +6,7 @@ import {
 	REVIEWER_INSTRUCTIONS,
 } from "./prompts";
 import { DEFAULT_EVIDENCE_RERUN_ALLOWLIST } from "./delegate/evidence-verification";
+import { DEFAULT_MAX_SAME_FINDING_REPEATS } from "./loop-budget";
 import type { DeepPlanningConfig, WorkflowConfig } from "./types";
 
 // One source for the default PR-agent instructions; both default planners
@@ -67,6 +68,11 @@ export const DEFAULT_CONFIG: WorkflowConfig = {
 	evidence: {
 		rerun: "required",
 		rerunAllowlist: [...DEFAULT_EVIDENCE_RERUN_ALLOWLIST],
+	},
+	loopBudget: {
+		// Cost / wall-clock are unbounded unless configured; the
+		// repeated-finding breaker is always on.
+		maxSameFindingRepeats: DEFAULT_MAX_SAME_FINDING_REPEATS,
 	},
 	agents: {
 		brain: {

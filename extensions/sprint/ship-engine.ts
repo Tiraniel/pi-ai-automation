@@ -51,6 +51,7 @@ const STOP_CONDITION_BY_KIND: Record<ShipStopCondition, string> = {
 	"full-sprint-gates-not-confirmed": "Full-sprint lane lacks durable PRD/architecture/implementation confirmations; AFK stop and report.", "text-evidence-readiness-missing": "Text-evidence-only path is missing concrete text evidence; AFK stop and report (or route to reviewer).",
 	"reviewer-required-implementation-evidence-missing": "Reviewer-required lane lacks concrete implementation evidence (changedFiles/evidenceRefs/passed-checks); AFK stop and report.",
 	"awaiting-operator": "Unanswered blocking operator question(s); AFK stop and report until answered via workflow_answer_question.",
+	"budget-exhausted": "Loop budget (cost or wall-clock) exhausted; AFK stop and report.",
 };
 
 export type ShipTransitionStage = ShipStage | string;
@@ -70,16 +71,41 @@ export type ShipEvent =
 	| { kind: "select_next_lane"; lane: string; hotfixKind?: HotfixKind }
 	| { kind: "select_report_only" }
 	| { kind: "implement_started"; note?: string }
-	| { kind: "coder_completed"; changedFiles: string[]; evidenceRefs: string[]; checks: ShipCheckRecord[]; reviewerRequired?: boolean; evidenceOnly?: boolean }
-	| { kind: "reviewer_changes_requested"; at: string; notes?: string; broaderRisk?: boolean }
-	| { kind: "reviewer_approved"; at: string; notes?: string }
-	| { kind: "evidence_collected"; refs: string[]; checks?: ShipCheckRecord[] }
-	| { kind: "focused_fix_completed"; changedFiles?: string[]; evidenceRefs?: string[]; checks?: ShipCheckRecord[] }
+	| { kind: "coder_completed"; changedFiles: string[]; evidenceRefs: string[]; checks: ShipCheckRecord[]; reviewerRequired?: boolean; evidenceOnly?: boolean; costUsd?: number }
+	| { kind: "reviewer_changes_requested"; at: string; notes?: string; broaderRisk?: boolean; costUsd?: number }
+	| { kind: "reviewer_approved"; at: string; notes?: string; costUsd?: number }
+	| { kind: "evidence_collected"; refs: string[]; checks?: ShipCheckRecord[]; costUsd?: number }
+	| { kind: "focused_fix_completed"; changedFiles?: string[]; evidenceRefs?: string[]; checks?: ShipCheckRecord[]; costUsd?: number }
 	| { kind: "finalization_recorded"; finalizationSummary: string; finalizationResult?: string; qualityAuditSummary: string; qualityAuditArtifact: string }
 	| { kind: "remote_action_requested"; action: "push" | "pr" | "deploy" | "destructive" | "credentialed" }
 	| { kind: "mark_blocked"; reason: string };
 
 function pushBlocker(state: ShipState, blocker: string): ShipState { return { ...state, blockers: [...state.blockers, blocker] }; }
+// WP4: accumulate delegate spend on the durable state; events without a cost
+// (or with a non-finite one) leave the ledger untouched.
+function accumulateCost(state: ShipState, costUsd: number | undefined): ShipState {
+	const delta = typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd > 0 ? costUsd : 0;
+	if (delta === 0) return state;
+	return { ...state, costUsdSpent: (state.costUsdSpent ?? 0) + delta };
+}
+// WP4: budget check at implementation-loop re-entry points. Returns the
+// blocker text or undefined. Pure over (state, nowMs).
+function loopBudgetBlocker(state: ShipState, nowMs: number): string | undefined {
+	const budget = state.loopBudget;
+	if (!budget) return undefined;
+	const spent = state.costUsdSpent ?? 0;
+	if (budget.maxCostUsd !== undefined && spent > budget.maxCostUsd) {
+		return `Loop budget exhausted: cost spent $${spent.toFixed(2)} exceeds loopBudget.maxCostUsd=$${budget.maxCostUsd.toFixed(2)}.`;
+	}
+	if (budget.maxWallClockMs !== undefined) {
+		const startedMs = Date.parse(state.createdAt);
+		const elapsedMs = Number.isFinite(startedMs) ? Math.max(0, nowMs - startedMs) : 0;
+		if (elapsedMs > budget.maxWallClockMs) {
+			return `Loop budget exhausted: wall clock ${Math.round(elapsedMs / 1000)}s exceeds loopBudget.maxWallClockMs=${budget.maxWallClockMs}ms.`;
+		}
+	}
+	return undefined;
+}
 function appendChecks(state: ShipState, checks: ShipCheckRecord[]): ShipState { return checks.length ? { ...state, checks: [...state.checks, ...checks] } : state; }
 function appendUnique(state: ShipState, listKey: "evidenceRefs" | "changedFiles" | "affectedFiles", items: string[]): ShipState {
 	if (!items.length) return state;
@@ -209,6 +235,12 @@ function handleImplementStarted(state: ShipState, _event: Extract<ShipEvent, { k
 			"Full-sprint lane requires fullSprintGatesConfirmed=true (PRD/sprint/architecture/implementation confirmations) on the durable state before implement_started; current value is undefined or false.",
 			"stop");
 	}
+	// WP4: an exhausted cost/wall-clock budget stops the run before another
+	// implementation attempt is admitted.
+	const budgetBlocker = loopBudgetBlocker(state, Date.now());
+	if (budgetBlocker) {
+		return stopTransition(state, "blocked", "budget-exhausted", budgetBlocker);
+	}
 	const next: ShipState = setNextAction({ ...state, attempts: state.attempts + 1 }, "implement");
 	if (next.attempts > next.retryBudget) {
 		return stopTransition(next, "blocked", "retry-budget-exhausted", `Retry budget exhausted (${next.retryBudget}); cannot start another implementation attempt.`);
@@ -278,7 +310,8 @@ function handleCoderCompleted(state: ShipState, event: Extract<ShipEvent, { kind
 			"Full-sprint lane requires fullSprintGatesConfirmed=true (PRD/sprint/architecture/implementation confirmations) on the durable state before coder_completed; current value is undefined or false.",
 			"stop");
 	}
-	let next: ShipState = appendUnique(state, "changedFiles", event.changedFiles ?? []);
+	let next: ShipState = accumulateCost(state, event.costUsd);
+	next = appendUnique(next, "changedFiles", event.changedFiles ?? []);
 	next = appendUnique(next, "evidenceRefs", event.evidenceRefs ?? []);
 	next = appendChecks(next, event.checks ?? []);
 	const failing = (event.checks ?? []).filter((check) => check.outcome === "failed");
@@ -310,7 +343,7 @@ function handleCoderCompleted(state: ShipState, event: Extract<ShipEvent, { kind
 
 function handleReviewerChangesRequested(state: ShipState, event: Extract<ShipEvent, { kind: "reviewer_changes_requested" }>): ShipTransition {
 	const outcome: ShipReviewerOutcome = { kind: "changes-requested", at: event.at, notes: event.notes, broaderRisk: event.broaderRisk };
-	const next: ShipState = { ...state, reviewerOutcome: outcome };
+	const next: ShipState = { ...accumulateCost(state, event.costUsd), reviewerOutcome: outcome };
 	if (event.broaderRisk) {
 		// Reviewer fix #B2: append/dedupe `reviewer-broader-risk` to durable promotionReasonCodes BEFORE stopTransition so the report and persisted state surface the reviewer-driven promotion reason.
 		const codes: LaneRiskCode[] = state.promotionReasonCodes.some((c) => c === "reviewer-broader-risk") ? state.promotionReasonCodes : [...state.promotionReasonCodes, "reviewer-broader-risk"];
@@ -319,12 +352,18 @@ function handleReviewerChangesRequested(state: ShipState, event: Extract<ShipEve
 	if (next.attempts >= next.retryBudget) {
 		return stopTransition(next, "blocked", "retry-budget-exhausted", `Reviewer CHANGES_REQUESTED with no remaining retries (used ${next.attempts}/${next.retryBudget}).`);
 	}
+	// WP4: the focused-fix loop is a re-entry point; an exhausted budget stops
+	// the run instead of admitting another fix round.
+	const budgetBlocker = loopBudgetBlocker(next, Date.now());
+	if (budgetBlocker) {
+		return stopTransition(next, "blocked", "budget-exhausted", budgetBlocker);
+	}
 	return transition(setNextAction(next, "fix"), "fixing", { notes: ["Reviewer CHANGES_REQUESTED; entering focused-fix loop."] });
 }
 
 function handleReviewerApproved(state: ShipState, event: Extract<ShipEvent, { kind: "reviewer_approved" }>): ShipTransition {
 	const outcome: ShipReviewerOutcome = { kind: "approved", at: event.at, notes: event.notes };
-	const next: ShipState = { ...state, reviewerOutcome: outcome };
+	const next: ShipState = { ...accumulateCost(state, event.costUsd), reviewerOutcome: outcome };
 	// Reviewer fix (TASK-011 Phase B): reviewer-required lanes must have concrete implementation evidence on durable state before `reviewer_approved` can advance. Without this, a fabricated `reviewerOutcome: approved` (or `reviewer_approved` on a fresh state) could reach delivery_complete without coder/focused-fix/evidence.
 	if (deriveReviewerRequired(state)) {
 		const reason = reviewerRequiredEvidenceBlocker(state);
@@ -342,7 +381,8 @@ function handleEvidenceCollected(state: ShipState, event: Extract<ShipEvent, { k
 		const reason = "evidence_collected provided no concrete refs and no checks; cannot advance to finalizing without evidence.";
 		return stopTransition(pushBlocker(state, reason), "blocked", "text-evidence-readiness-missing", reason, "stop");
 	}
-	let next: ShipState = appendUnique(state, "evidenceRefs", event.refs ?? []);
+	let next: ShipState = accumulateCost(state, event.costUsd);
+	next = appendUnique(next, "evidenceRefs", event.refs ?? []);
 	next = appendChecks(next, event.checks ?? []);
 	if (state.lane === "hotfix" && state.hotfixKind === "text-evidence-only" && !textEvidenceReadinessSatisfied(next)) {
 		const reason = textEvidenceReadinessBlocker(next, "evidence_collected", "route-to-review");
@@ -364,7 +404,8 @@ function handleFocusedFixCompleted(state: ShipState, event: Extract<ShipEvent, {
 			"Full-sprint lane requires fullSprintGatesConfirmed=true (PRD/sprint/architecture/implementation confirmations) on the durable state before focused_fix_completed; current value is undefined or false.",
 			"stop");
 	}
-	let next: ShipState = appendUnique(state, "changedFiles", event.changedFiles ?? []);
+	let next: ShipState = accumulateCost(state, event.costUsd);
+	next = appendUnique(next, "changedFiles", event.changedFiles ?? []);
 	next = appendUnique(next, "evidenceRefs", event.evidenceRefs ?? []);
 	next = appendChecks(next, event.checks ?? []);
 	const failing = (event.checks ?? []).filter((check) => check.outcome === "failed");

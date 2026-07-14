@@ -488,6 +488,16 @@ Ports the agent-harness sha256 freeze into the main workflow (`extensions/workfl
 
 Smokes: `scripts/task-033-plan-freeze-smokes.ts`.
 
+### Loop circuit breakers (TASK-034 / WP4)
+
+`WorkflowConfig.loopBudget: { maxCostUsd?, maxWallClockMs?, maxSameFindingRepeats? }` (v1 field with v2 runtime-override passthrough; defaults: cost/wall-clock unbounded, `maxSameFindingRepeats: 2`). Owned by `extensions/workflow/loop-budget.ts`:
+
+- **Normal cycle.** Delegate `usage.cost` (coder + reviewer/swarm) accumulates in a durable per-phase ledger `.pi/workflow-architecture/plans/<planId>.<phase>.budget.json`. Before each `delegate_to_coder` the gate settles prior escalations, then evaluates the window: an exceeded cost/wall-clock budget records a **blocking operator question** ("continue?") and blocks delegation (`budget_exhausted`); while the question is open every delegation stays blocked (`budget_escalation_pending`); the operator's answer resets the budget window.
+- **Repeated findings.** Blocking review verdicts are fingerprinted (`role + first 80 normalized chars`); the same fingerprint reaching `maxSameFindingRepeats` escalates a blocking operator question ("loop is not converging — continue / revise the plan / stop") instead of another silent re-delegate round. One review round counts a fingerprint once; an already-escalated fingerprint is not re-asked; the answer clears its counter.
+- **AFK ship.** The configured budget is pinned onto durable `ShipState` at start (`loopBudget`, `costUsdSpent`); ship events may carry `costUsd` and the engine accumulates them. The implementation-loop re-entry points (`implement_started`, `reviewer_changes_requested` → fixing) stop with the dedicated `budget-exhausted` condition on cost or wall-clock overrun; REPORT.md shows the spend against the caps.
+
+Smokes: `scripts/task-034-loop-budget-smokes.ts`.
+
 ### Existing delegation stays the same
 
 If you do not pass `room` to `delegate_to_coder` / `delegate_to_reviewer`, the child receives no `PI_WORKFLOW_ROOM_*` env vars and no communication block, so normal delegation behavior is unchanged. The room tools are still registered, but resolve nothing without a `roomId` and will return a clear error prompting the user to call `room_create` first.

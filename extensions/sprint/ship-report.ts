@@ -136,6 +136,7 @@ export function renderShipReport(state: ShipState, options: ShipReportOptions = 
 	lines.push(`- Task id: ${state.taskId ?? "(none)"}${state.itemId ? ` | Debug item id: ${state.itemId}` : ""}`);
 	lines.push(`- Stage: ${state.stage}`);
 	lines.push(`- Attempts: ${state.attempts} / ${state.retryBudget}`);
+	lines.push(`- Cost spent (USD): ${(state.costUsdSpent ?? 0).toFixed(2)}${state.loopBudget?.maxCostUsd !== undefined ? ` / max ${state.loopBudget.maxCostUsd.toFixed(2)}` : ""}${state.loopBudget?.maxWallClockMs !== undefined ? ` | wall-clock cap ${state.loopBudget.maxWallClockMs}ms` : ""}`);
 	lines.push(`- Next action: ${state.nextAction ?? "(unset)"}`);
 	lines.push(`- Last stop condition: ${state.lastStopCondition ?? "(none)"}`);
 	lines.push(`- Allowed scope: ${state.allowedScope ?? "(not set)"}`);

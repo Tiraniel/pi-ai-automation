@@ -35,6 +35,13 @@ import {
 	formatPlanDriftText,
 	type PlanDriftCheck,
 } from "../architecture/plan-freeze";
+import {
+	accumulatePhaseCost,
+	enforceLoopBudgetBeforeDelegation,
+	recordReviewFindings,
+	resolveLoopBudgetConfig,
+	type ReviewFindingInput,
+} from "../loop-budget";
 import { stampManifestPlanSha256 } from "./pane-status";
 import {
 	formatDelegateProgressLine,
@@ -421,6 +428,33 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			// tool (see buildChildEnv). Snapshot the open blocking questions before
 			// the run so the parent session can surface any that the delegate created.
 			const questionsFile = operatorQuestionsPathForRoom(ctx.cwd, roomContext?.roomId ?? DEFAULT_OPERATOR_QUESTIONS_ROOM_ID);
+
+			// WP4: loop circuit breakers. Before another coder round is admitted,
+			// the per-phase budget (cost / wall-clock, accumulated below) and any
+			// pending budget escalation must clear; an exhausted budget escalates
+			// a blocking operator question instead of silently looping.
+			const loopBudget = resolveLoopBudgetConfig(loadedForGuard.config);
+			if (agent === "coder") {
+				const budgetGate = enforceLoopBudgetBeforeDelegation(
+					ctx.cwd,
+					architectureRequirement.planId,
+					architectureRequirement.phase,
+					loopBudget,
+					questionsFile,
+					(ctx as any).sessionManager,
+				);
+				if (!budgetGate.allowed) {
+					if (typeof (ctx as any).ui?.notify === "function") {
+						(ctx as any).ui.notify(budgetGate.text ?? "Loop budget exhausted.", "warning");
+					}
+					return {
+						isError: true,
+						content: [{ type: "text", text: budgetGate.text ?? "Loop budget exhausted; awaiting operator." }],
+						details: { agent, status: "failed", task: delegatedTask, reason: budgetGate.reason, loopBudgetGate: budgetGate },
+					};
+				}
+			}
+
 			const openQuestionIdsBefore = new Set(listOpenBlockingQuestionsInFile(questionsFile).map((q) => q.id));
 			const notifyDelegateOperatorQuestions = (): void => {
 				if (typeof (ctx as any).ui?.notify !== "function") return;
@@ -448,9 +482,25 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 						: delegatedTask;
 					const result = await runDelegateAgent(ctx, "reviewer", singleTask, requestedCwd, signal, onUpdate, roomContext, guard.preset);
 					notifyDelegateOperatorQuestions();
+					accumulatePhaseCost(ctx.cwd, architectureRequirement.planId, architectureRequirement.phase, result.usage?.cost ?? 0, (ctx as any).sessionManager);
 					const status = normalizeFinalStatus(result);
 					const finalOutput = getToolResultText(result);
 					const verdict = parseReviewerVerdict(finalOutput);
+					// WP4: repeated-finding breaker — a CHANGES_REQUESTED verdict is a
+					// blocking finding; the same fingerprint reaching the threshold
+					// escalates a blocking operator question instead of another
+					// silent re-delegate round.
+					if (verdict === "CHANGES_REQUESTED") {
+						recordReviewFindings(
+							ctx.cwd,
+							architectureRequirement.planId,
+							architectureRequirement.phase,
+							[{ role: "reviewer", text: finalOutput }],
+							loopBudget,
+							questionsFile,
+							(ctx as any).sessionManager,
+						);
+					}
 					// Fail-closed: only an explicit APPROVED from a completed run
 					// advances the phase; UNKNOWN is not approval.
 					const phaseStatus = verdict === "APPROVED" && status === "completed" ? "review_approved" : "changes_requested";
@@ -494,6 +544,33 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 					{ plan: architecture.plan, phase: architectureRequirement.phase },
 				);
 				notifyDelegateOperatorQuestions();
+				// WP4: accumulate swarm reviewer spend and record blocking findings
+				// (role + reason fingerprint) for the repeated-finding breaker.
+				const swarmCost = swarm.results.reduce((sum, item) => sum + (item.result?.usage?.cost ?? 0), 0);
+				accumulatePhaseCost(ctx.cwd, architectureRequirement.planId, architectureRequirement.phase, swarmCost, (ctx as any).sessionManager);
+				const blockingFindings: ReviewFindingInput[] = [];
+				for (const item of swarm.results) {
+					const effective = item.effectiveVerdict ?? item.verdict;
+					if (effective !== "CHANGES_REQUESTED") continue;
+					const role = item.role ?? item.target ?? "reviewer";
+					const reasons = (item.blockingReasons ?? []).filter((reason) => typeof reason === "string" && reason.trim());
+					if (reasons.length > 0) {
+						for (const reason of reasons) blockingFindings.push({ role, text: reason });
+					} else {
+						blockingFindings.push({ role, text: getToolResultText(item.result ?? {}) });
+					}
+				}
+				if (blockingFindings.length > 0) {
+					recordReviewFindings(
+						ctx.cwd,
+						architectureRequirement.planId,
+						architectureRequirement.phase,
+						blockingFindings,
+						loopBudget,
+						questionsFile,
+						(ctx as any).sessionManager,
+					);
+				}
 				const hasChangesRequested = swarm.results.some((item) => item.verdict === "CHANGES_REQUESTED");
 				const status = swarm.aborted ? "aborted" : swarm.failed ? "failed" : "completed";
 				const reviewerUpdate = markArchitecturePhaseUpdate(
@@ -522,6 +599,8 @@ function makeDelegateTool(pi: ExtensionAPI, agent: "coder" | "reviewer") {
 			const result = await runDelegateAgent(ctx, agent, delegatedTask, requestedCwd, signal, onUpdate, roomContext, guard.preset);
 			const snapshotAfter = evidenceVerified ? captureWorkspaceDiffSnapshot(guardCwd) : undefined;
 			notifyDelegateOperatorQuestions();
+			// WP4: durable per-phase spend ledger for the loop circuit breaker.
+			accumulatePhaseCost(ctx.cwd, architectureRequirement.planId, architectureRequirement.phase, result.usage?.cost ?? 0, (ctx as any).sessionManager);
 			const status = normalizeFinalStatus(result);
 			const finalOutput = getToolResultText(result);
 			const failed = status !== "completed";

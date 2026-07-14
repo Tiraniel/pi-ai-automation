@@ -131,6 +131,17 @@ export interface EvidenceVerificationConfig {
 	rerunAllowlist?: string[];
 }
 
+/** WP4 loop circuit breakers. Cost/wall-clock are unbounded when omitted;
+ *  `maxSameFindingRepeats` defaults to 2 (owned by defaults.ts /
+ *  `loop-budget.ts`). Exceeding a budget stops the AFK ship
+ *  (`budget-exhausted`) or blocks the normal delegation cycle with a
+ *  blocking operator question ("continue?"). */
+export interface LoopBudgetConfig {
+	maxCostUsd?: number;
+	maxWallClockMs?: number;
+	maxSameFindingRepeats?: number;
+}
+
 export interface WorkflowConfig {
 	autoApplyBrain?: boolean;
 	/** Built-in workflow profile id (e.g. "default" or "gonka-hybrid"). */
@@ -150,6 +161,8 @@ export interface WorkflowConfig {
 	semanticNavigation?: SemanticNavigationConfig;
 	/** Coder evidence verification (diff check + command re-run) policy. */
 	evidence?: EvidenceVerificationConfig;
+	/** Loop circuit breakers (cost / wall-clock / repeated findings). */
+	loopBudget?: LoopBudgetConfig;
 }
 
 /** v1 aliases used by the v2 normalizer. The v1 shape is intentionally

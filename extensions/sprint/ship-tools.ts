@@ -41,6 +41,8 @@ import { renderShipReport } from "./ship-report";
 import { transitionShipState, type ShipEvent, type ShipTransition } from "./ship-engine";
 import { evaluatePlanningGate, planningGateErrorResult } from "../workflow/planning-gate-runtime";
 import { listOpenBlockingQuestionsInFile, OPERATOR_QUESTIONS_FILE_NAME } from "../workflow/operator-questions";
+import { loadWorkflowConfig } from "../workflow/runtime/config";
+import { resolveLoopBudgetConfig } from "../workflow/loop-budget";
 
 /** WP1: pin the run dir's unanswered blocking operator questions onto the
  *  state before the pure engine / report renderer consume it. */
@@ -296,6 +298,12 @@ export function registerSprintShipTools(pi: ExtensionAPI): void {
 					selectedNextLane: isDebugNextLane((params as any).selectedNextLane) ? ((params as any).selectedNextLane as DebugNextLane) : undefined,
 					fullSprintGatesConfirmed: laneRaw === "full-sprint",
 				};
+				// WP4: pin the configured loop budget onto the durable state so
+				// the pure engine can stop with budget-exhausted.
+				const loopBudget = resolveLoopBudgetConfig(loadWorkflowConfig(cwd).config);
+				if (loopBudget.maxCostUsd !== undefined || loopBudget.maxWallClockMs !== undefined) {
+					initial.loopBudget = { maxCostUsd: loopBudget.maxCostUsd, maxWallClockMs: loopBudget.maxWallClockMs };
+				}
 				let state: ShipState;
 				try {
 					state = createInitialShipState(initial);
