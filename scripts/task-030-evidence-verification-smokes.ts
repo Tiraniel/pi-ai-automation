@@ -120,7 +120,9 @@ function makeResult(packet: CoderCompletionEvidence, cwd: string): DelegateRunRe
 		finalOutput: "structured evidence attached", display: "headless",
 		completionSource: "explicit",
 	};
-	(result as unknown as { details?: Record<string, unknown> }).details = { coderEvidence: packet };
+	// TASK-002 hard-cut (merged from main): only the canonical
+	// `details.evidence.coderEvidence` envelope is gate-authoritative.
+	(result as unknown as { details?: Record<string, unknown> }).details = { evidence: { coderEvidence: packet } };
 	return result;
 }
 

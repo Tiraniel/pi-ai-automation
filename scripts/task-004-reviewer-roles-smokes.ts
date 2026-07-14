@@ -393,33 +393,87 @@ function main(): void {
 	}
 
 	// (4c) Positive baseline: a behavior / evidence-test APPROVED result that
-	//      cites acceptable runtime evidence (runnable behavior test, runtime
-	//      gate, observed tool output) is NOT downgraded.
+	//      cites acceptable canonical typed reviewer evidence is NOT
+	//      downgraded. Under the TASK-002 tightened contract, free-form
+	//      "test passed" / "exit code 0" prose in any language is
+	//      diagnostic only; only canonical typed reviewer evidence
+	//      (non-empty `criterionCoverage` or `commandsRun` on a
+	//      canonical `details.evidence` / `details.done.evidence` envelope)
+	//      suppresses the runtime-scope fail-closed downgrade. The
+	//      fixture here uses the canonical envelope to keep this a
+	//      positive baseline; the prose-only variant would be downgraded
+	//      to CHANGES_REQUESTED and is covered by test (6) and (8) below.
 	{
 		const plan = makeMatrixPlan();
 		const derivation = deriveReviewerRoleTargets(plan);
 		const behaviorTarget = derivation.targets.find((t) => t.role === "behavior");
 		const evidenceTarget = derivation.targets.find((t) => t.role === "evidence-test");
-		const positiveOutput = "APPROVED. behavior test passed: tsx scripts/smoke-tui.ts exited 0; runtime gate passed: tool result observed in pane.";
-		const behaviorEval = evaluateReviewerResult(behaviorTarget!, makeApprovedResult("behavior", positiveOutput));
+		// 4c-i: behavior approval with canonical typed reviewer evidence
+		// is NOT downgraded; the positive output is diagnostic only.
+		// The fixture carries the canonical `verdict` /
+		// `effectiveVerdict` so the role gate's structured verdict
+		// authority drives the APPROVED outcome.
+		const behaviorResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. The behavior is correct.",
+			completionSource: "explicit",
+			status: "completed",
+			details: {
+				done: {
+					evidence: {
+						reviewerEvidence: {
+							verdict: "APPROVED",
+							effectiveVerdict: "APPROVED",
+							criterionCoverage: [{ criterion: "TUI behavior", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+						},
+					},
+				},
+			},
+		};
+		const behaviorEval = evaluateReviewerResult(behaviorTarget!, behaviorResult);
 		check(behaviorEval.effectiveVerdict === "APPROVED",
-			"4c: behavior approval citing runtime evidence is NOT downgraded");
+			"4c: behavior approval with canonical details.done.evidence.reviewerEvidence is NOT downgraded");
 		check(behaviorEval.blockingReasons.length === 0,
 			`4c: behavior positive baseline has no blocking reasons (got: ${behaviorEval.blockingReasons.join("; ")})`);
-		const evidenceEval = evaluateReviewerResult(evidenceTarget!, makeApprovedResult("evidence-test", positiveOutput));
+		// 4c-ii: evidence-test approval with canonical typed reviewer
+		// evidence is NOT downgraded.
+		const evidenceResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. The behavior is correct.",
+			completionSource: "explicit",
+			status: "completed",
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						criterionCoverage: [{ criterion: "Evidence/test adequacy reviewer validates behavior evidence", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+					},
+				},
+			},
+		};
+		const evidenceEval = evaluateReviewerResult(evidenceTarget!, evidenceResult);
 		check(evidenceEval.effectiveVerdict === "APPROVED",
-			"4c: evidence-test approval citing runtime evidence is NOT downgraded");
+			"4c: evidence-test approval with canonical details.evidence.reviewerEvidence is NOT downgraded");
 
-		// Acceptable: explicit structured reviewer evidence with content also
-		// suppresses the fail-closed downgrade even when the output omits
-		// a positive runtime phrase.
+		// 4c-iii: typed criterion coverage on the canonical
+		// `details.evidence` envelope is the positive baseline; prose
+		// only is NOT. The fixture carries the canonical
+		// `verdict` / `effectiveVerdict` so the role gate's
+		// structured verdict authority drives the APPROVED outcome.
 		const structuredResult = makeApprovedResult("behavior", "APPROVED. The render path is correct.");
-		structuredResult.reviewerEvidence = {
-			criterionCoverage: [{ criterion: "TUI behavior", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+		structuredResult.details = {
+			evidence: {
+				reviewerEvidence: {
+					verdict: "APPROVED",
+					effectiveVerdict: "APPROVED",
+					criterionCoverage: [{ criterion: "TUI behavior", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+				},
+			},
 		};
 		const structuredEval = evaluateReviewerResult(behaviorTarget!, structuredResult);
 		check(structuredEval.effectiveVerdict === "APPROVED",
-			"4c: behavior approval with non-empty reviewerEvidence is NOT downgraded");
+			"4c: behavior approval with canonical details.evidence.reviewerEvidence is NOT downgraded");
 	}
 
 	// (5) Prompt-only / instructions-only runtime mitigation: an APPROVED
@@ -466,16 +520,26 @@ function main(): void {
 					status: "completed",
 				} satisfies ReviewerResultLike;
 			}
-			// Other roles approve with valid explicit evidence so they are
-			// not provisional.
+			// Other roles approve with valid canonical envelope
+			// evidence (with verdict / effectiveVerdict) so they are
+			// not provisional and the canonical verdict authority
+			// drives the APPROVED outcome. Top-level
+			// `reviewerEvidence` is a legacy path and no longer
+			// satisfies the role gate under the TASK-002 contract.
 			return {
 				verdict: "APPROVED",
 				finalOutput: "APPROVED. The criterion is satisfied; diff matches the spec.",
 				completionSource: "explicit",
 				status: "completed",
-				reviewerEvidence: {
-					present: true,
-					criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", evidenceKind: "diff", summary: "diff review" }],
+				details: {
+					evidence: {
+						reviewerEvidence: {
+							verdict: "APPROVED",
+							effectiveVerdict: "APPROVED",
+							present: true,
+							criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", evidenceKind: "diff", summary: "diff review" }],
+						},
+					},
 				},
 			} satisfies ReviewerResultLike;
 		});
@@ -512,16 +576,26 @@ function main(): void {
 		check(autoExitEval.blockingReasons.some((r) => r.toLowerCase().includes("provisional")),
 			"7: blocking reasons mention provisional completion source");
 
-		// With explicit structured reviewer evidence, the provisional flag is suppressed.
+		// With explicit structured reviewer evidence (canonical envelope),
+		// the provisional flag is suppressed. Under the TASK-002 tightened
+		// contract, top-level `reviewerEvidence` is a legacy path and does
+		// NOT suppress provisional — the canonical `done.evidence` envelope
+		// is the only authority.
 		const explicitEvidenceResult: ReviewerResultLike = {
 			verdict: "APPROVED",
 			finalOutput: "APPROVED. evidence packet: criterion coverage rows attached.",
 			completionSource: "auto_exit",
 			status: "completed",
-			reviewerEvidence: {
-				present: true,
-				explicitDeclaration: true,
-				criterionCoverage: [{ criterion: "TUI behavior", evidenceKind: "behavior-test", summary: "TUI behavior test passed" }],
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						present: true,
+						explicitDeclaration: true,
+						criterionCoverage: [{ criterion: "TUI behavior", evidenceKind: "behavior-test", summary: "TUI behavior test passed" }],
+					},
+				},
 			},
 		};
 		const explicitEval = evaluateReviewerResult(behaviorTarget!, explicitEvidenceResult);
@@ -729,58 +803,94 @@ function main(): void {
 		check(bareLabelEval.provisional === true,
 			"11c: bare 'evidence packet:' label does NOT suppress auto_exit provisional");
 
-		// 11d: empty criterionCoverage array does NOT suppress.
+		// 11d: empty criterionCoverage array on the CANONICAL envelope
+		// does NOT suppress. (Empty arrays are explicitly NOT typed
+		// evidence per the helper.)
 		const emptyCoverageResult: ReviewerResultLike = {
 			verdict: "APPROVED",
 			finalOutput: "APPROVED. Looks good.",
 			completionSource: "auto_exit",
 			status: "completed",
-			reviewerEvidence: { criterionCoverage: [] },
+			details: {
+				evidence: {
+					reviewerEvidence: { criterionCoverage: [] },
+				},
+			},
 		};
 		const emptyCoverageEval = evaluateReviewerResult(behaviorTarget!, emptyCoverageResult);
 		check(emptyCoverageEval.provisional === true,
-			"11d: empty criterionCoverage array does NOT suppress auto_exit provisional");
+			"11d: empty criterionCoverage array on canonical envelope does NOT suppress auto_exit provisional");
 
-		// 11e: non-empty criterion coverage DOES suppress.
+		// 11e: non-empty criterion coverage on the canonical envelope
+		// DOES suppress. Under the TASK-002 tightened contract, the
+		// canonical `done.evidence` envelope is the only path that
+		// suppresses provisional; top-level `reviewerEvidence` is legacy
+		// and is not tested here. The positive baseline also carries
+		// the canonical `verdict` / `effectiveVerdict` so the role
+		// gate's structured verdict authority drives the APPROVED
+		// outcome (final text is diagnostic only).
 		const contentResult: ReviewerResultLike = {
 			verdict: "APPROVED",
 			finalOutput: "APPROVED. Looks good.",
 			completionSource: "auto_exit",
 			status: "completed",
-			reviewerEvidence: { criterionCoverage: [{ criterion: "TUI behavior" }] },
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						criterionCoverage: [{ criterion: "TUI behavior" }],
+					},
+				},
+			},
 		};
 		const contentEval = evaluateReviewerResult(behaviorTarget!, contentResult);
 		check(contentEval.provisional === false,
-			"11e: non-empty criterionCoverage DOES suppress auto_exit provisional");
+			"11e: non-empty criterionCoverage on canonical envelope DOES suppress auto_exit provisional");
 		check(contentEval.effectiveVerdict === "APPROVED",
 			"11e: non-empty criterion coverage keeps required role approved");
 
-		// 11f: non-empty commands run DOES suppress.
+		// 11f: non-empty commands run on the canonical envelope DOES suppress.
 		const commandsResult: ReviewerResultLike = {
 			verdict: "APPROVED",
 			finalOutput: "APPROVED. Looks good.",
 			completionSource: "auto_exit",
 			status: "completed",
-			reviewerEvidence: { commandsRun: [{ command: "npx tsx scripts/smoke-tui.ts", outcome: "exit 0" }] },
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						commandsRun: [{ command: "npx tsx scripts/smoke-tui.ts", outcome: "exit 0" }],
+					},
+				},
+			},
 		};
 		const commandsEval = evaluateReviewerResult(behaviorTarget!, commandsResult);
 		check(commandsEval.provisional === false,
-			"11f: non-empty commandsRun DOES suppress auto_exit provisional");
+			"11f: non-empty commandsRun on canonical envelope DOES suppress auto_exit provisional");
 
-		// 11g: explicitDeclaration paired with non-empty coverage DOES suppress.
+		// 11g: explicitDeclaration paired with non-empty coverage on the
+		// canonical envelope DOES suppress.
 		const declaredResult: ReviewerResultLike = {
 			verdict: "APPROVED",
 			finalOutput: "APPROVED. Looks good.",
 			completionSource: "auto_exit",
 			status: "completed",
-			reviewerEvidence: {
-				explicitDeclaration: true,
-				criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						explicitDeclaration: true,
+						criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+					},
+				},
 			},
 		};
 		const declaredEval = evaluateReviewerResult(behaviorTarget!, declaredResult);
 		check(declaredEval.provisional === false,
-			"11g: explicitDeclaration + non-empty coverage DOES suppress auto_exit provisional");
+			"11g: explicitDeclaration + non-empty coverage on canonical envelope DOES suppress auto_exit provisional");
 	}
 
 	// (12) Source-string / static-only / read-the-source / skipped-running /
@@ -818,21 +928,34 @@ function main(): void {
 		}
 
 		// Counter-check: explicit structured reviewer evidence (typed
-		// criterion coverage) suppresses the static-only override.
+		// criterion coverage) on the CANONICAL envelope suppresses the
+		// static-only override. Under the TASK-002 tightened contract,
+		// top-level `reviewerEvidence` is a legacy path and is NOT
+		// sufficient — the canonical `done.evidence` envelope is the
+		// only path that satisfies the role. The fixture also carries
+		// the canonical `verdict` / `effectiveVerdict` so the role
+		// gate's structured verdict authority drives the APPROVED
+		// outcome (final text is diagnostic only).
 		const typedEvidenceResult: ReviewerResultLike = {
 			verdict: "APPROVED",
 			finalOutput: "APPROVED. source-string test passed by checking the source string for TUI output; no runtime run.",
 			completionSource: "explicit",
 			status: "completed",
-			reviewerEvidence: {
-				present: true,
-				explicitDeclaration: true,
-				criterionCoverage: [{ criterion: "TUI behavior", evidenceKind: "behavior-test", summary: "TUI behavior test passed" }],
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						present: true,
+						explicitDeclaration: true,
+						criterionCoverage: [{ criterion: "TUI behavior", evidenceKind: "behavior-test", summary: "TUI behavior test passed" }],
+					},
+				},
 			},
 		};
 		const typedEval = evaluateReviewerResult(behaviorTarget!, typedEvidenceResult);
 		check(typedEval.effectiveVerdict === "APPROVED",
-			"12: behavior source-string output with typed reviewerEvidence is NOT downgraded");
+			"12: behavior source-string output with canonical typed reviewerEvidence is NOT downgraded");
 	}
 
 	// (13) Final-output structured-evidence labels are NOT meaningful
@@ -874,18 +997,30 @@ function main(): void {
 				`13: evidence-test final-output label "${output}" with auto_exit stays CHANGES_REQUESTED`);
 		}
 
-		// Counter-check: typed criterion coverage (without vague label) on
-		// the same auto_exit source DOES suppress provisional.
+		// Counter-check: typed criterion coverage on the CANONICAL
+		// envelope (without vague label) on the same auto_exit source
+		// DOES suppress provisional. Under the TASK-002 tightened
+		// contract, top-level `reviewerEvidence` is a legacy path and is
+		// NOT sufficient — only the canonical `done.evidence` envelope
+		// satisfies the role.
 		const typedOkOk: ReviewerResultLike = {
 			verdict: "APPROVED",
 			finalOutput: "APPROVED. evidence packet: ok ok",
 			completionSource: "auto_exit",
 			status: "completed",
-			reviewerEvidence: { criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }] },
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+					},
+				},
+			},
 		};
 		const typedOkOkEval = evaluateReviewerResult(behaviorTarget!, typedOkOk);
 		check(typedOkOkEval.provisional === false,
-			"13: typed criterionCoverage on the same auto_exit result DOES suppress provisional");
+			"13: typed criterionCoverage on the canonical envelope DOES suppress provisional on auto_exit");
 		check(typedOkOkEval.effectiveVerdict === "APPROVED",
 			"13: typed criterionCoverage keeps required role approved");
 	}
@@ -956,33 +1091,64 @@ function main(): void {
 		check(codeWalkEval.effectiveVerdict === "CHANGES_REQUESTED",
 			"14d: regression code-walk-only output is downgraded (fail-closed)");
 
-		// 14e: positive baseline — regression APPROVED with acceptable runtime
-		//      evidence is NOT downgraded.
-		const positiveOutput = "APPROVED. regression test passed: npx tsx scripts/regression-smoke.ts exited 0; runtime gate passed: regression observed in pane.";
-		const positiveEval = evaluateReviewerResult(regressionTarget!, makeApprovedResult("regression", positiveOutput));
+		// 14e: positive baseline — regression APPROVED with canonical typed
+		//      reviewer evidence is NOT downgraded. Under TASK-002 the
+		//      canonical envelope is the only path that suppresses the
+		//      runtime-scope fail-closed downgrade; free-form
+		//      "test passed" / "exit code 0" prose alone is NOT
+		//      sufficient. The fixture carries the canonical
+		//      `verdict` / `effectiveVerdict` so the role gate's
+		//      structured verdict authority drives the APPROVED
+		//      outcome.
+		const positiveResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. regression test passed: npx tsx scripts/regression-smoke.ts exited 0.",
+			completionSource: "explicit",
+			status: "completed",
+			details: {
+				done: {
+					evidence: {
+						reviewerEvidence: {
+							verdict: "APPROVED",
+							effectiveVerdict: "APPROVED",
+							criterionCoverage: [{ criterion: "Regression reviewer validates regression-proof", evidenceKind: "regression-test", summary: "regression test passed" }],
+						},
+					},
+				},
+			},
+		};
+		const positiveEval = evaluateReviewerResult(regressionTarget!, positiveResult);
 		check(positiveEval.effectiveVerdict === "APPROVED",
-			"14e: regression approval citing runtime evidence is NOT downgraded");
+			"14e: regression approval with canonical details.done.evidence.reviewerEvidence is NOT downgraded");
 		check(positiveEval.blockingReasons.length === 0,
 			`14e: regression positive baseline has no blocking reasons (got: ${positiveEval.blockingReasons.join("; ")})`);
 
-		// 14f: positive baseline — typed structured reviewer evidence (criterion
-		//      coverage / commandsRun) suppresses the source-string override
+		// 14f: positive baseline — canonical typed structured reviewer
+		//      evidence (criterion coverage / commandsRun) on the
+		//      canonical envelope suppresses the source-string override
 		//      even when the output text also contains "test passed" /
-		//      "skipped running" phrasing.
+		//      "skipped running" phrasing. The fixture carries the
+		//      canonical `verdict` / `effectiveVerdict` so the role
+		//      gate's structured verdict authority drives the APPROVED
+		//      outcome.
 		const typedCoverageResult: ReviewerResultLike = {
 			verdict: "APPROVED",
 			finalOutput: "APPROVED. Test passed. I read the source ... skipped running the regression smoke.",
 			completionSource: "explicit",
 			status: "completed",
-			reviewerEvidence: {
-				present: true,
-				explicitDeclaration: true,
-				criterionCoverage: [{ criterion: "Regression reviewer validates regression-proof", evidenceKind: "regression-test", summary: "regression test passed" }],
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						criterionCoverage: [{ criterion: "Regression reviewer validates regression-proof", evidenceKind: "regression-test", summary: "regression test passed" }],
+					},
+				},
 			},
 		};
 		const typedCoverageEval = evaluateReviewerResult(regressionTarget!, typedCoverageResult);
 		check(typedCoverageEval.effectiveVerdict === "APPROVED",
-			"14f: regression repro phrase with typed reviewerEvidence is NOT downgraded");
+			"14f: regression repro phrase with canonical details.evidence.reviewerEvidence is NOT downgraded");
 		check(typedCoverageEval.blockingReasons.length === 0,
 			`14f: regression typed-evidence path has no blocking reasons (got: ${typedCoverageEval.blockingReasons.join("; ")})`);
 
@@ -991,8 +1157,14 @@ function main(): void {
 			finalOutput: "APPROVED. Test passed. I read the source ... skipped running the regression smoke.",
 			completionSource: "explicit",
 			status: "completed",
-			reviewerEvidence: {
-				commandsRun: [{ command: "npx tsx scripts/regression-smoke.ts", outcome: "exit 0", summary: "regression test passed" }],
+			details: {
+				evidence: {
+					reviewerEvidence: {
+						verdict: "APPROVED",
+						effectiveVerdict: "APPROVED",
+						commandsRun: [{ command: "npx tsx scripts/regression-smoke.ts", outcome: "exit 0", summary: "regression test passed" }],
+					},
+				},
 			},
 		};
 		const typedCommandsEval = evaluateReviewerResult(regressionTarget!, typedCommandsResult);
@@ -1006,6 +1178,378 @@ function main(): void {
 			"14g: regression hard role rules surface source-string rejection language");
 		check(regressionHardRules.toLowerCase().includes("prompt-only"),
 			"14g: regression hard role rules surface prompt-only rejection language");
+	}
+
+	// (15) DBG-007 fallback evidence paths: structured reviewer evidence may
+	//      be stored in legacy / pane-sidecar locations (details.done.* or
+	//      parseable JSON in details.done.summary). These paths must
+	//      suppress auto_exit provisional blocking when the typed
+	//      content is meaningful (non-empty criterionCoverage or
+	//      commandsRun), and must remain fail-closed for empty objects,
+	//      bare flags, malformed summary JSON, and free-form summary
+	//      labels.
+	{
+		const plan = makeMatrixPlan();
+		const derivation = deriveReviewerRoleTargets(plan);
+		const behaviorTarget = derivation.targets.find((t) => t.role === "behavior");
+		const regressionTarget = derivation.targets.find((t) => t.role === "regression");
+		check(Boolean(behaviorTarget && regressionTarget), "15: behavior + regression targets present");
+
+		// 15a (inverted, negative): typed criterion coverage under
+		//      `details.done.coderEvidence` does NOT suppress auto_exit
+		//      provisional under the TASK-002 tightened contract. The
+		//      path is diagnostic only.
+		const doneCoderCoverageResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					coderEvidence: {
+						present: true,
+						criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+					},
+				},
+			},
+		};
+		const doneCoderCoverageEval = evaluateReviewerResult(behaviorTarget!, doneCoderCoverageResult);
+		check(doneCoderCoverageEval.provisional === true,
+			"15a: details.done.coderEvidence with criterionCoverage does NOT suppress auto_exit provisional (legacy authority disabled)");
+		check(doneCoderCoverageEval.effectiveVerdict === "CHANGES_REQUESTED",
+			"15a: details.done.coderEvidence with criterionCoverage does NOT keep required role approved under TASK-002");
+
+		// 15b (inverted, negative): typed commands run under
+		//      `details.done.coderEvidence` does NOT suppress auto_exit
+		//      provisional.
+		const doneCoderCommandsResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					coderEvidence: {
+						commandsRun: [{ command: "npx tsx scripts/smoke-tui.ts", outcome: "exit 0" }],
+					},
+				},
+			},
+		};
+		const doneCoderCommandsEval = evaluateReviewerResult(behaviorTarget!, doneCoderCommandsResult);
+		check(doneCoderCommandsEval.provisional === true,
+			"15b: details.done.coderEvidence with commandsRun does NOT suppress auto_exit provisional (legacy authority disabled)");
+
+		// 15c (inverted, negative): typed evidence under
+		//      `details.done.coderEvidence.delegateHistory.reviewerEvidence`
+		//      does NOT suppress auto_exit provisional.
+		const delegateHistoryEvidenceResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					coderEvidence: {
+						delegateHistory: {
+							reviewerEvidence: {
+								criterionCoverage: [{ criterion: "Regression reviewer validates regression-proof", summary: "regression test passed" }],
+							},
+						},
+					},
+				},
+			},
+		};
+		const delegateHistoryEvidenceEval = evaluateReviewerResult(regressionTarget!, delegateHistoryEvidenceResult);
+		check(delegateHistoryEvidenceEval.provisional === true,
+			"15c: details.done.coderEvidence.delegateHistory.reviewerEvidence does NOT suppress auto_exit provisional (legacy authority disabled)");
+		check(delegateHistoryEvidenceEval.effectiveVerdict === "CHANGES_REQUESTED",
+			"15c: details.done.coderEvidence.delegateHistory.reviewerEvidence does NOT keep regression role approved under TASK-002");
+
+		// 15d (inverted, negative): typed evidence under
+		//      `details.done.reviewerEvidence` does NOT suppress auto_exit
+		//      provisional. The canonical equivalent is
+		//      `details.done.evidence.reviewerEvidence`.
+		const doneReviewerEvidenceResult: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					reviewerEvidence: {
+						criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+					},
+				},
+			},
+		};
+		const doneReviewerEvidenceEval = evaluateReviewerResult(behaviorTarget!, doneReviewerEvidenceResult);
+		check(doneReviewerEvidenceEval.provisional === true,
+			"15d: details.done.reviewerEvidence with criterionCoverage does NOT suppress auto_exit provisional (legacy authority disabled)");
+
+		// 15e (inverted, negative): parseable JSON in `details.done.summary`
+		//      containing `reviewerEvidence` does NOT suppress auto_exit
+		//      provisional. The legacy adapter is diagnostic only.
+		const summaryJsonReviewer: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						reviewerEvidence: {
+							criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+						},
+					}),
+				},
+			},
+		};
+		const summaryJsonReviewerEval = evaluateReviewerResult(behaviorTarget!, summaryJsonReviewer);
+		check(summaryJsonReviewerEval.provisional === true,
+			"15e: parseable done.summary JSON with reviewerEvidence does NOT suppress auto_exit provisional (legacy authority disabled)");
+
+		// 15f (inverted, negative): parseable JSON in `details.done.summary`
+		//      containing `coderEvidence` with typed content does NOT
+		//      suppress auto_exit provisional.
+		const summaryJsonCoder: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						coderEvidence: {
+							criterionCoverage: [{ criterion: "TUI behavior", summary: "behavior test passed" }],
+						},
+					}),
+				},
+			},
+		};
+		const summaryJsonCoderEval = evaluateReviewerResult(behaviorTarget!, summaryJsonCoder);
+		check(summaryJsonCoderEval.provisional === true,
+			"15f: parseable done.summary JSON with coderEvidence + criterionCoverage does NOT suppress auto_exit provisional (legacy authority disabled)");
+
+		// 15g (inverted, negative): parseable JSON in `details.done.summary`
+		//      containing `coderEvidence.delegateHistory.reviewerEvidence`
+		//      does NOT suppress auto_exit provisional.
+		const summaryJsonDelegateHistory: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						coderEvidence: {
+							delegateHistory: {
+								reviewerEvidence: {
+									criterionCoverage: [{ criterion: "Regression reviewer validates regression-proof", summary: "regression test passed" }],
+								},
+							},
+						},
+					}),
+				},
+			},
+		};
+		const summaryJsonDelegateHistoryEval = evaluateReviewerResult(regressionTarget!, summaryJsonDelegateHistory);
+		check(summaryJsonDelegateHistoryEval.provisional === true,
+			"15g: parseable done.summary JSON with coderEvidence.delegateHistory.reviewerEvidence does NOT suppress auto_exit provisional (legacy authority disabled)");
+
+		// 15h (inverted, negative): parseable JSON in `details.done.summary`
+		//      containing top-level `delegateHistory.reviewerEvidence`
+		//      does NOT suppress auto_exit provisional.
+		const summaryJsonTopDelegateHistory: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						delegateHistory: {
+							reviewerEvidence: {
+								commandsRun: [{ command: "npx tsx scripts/regression-smoke.ts", outcome: "exit 0" }],
+							},
+						},
+					}),
+				},
+			},
+		};
+		const summaryJsonTopDelegateHistoryEval = evaluateReviewerResult(regressionTarget!, summaryJsonTopDelegateHistory);
+		check(summaryJsonTopDelegateHistoryEval.provisional === true,
+			"15h: parseable done.summary JSON with top-level delegateHistory.reviewerEvidence does NOT suppress auto_exit provisional (legacy authority disabled)");
+
+		// 15i (negative): empty `details.done.coderEvidence = {}` does NOT
+		//      suppress auto_exit provisional.
+		const emptyDoneCoder: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { coderEvidence: {} } },
+		};
+		const emptyDoneCoderEval = evaluateReviewerResult(behaviorTarget!, emptyDoneCoder);
+		check(emptyDoneCoderEval.provisional === true,
+			"15i: empty details.done.coderEvidence = {} does NOT suppress auto_exit provisional");
+		check(emptyDoneCoderEval.effectiveVerdict === "CHANGES_REQUESTED",
+			"15i: empty details.done.coderEvidence = {} still blocks required role");
+
+		// 15j (negative): bare `details.done.coderEvidence = { present: true }`
+		//      does NOT suppress auto_exit provisional.
+		const bareDoneCoder: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { coderEvidence: { present: true, explicitDeclaration: true } } },
+		};
+		const bareDoneCoderEval = evaluateReviewerResult(behaviorTarget!, bareDoneCoder);
+		check(bareDoneCoderEval.provisional === true,
+			"15j: bare details.done.coderEvidence = { present: true } does NOT suppress auto_exit provisional");
+
+		// 15k (negative): empty arrays on
+		//      `details.done.coderEvidence.criterionCoverage` /
+		//      `commandsRun` do NOT suppress.
+		const emptyArraysDoneCoder: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					coderEvidence: { criterionCoverage: [], commandsRun: [] },
+				},
+			},
+		};
+		const emptyArraysDoneCoderEval = evaluateReviewerResult(behaviorTarget!, emptyArraysDoneCoder);
+		check(emptyArraysDoneCoderEval.provisional === true,
+			"15k: empty criterionCoverage/commandsRun arrays on details.done.coderEvidence do NOT suppress provisional");
+
+		// 15l (negative): malformed JSON in `details.done.summary` does NOT
+		//      suppress.
+		const malformedSummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { summary: "not-json {{{" } },
+		};
+		const malformedSummaryEval = evaluateReviewerResult(behaviorTarget!, malformedSummary);
+		check(malformedSummaryEval.provisional === true,
+			"15l: malformed JSON in details.done.summary does NOT suppress auto_exit provisional");
+
+		// 15m (negative): non-object JSON (array / primitive) in
+		//      `details.done.summary` does NOT suppress.
+		const arraySummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { summary: JSON.stringify([1, 2, 3]) } },
+		};
+		const arraySummaryEval = evaluateReviewerResult(behaviorTarget!, arraySummary);
+		check(arraySummaryEval.provisional === true,
+			"15m: array JSON in details.done.summary does NOT suppress auto_exit provisional");
+
+		const primitiveSummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { summary: JSON.stringify(42) } },
+		};
+		const primitiveSummaryEval = evaluateReviewerResult(behaviorTarget!, primitiveSummary);
+		check(primitiveSummaryEval.provisional === true,
+			"15m: primitive JSON in details.done.summary does NOT suppress auto_exit provisional");
+
+		// 15n (negative): empty object JSON in `details.done.summary` does
+		//      NOT suppress.
+		const emptyObjectSummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: { done: { summary: JSON.stringify({}) } },
+		};
+		const emptyObjectSummaryEval = evaluateReviewerResult(behaviorTarget!, emptyObjectSummary);
+		check(emptyObjectSummaryEval.provisional === true,
+			"15n: empty object JSON in details.done.summary does NOT suppress auto_exit provisional");
+
+		// 15o (negative): JSON in `details.done.summary` with only bare
+		//      `present: true` / `explicitDeclaration: true` flags does NOT
+		//      suppress.
+		const bareFlagSummary: ReviewerResultLike = {
+			verdict: "APPROVED",
+			finalOutput: "APPROVED. Looks good.",
+			completionSource: "auto_exit",
+			status: "completed",
+			details: {
+				done: {
+					summary: JSON.stringify({
+						reviewerEvidence: { present: true, explicitDeclaration: true },
+						coderEvidence: { present: true, explicitDeclaration: true },
+					}),
+				},
+			},
+		};
+		const bareFlagSummaryEval = evaluateReviewerResult(behaviorTarget!, bareFlagSummary);
+		check(bareFlagSummaryEval.provisional === true,
+			"15o: bare present/explicitDeclaration flags in done.summary JSON do NOT suppress auto_exit provisional");
+
+		// 15p: end-to-end: full plan with one auto_exit result whose typed
+		//      evidence is supplied via the CANONICAL
+		//      `details.done.evidence.reviewerEvidence` envelope approves
+		//      the required role and the memo becomes approved. The
+		//      legacy `details.done.coderEvidence` path is no longer
+		//      authority-bearing under the TASK-002 contract. The
+		//      fixtures carry the canonical `verdict` /
+		//      `effectiveVerdict` so the role gate's structured verdict
+		//      authority drives the APPROVED outcome.
+		const fallbackResults: ReviewerResultLike[] = derivation.targets.map((t, i) => {
+			if (i === 0) {
+				return {
+					verdict: "APPROVED",
+					finalOutput: "APPROVED. Looks good.",
+					completionSource: "auto_exit",
+					status: "completed",
+					details: {
+						done: {
+							evidence: {
+								reviewerEvidence: {
+									verdict: "APPROVED",
+									effectiveVerdict: "APPROVED",
+									criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", summary: "behavior test passed" }],
+								},
+							},
+						},
+					},
+				};
+			}
+			// Other roles approve with canonical typed structured evidence
+			// so they are not downgraded by the runtime-scope / static-only
+			// checks.
+			return {
+				verdict: "APPROVED",
+				finalOutput: "APPROVED. The diff matches the spec.",
+				completionSource: "explicit",
+				status: "completed",
+				details: {
+					evidence: {
+						reviewerEvidence: {
+							verdict: "APPROVED",
+							effectiveVerdict: "APPROVED",
+							criterionCoverage: [{ criterion: t.criteria[0] ?? "criterion", evidenceKind: "behavior-test", summary: "behavior test passed" }],
+						},
+					},
+				},
+			};
+		});
+		const { memo: fallbackMemo } = buildReviewerMemoForResults(plan, "phaseA", fallbackResults);
+		check(fallbackMemo.approved === true,
+			"15p: end-to-end memo approved=true when auto_exit role uses canonical details.done.evidence.reviewerEvidence");
+		check(fallbackMemo.provisionalCaveats.length === 0,
+			`15p: end-to-end memo has no provisionalCaveats (got: ${fallbackMemo.provisionalCaveats.length})`);
 	}
 }
 

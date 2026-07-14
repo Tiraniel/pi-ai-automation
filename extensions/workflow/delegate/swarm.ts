@@ -45,6 +45,7 @@ import {
 import { writeReviewerMemoFile } from "./reviewer-memo-file";
 import { parseReviewerVerdict } from "../reviewer-protocol";
 import { runDelegateAgent } from "./runner";
+import { parseDoneSidecar } from "./pane-status";
 
 export function resolveReviewerSwarmConfig(config: WorkflowConfig): Required<ReviewerSwarmConfig> {
 	// ReviewerSwarmConfig is flat, and every field is re-validated below, so a
@@ -90,6 +91,49 @@ export function buildReviewerGoalTask(task: string, goal: string): string {
 	// framing is now role/quality-check oriented and identical to the
 	// role-mode prompt scaffolding.
 	return `${task}\n\nAssigned review goal:\n- ${goal}\n\nReviewer checks should focus on implementation diffs, behavior, validation evidence, and the assigned review goal.\nStart your response with APPROVED or CHANGES_REQUESTED as the first token — plain text, no markdown decoration around the word.`;
+}
+
+/** Build a `ReviewerResultLike` for the role evaluator from a runtime
+ *  `ReviewerTargetResult`. When the underlying delegate `result` exposes a
+ *  pane done sidecar path via `result.doneFile`, read and forward the parsed
+ *  sidecar under `details.done` so the reviewer role gate can read the
+ *  canonical `details.done.evidence.reviewerEvidence` envelope stored in
+ *  the sidecar.
+ *
+ *  Canonical-only (TASK-002 hard-cut): under the hard-cut, the
+ *  reviewer role gate consumes ONLY the canonical
+ *  `details.done.evidence.reviewerEvidence` envelope. Top-level
+ *  `coderEvidence` / `reviewerEvidence` / `summary` JSON on the
+ *  sidecar are diagnostic only and FAIL CLOSED — the gate's
+ *  canonical parser never promotes them. The helper never injects
+ *  `coderEvidence` / `reviewerEvidence` / `summary` fields into
+ *  `details.done` itself; whatever the sidecar carries is forwarded
+ *  as-is and the gate decides canonical authority.
+ *
+ *  Fail-closed: an unreadable / missing / empty sidecar simply omits
+ *  `details.done`; existing delegate `details` are preserved; the helper
+ *  never fabricates evidence. Exported so smoke tests can drive the
+ *  sidecar-to-evaluator path directly. */
+export function buildReviewerResultLikeForRoleEvaluation(
+	target: ReviewerTargetResult,
+): ReviewerResultLike {
+	const baseDetails = (target.result as unknown as { details?: Record<string, unknown> } | undefined)?.details;
+	const details: Record<string, unknown> = baseDetails ? { ...baseDetails } : {};
+	const doneFile = typeof target.result?.doneFile === "string" ? target.result.doneFile.trim() : "";
+	if (doneFile.length > 0) {
+		const sidecar = parseDoneSidecar(doneFile);
+		if (sidecar && typeof sidecar === "object" && !Array.isArray(sidecar)) {
+			details.done = sidecar;
+		}
+	}
+	return {
+		verdict: target.verdict,
+		finalOutput: target.result?.finalOutput ?? "",
+		completionSource: target.result?.completionSource,
+		completionWarning: target.result?.completionWarning,
+		status: target.status,
+		details: Object.keys(details).length > 0 ? details : undefined,
+	};
 }
 
 export async function runReviewerSwarm(
@@ -224,14 +268,14 @@ export async function runReviewerSwarm(
 	let docsConfigInScope = false;
 
 	if (roleState && reviewContext?.plan) {
-		const resultLikes: ReviewerResultLike[] = results.map((r) => ({
-			verdict: r.verdict,
-			finalOutput: r.result?.finalOutput ?? "",
-			completionSource: r.result?.completionSource,
-			completionWarning: r.result?.completionWarning,
-			status: r.status,
-			details: (r.result as unknown as { details?: Record<string, unknown> } | undefined)?.details,
-		}));
+		// Build `resultLikes` via the canonical helper so pane done sidecar
+		// data is forwarded as `details.done`. Under the TASK-002
+		// hard-cut, the reviewer role gate consumes ONLY the canonical
+		// `details.done.evidence.reviewerEvidence` envelope from the
+		// forwarded sidecar. Top-level `coderEvidence` / `reviewerEvidence`
+		// / summary JSON are diagnostic only and FAIL CLOSED — they cannot
+		// suppress provisional / static-only blockers or approve a role.
+		const resultLikes: ReviewerResultLike[] = results.map((r) => buildReviewerResultLikeForRoleEvaluation(r));
 		// Use the canonical helper so synthetic and runtime paths share one
 		// derivation/evaluation path. Pass `goals` so the consolidated memo
 		// preserves the caller's supplemental goals instead of re-deriving
